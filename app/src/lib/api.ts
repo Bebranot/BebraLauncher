@@ -55,6 +55,8 @@ export interface HistoryEntry {
   name: string | null;
   last_played: string;
   play_seconds: number;
+  /** User id of the account used here last time; empty = guest. */
+  account: string | null;
 }
 
 export interface Settings {

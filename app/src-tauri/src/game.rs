@@ -299,6 +299,8 @@ fn remember_game(app: &AppHandle, params: &PlayParams) {
         .format(&time::format_description::well_known::Rfc3339)
         .unwrap_or_default();
     settings.remember_played(&params.history_key, params.server_name.clone(), now);
+    let account = params.account.map_or_else(String::new, |a| a.to_string());
+    settings.remember_account(&params.history_key, &account);
     let _ = settings.save(state.dirs.root());
 }
 

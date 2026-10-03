@@ -36,6 +36,9 @@ pub struct HistoryEntry {
     /// Time spent in the game on this server, in seconds.
     #[serde(default)]
     pub play_seconds: u64,
+    /// The account used here last time (user id; empty = guest), preselected next time.
+    #[serde(default)]
+    pub account: Option<String>,
 }
 
 /// How many recent servers are remembered.
@@ -79,11 +82,11 @@ impl Settings {
 
     /// Moves the server to the top of the history.
     pub fn remember_played(&mut self, address: &str, name: Option<String>, when: String) {
-        let play_seconds = self
+        let (play_seconds, account) = self
             .history
             .iter()
             .find(|h| h.address == address)
-            .map_or(0, |h| h.play_seconds);
+            .map_or((0, None), |h| (h.play_seconds, h.account.clone()));
         self.history.retain(|h| h.address != address);
         self.history.insert(
             0,
@@ -92,9 +95,17 @@ impl Settings {
                 name,
                 last_played: when,
                 play_seconds,
+                account,
             },
         );
         self.history.truncate(HISTORY_LIMIT);
+    }
+
+    /// Notes which account was used on a server that is in the history.
+    pub fn remember_account(&mut self, address: &str, account: &str) {
+        if let Some(h) = self.history.iter_mut().find(|h| h.address == address) {
+            h.account = Some(account.to_string());
+        }
     }
 
     /// Adds time played to a server that is in the history (a server that dropped off the
@@ -217,6 +228,26 @@ mod tests {
         assert_eq!(s.history[0].address, "a");
         assert_eq!(s.history[0].play_seconds, 90);
         assert_eq!(s.history[1].play_seconds, 0);
+    }
+
+    #[test]
+    fn the_account_is_remembered_per_server() {
+        let mut s = Settings::default();
+        s.remember_played("a", None, "1".into());
+        s.remember_account("a", "user-1");
+        s.remember_account("unknown", "x");
+        s.remember_played("b", None, "2".into());
+        s.remember_account("b", "");
+        s.remember_played("a", None, "3".into());
+        let a = s.history.iter().find(|h| h.address == "a").unwrap();
+        let b = s.history.iter().find(|h| h.address == "b").unwrap();
+        assert_eq!(
+            a.account.as_deref(),
+            Some("user-1"),
+            "survives playing again"
+        );
+        assert_eq!(b.account.as_deref(), Some(""), "guest is a choice too");
+        assert_eq!(s.history.len(), 2);
     }
 
     #[test]

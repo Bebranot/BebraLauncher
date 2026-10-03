@@ -51,6 +51,7 @@ let settings: Settings = {
       name: null,
       last_played: new Date().toISOString(),
       play_seconds: 3 * 3600 + 25 * 60,
+      account: null,
     },
   ],
 };

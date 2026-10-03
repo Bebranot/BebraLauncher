@@ -248,7 +248,15 @@ class Store {
 
   select(address: string | null) {
     this.selectedAddress = address;
-    if (address) void this.loadDetails(address);
+    if (!address) return;
+    void this.loadDetails(address);
+
+    // The account used on this server last time, if it still exists.
+    const used = this.history.get(address)?.account;
+    if (!this.busy && used !== undefined && used !== null) {
+      if (used === "") this.selectedAccount = null;
+      else if (this.accounts.some((a) => a.user_id === used)) this.selectedAccount = used;
+    }
   }
 
   /** Moves the selection through the visible list (arrow keys). */
