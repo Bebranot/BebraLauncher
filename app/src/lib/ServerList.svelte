@@ -6,6 +6,18 @@
 </script>
 
 <section>
+  <div class="tabs" role="tablist">
+    {#each [["all", "Все"], ["favorites", "Избранное"], ["recent", "Недавние"]] as [id, label]}
+      <button
+        role="tab"
+        class:on={app.filter === id}
+        aria-selected={app.filter === id}
+        onclick={() => (app.filter = id as typeof app.filter)}
+      >
+        {label}
+      </button>
+    {/each}
+  </div>
   <div class="toolbar">
     <input
       type="text"
@@ -13,7 +25,13 @@
       placeholder="Поиск по названию, адресу, тегам…"
       bind:value={app.search}
     />
-    <select bind:value={app.sort} aria-label="Сортировка">
+    {#if app.languages.length > 0}
+      <select bind:value={app.language} aria-label="Язык">
+        <option value="">Любой язык</option>
+        {#each app.languages as l}<option value={l}>{l}</option>{/each}
+      </select>
+    {/if}
+    <select bind:value={app.sort} aria-label="Сортировка" disabled={app.filter === "recent"}>
       <option value="players">По онлайну</option>
       <option value="name">По названию</option>
     </select>
@@ -45,6 +63,21 @@
           void app.startPlay();
         }}
       >
+        <span
+          class="star"
+          class:on={app.favorites.has(s.address)}
+          role="button"
+          tabindex="-1"
+          title={app.favorites.has(s.address) ? "Убрать из избранного" : "В избранное"}
+          onclick={(e) => {
+            e.stopPropagation();
+            void app.toggleFavorite(s.address);
+          }}
+          onkeydown={() => {}}
+          ondblclick={(e) => e.stopPropagation()}
+        >
+          {app.favorites.has(s.address) ? "★" : "☆"}
+        </span>
         <span class="main">
           <span class="name">{serverTitle(s)}</span>
           <span class="meta dim">
@@ -64,6 +97,10 @@
       <div class="empty dim">
         {#if app.serversLoading && app.servers.length === 0}
           Загрузка списка серверов…
+        {:else if app.filter === "favorites" && app.servers.length > 0}
+          Пока пусто: отметьте сервер звёздочкой.
+        {:else if app.filter === "recent" && app.servers.length > 0}
+          Вы ещё не играли на серверах из этого списка.
         {:else if app.servers.length === 0}
           Список пуст.
         {:else}
@@ -86,15 +123,45 @@
     min-height: 0;
     height: 100%;
   }
+  .tabs {
+    display: flex;
+    gap: 4px;
+    padding: 10px 16px 0;
+  }
+  .tabs button {
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    border-radius: 0;
+    padding: 6px 12px;
+    color: var(--text-dim);
+  }
+  .tabs button.on {
+    color: var(--text);
+    border-bottom-color: var(--accent);
+  }
+  .star {
+    flex: none;
+    width: 22px;
+    text-align: center;
+    font-size: 17px;
+    color: var(--text-dim);
+    cursor: pointer;
+  }
+  .star:hover,
+  .star.on {
+    color: var(--warn);
+  }
   .toolbar {
     display: flex;
+    flex-wrap: wrap;
     gap: 8px;
     align-items: center;
     padding: 12px 16px;
     border-bottom: 1px solid var(--border);
   }
   .search {
-    flex: 1;
+    flex: 1 1 220px;
     min-width: 0;
   }
   .check {

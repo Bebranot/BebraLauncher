@@ -42,10 +42,18 @@ export type LoginOutcome =
   | { status: "ok"; account: AccountRow }
   | { status: "denied"; code: DenyCode; errors: string[] };
 
+export interface HistoryEntry {
+  address: string;
+  name: string | null;
+  last_played: string;
+}
+
 export interface Settings {
   guest_name: string;
   compat_mode: boolean;
   last_account: string | null;
+  favorites: string[];
+  history: HistoryEntry[];
 }
 
 export type PlayStage = "account" | "info" | "files" | "engine" | "starting";
@@ -71,8 +79,9 @@ export const api = {
   logout: (userId: string) => invoke<boolean>("logout", { userId }),
   getSettings: () => invoke<Settings>("get_settings"),
   setSettings: (settings: Settings) => invoke<Settings>("set_settings", { settings }),
-  play: (address: string, account: string | null) =>
-    invoke<void>("play", { address, account }),
+  toggleFavorite: (address: string) => invoke<string[]>("toggle_favorite", { address }),
+  play: (address: string, name: string | null, account: string | null) =>
+    invoke<void>("play", { address, name, account }),
   cancelPlay: () => invoke<void>("cancel_play"),
   openLogsFolder: () => invoke<void>("open_logs_folder"),
   onPlay: (handler: (e: PlayEvent) => void): Promise<UnlistenFn> =>

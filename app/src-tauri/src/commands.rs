@@ -223,10 +223,26 @@ pub fn get_settings(state: State<'_, AppState>) -> Settings {
 
 #[tauri::command]
 pub fn set_settings(state: State<'_, AppState>, settings: Settings) -> CmdResult<Settings> {
-    let settings = settings.sanitized();
-    settings.save(state.dirs.root()).map_err(err)?;
-    *state.settings.lock().unwrap() = settings.clone();
-    Ok(settings)
+    let mut current = state.settings.lock().unwrap();
+    // The form only edits these two; favourites and history have their own commands.
+    let merged = Settings {
+        guest_name: settings.guest_name,
+        compat_mode: settings.compat_mode,
+        ..current.clone()
+    }
+    .sanitized();
+    merged.save(state.dirs.root()).map_err(err)?;
+    *current = merged.clone();
+    Ok(merged)
+}
+
+/// Adds or removes a favourite server. Returns the new list of favourites.
+#[tauri::command]
+pub fn toggle_favorite(state: State<'_, AppState>, address: String) -> CmdResult<Vec<String>> {
+    let mut s = state.settings.lock().unwrap();
+    s.toggle_favorite(&address);
+    s.save(state.dirs.root()).map_err(err)?;
+    Ok(s.favorites.clone())
 }
 
 /// Starts preparing and running the game. Progress and the outcome arrive as `play` events.
@@ -236,6 +252,7 @@ pub fn play(
     app: AppHandle,
     state: State<'_, AppState>,
     address: String,
+    name: Option<String>,
     account: Option<String>,
 ) -> CmdResult<()> {
     let addr = ServerAddr::parse(&address).map_err(err)?;
@@ -246,6 +263,10 @@ pub fn play(
     let settings = {
         let mut s = state.settings.lock().unwrap();
         s.last_account = account.map(|a| a.to_string());
+        let now = OffsetDateTime::now_utc()
+            .format(&Rfc3339)
+            .unwrap_or_default();
+        s.remember_played(&address, name, now);
         let _ = s.save(state.dirs.root());
         s.clone()
     };

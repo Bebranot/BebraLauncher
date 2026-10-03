@@ -12,6 +12,7 @@ import {
 import { serverTitle } from "./format";
 
 export type SortKey = "players" | "name";
+export type ListFilter = "all" | "favorites" | "recent";
 
 export type PlayState =
   | { phase: "idle" }
@@ -45,13 +46,44 @@ class Store {
   search = $state("");
   sort = $state<SortKey>("players");
   hideEmpty = $state(false);
+  filter = $state<ListFilter>("all");
+  /** Language tag value (the part after `lang:`); empty = any. */
+  language = $state("");
 
   selectedAddress = $state<string | null>(null);
   play = $state<PlayState>({ phase: "idle" });
 
+  readonly favorites = $derived(new Set(this.settings?.favorites ?? []));
+
+  /** Languages the servers announce with `lang:xx` tags, most common first. */
+  readonly languages = $derived.by(() => {
+    const counts = new Map<string, number>();
+    for (const s of this.servers) {
+      for (const t of s.tags) {
+        if (t.startsWith("lang:")) {
+          const l = t.slice(5);
+          counts.set(l, (counts.get(l) ?? 0) + 1);
+        }
+      }
+    }
+    return [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([l]) => l);
+  });
+
   readonly visible = $derived.by(() => {
     const q = this.search.trim().toLowerCase();
     let list = this.servers;
+    if (this.filter === "favorites") {
+      list = list.filter((s) => this.favorites.has(s.address));
+    } else if (this.filter === "recent") {
+      const order = new Map((this.settings?.history ?? []).map((h, i) => [h.address, i]));
+      return list
+        .filter((s) => order.has(s.address))
+        .sort((a, b) => order.get(a.address)! - order.get(b.address)!);
+    }
+    if (this.language) {
+      const tag = `lang:${this.language}`;
+      list = list.filter((s) => s.tags.includes(tag));
+    }
     if (q) {
       list = list.filter((s) =>
         `${s.name ?? ""} ${s.address} ${s.tags.join(" ")} ${s.map ?? ""} ${s.preset ?? ""}`
@@ -127,12 +159,20 @@ class Store {
     this.settings = await api.setSettings(next);
   }
 
+  async toggleFavorite(address: string) {
+    if (!this.settings) return;
+    const favorites = await api.toggleFavorite(address).catch(() => null);
+    if (favorites) this.settings = { ...this.settings, favorites };
+  }
+
   async startPlay() {
     const server = this.selected;
     if (!server || this.busy) return;
     this.play = { phase: "preparing", stage: "account", done: 0, total: 0, unit: "items" };
     try {
-      await api.play(server.address, this.selectedAccount);
+      await api.play(server.address, server.name, this.selectedAccount);
+      // The backend put the server on top of the history; take it from there.
+      this.settings = await api.getSettings().catch(() => this.settings);
     } catch (e) {
       this.play = { phase: "failed", message: errorText(e) };
     }

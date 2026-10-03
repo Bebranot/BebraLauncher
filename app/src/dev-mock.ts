@@ -37,7 +37,13 @@ let accounts: AccountRow[] = [
   { user_id: "11111111-1111-1111-1111-111111111111", username: "serjo13", expire_time: "2026-11-02T10:00:00Z", state: "valid" },
 ];
 
-let settings: Settings = { guest_name: "JoeGenero", compat_mode: false, last_account: null };
+let settings: Settings = {
+  guest_name: "JoeGenero",
+  compat_mode: false,
+  last_account: null,
+  favorites: ["ss14s://example-two.test"],
+  history: [{ address: "ss14s://example-one.test", name: null, last_played: new Date().toISOString() }],
+};
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 let cancelled = false;
@@ -76,6 +82,13 @@ export function installMock() {
         case "set_settings":
           settings = a.settings as Settings;
           return settings;
+        case "toggle_favorite": {
+          const addr = a.address as string;
+          settings.favorites = settings.favorites.includes(addr)
+            ? settings.favorites.filter((x) => x !== addr)
+            : [...settings.favorites, addr];
+          return settings.favorites;
+        }
         case "login":
           return { status: "denied", code: "invalid_credentials", errors: [] };
         case "logout":

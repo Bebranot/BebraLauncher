@@ -40,6 +40,7 @@ fn main() {
             commands::logout,
             commands::get_settings,
             commands::set_settings,
+            commands::toggle_favorite,
             commands::play,
             commands::cancel_play,
             commands::open_logs_folder,

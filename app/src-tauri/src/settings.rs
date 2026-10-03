@@ -14,7 +14,22 @@ pub struct Settings {
     pub compat_mode: bool,
     /// The account chosen last (user id); preselected next time.
     pub last_account: Option<String>,
+    /// Addresses of favourite servers.
+    pub favorites: Vec<String>,
+    /// Servers played recently, newest first.
+    pub history: Vec<HistoryEntry>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HistoryEntry {
+    pub address: String,
+    pub name: Option<String>,
+    /// RFC 3339.
+    pub last_played: String,
+}
+
+/// How many recent servers are remembered.
+pub const HISTORY_LIMIT: usize = 20;
 
 impl Default for Settings {
     fn default() -> Self {
@@ -22,6 +37,8 @@ impl Default for Settings {
             guest_name: FALLBACK_USERNAME.to_string(),
             compat_mode: false,
             last_account: None,
+            favorites: Vec::new(),
+            history: Vec::new(),
         }
     }
 }
@@ -45,6 +62,31 @@ impl Settings {
         let tmp = path.with_extension("json.tmp");
         std::fs::write(&tmp, serde_json::to_vec_pretty(self)?)?;
         std::fs::rename(tmp, path)
+    }
+
+    /// Moves the server to the top of the history.
+    pub fn remember_played(&mut self, address: &str, name: Option<String>, when: String) {
+        self.history.retain(|h| h.address != address);
+        self.history.insert(
+            0,
+            HistoryEntry {
+                address: address.to_string(),
+                name,
+                last_played: when,
+            },
+        );
+        self.history.truncate(HISTORY_LIMIT);
+    }
+
+    /// Adds or removes a favourite. Returns whether it is a favourite now.
+    pub fn toggle_favorite(&mut self, address: &str) -> bool {
+        if let Some(i) = self.favorites.iter().position(|a| a == address) {
+            self.favorites.remove(i);
+            false
+        } else {
+            self.favorites.push(address.to_string());
+            true
+        }
     }
 
     /// Cleans up values typed by the user.
@@ -80,6 +122,7 @@ mod tests {
             guest_name: "Bebra".into(),
             compat_mode: true,
             last_account: Some("x".into()),
+            ..Settings::default()
         };
         s.save(&dir).unwrap();
         let back = Settings::load(&dir);
@@ -115,6 +158,32 @@ mod tests {
         }
         .sanitized();
         assert_eq!(s.guest_name.len(), 32);
+    }
+
+    #[test]
+    fn history_is_newest_first_without_duplicates_and_limited() {
+        let mut s = Settings::default();
+        s.remember_played("a", None, "1".into());
+        s.remember_played("b", Some("B".into()), "2".into());
+        s.remember_played("a", Some("A".into()), "3".into());
+        let order: Vec<&str> = s.history.iter().map(|h| h.address.as_str()).collect();
+        assert_eq!(order, ["a", "b"]);
+        assert_eq!(s.history[0].name.as_deref(), Some("A"));
+
+        for i in 0..50 {
+            s.remember_played(&format!("s{i}"), None, i.to_string());
+        }
+        assert_eq!(s.history.len(), HISTORY_LIMIT);
+        assert_eq!(s.history[0].address, "s49");
+    }
+
+    #[test]
+    fn favorites_toggle() {
+        let mut s = Settings::default();
+        assert!(s.toggle_favorite("a"));
+        assert!(s.toggle_favorite("b"));
+        assert!(!s.toggle_favorite("a"));
+        assert_eq!(s.favorites, ["b"]);
     }
 
     fn tempdir() -> PathBuf {
