@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Robust.LoaderApi\Robust.LoaderApi.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Small helpers shared with the official launcher's source tree, copied into ../Shared. -->
+    <Compile Include="..\Shared\*.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Data.Sqlite.Core" />
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" />
+    <PackageReference Include="NSec.Cryptography" />
+    <!-- libsodium is listed explicitly to control its version. -->
+    <PackageReference Include="libsodium" />
+    <PackageReference Include="Robust.Natives" />
+    <PackageReference Include="Robust.Natives.Zstd" />
+    <PackageReference Include="SharpZstd.Interop" ExcludeAssets="native" />
+  </ItemGroup>
+
+</Project>

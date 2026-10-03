@@ -1,0 +1,15 @@
+<Project>
+  <PropertyGroup>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- Versions copied from the official launcher's Directory.Packages.props (the Loader subset). -->
+    <PackageVersion Include="Microsoft.Data.Sqlite.Core" Version="7.0.4" />
+    <PackageVersion Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.4" />
+    <PackageVersion Include="NSec.Cryptography" Version="25.4.0" />
+    <PackageVersion Include="libsodium" Version="1.0.20.1" />
+    <PackageVersion Include="SharpZstd.Interop" Version="1.5.2-beta2" />
+    <PackageVersion Include="Robust.Natives" Version="0.2.5" />
+    <PackageVersion Include="Robust.Natives.Zstd" Version="0.1.1-zstd1.5.7" />
+  </ItemGroup>
+</Project>

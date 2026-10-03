@@ -1,0 +1,9 @@
+<Project>
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <!-- Same as the official launcher: CET breaks some older but supported Windows versions. -->
+    <CETCompat>false</CETCompat>
+  </PropertyGroup>
+</Project>

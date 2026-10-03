@@ -10,6 +10,7 @@ pub mod error;
 pub mod hash;
 pub mod http;
 pub mod hub;
+pub mod launch;
 pub mod manifest;
 pub mod paths;
 pub mod server;

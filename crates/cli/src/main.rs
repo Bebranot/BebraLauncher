@@ -7,8 +7,9 @@ use bebra_core::download::{Progress, ProgressUnit};
 use bebra_core::http::UrlFallbackSet;
 use bebra_core::hub::HubClient;
 use bebra_core::paths::DataDirs;
+use bebra_core::server::AuthMode;
 use bebra_core::server::{self, ServerStatus};
-use bebra_core::{engine, http, signature, updater, ServerAddr};
+use bebra_core::{engine, http, launch, signature, updater, ServerAddr};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -49,6 +50,29 @@ enum Command {
         /// Ask the hub for /info instead of the server (for servers unreachable from here).
         #[arg(long)]
         via_hub: bool,
+    },
+    /// Install (if needed) and start the game for a server.
+    Launch {
+        address: String,
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
+        #[arg(long)]
+        via_hub: bool,
+        /// Path to SS14.Loader.exe (default: found next to this program or in the repo's loader/out).
+        #[arg(long)]
+        loader: Option<PathBuf>,
+        /// Name to play under without an account.
+        #[arg(long, default_value = launch::FALLBACK_USERNAME)]
+        username: String,
+        /// Use the GLES2 fallback renderer.
+        #[arg(long)]
+        compat: bool,
+        /// Start the client at its main menu without connecting to the server.
+        #[arg(long)]
+        no_connect: bool,
+        /// Only print the command that would run (secrets hidden).
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 
@@ -188,6 +212,114 @@ async fn main() -> Result<()> {
                     "already installed"
                 }
             );
+        }
+        Command::Launch {
+            address,
+            data_dir,
+            via_hub,
+            loader,
+            username,
+            compat,
+            no_connect,
+            dry_run,
+        } => {
+            let addr = ServerAddr::parse(&address)?;
+            let dirs = match data_dir {
+                Some(p) => DataDirs::at(p),
+                None => DataDirs::default_windows()?,
+            };
+            dirs.ensure()?;
+            let loader_exe = match loader {
+                Some(p) => p,
+                None => launch::find_loader()?,
+            };
+
+            let info = if via_hub {
+                HubClient::official(client.clone())
+                    .server_info(addr.as_str())
+                    .await?
+            } else {
+                server::fetch_info(&client, &addr)
+                    .await
+                    .with_context(|| format!("{} did not answer /info", addr.info_url()))?
+            };
+            let mut build = info
+                .build
+                .clone()
+                .context("the server gave no build information")?;
+            if via_hub {
+                build.apply_self_hosting(&addr);
+            }
+            if !no_connect && info.auth.mode == AuthMode::Required {
+                eprintln!(
+                    "note: this server requires an account; playing as a guest will be refused (accounts come later)"
+                );
+            }
+
+            let db = ContentDb::open(&dirs.content_db())?;
+            let printer = ProgressPrinter::new("files");
+            let content =
+                updater::install_content(&client, &db, &build, Some(&|p| printer.show(p)))
+                    .await
+                    .context("failed to install game files")?;
+            printer.finish();
+            let printer = ProgressPrinter::new("engine");
+            let installed = engine::install_engine(
+                &client,
+                &UrlFallbackSet::new(engine::BUILDS_URLS),
+                &dirs,
+                &build.engine_version,
+                &signature::official_key()?,
+                Some(&|p| printer.show(p)),
+            )
+            .await
+            .context("failed to install the engine")?;
+            printer.finish();
+
+            let spec = launch::LaunchSpec {
+                loader_exe,
+                dotnet_root: None,
+                engine: installed,
+                signing_key_file: launch::ensure_signing_key_file(&dirs)?,
+                content_db: dirs.content_db(),
+                content_version_id: content.version_id,
+                modules: vec![],
+                username,
+                auth: None,
+                build,
+                connect: (!no_connect).then(|| launch::ConnectTarget {
+                    connect_url: info.connect_url(&addr),
+                    server_address: addr.normalized(),
+                }),
+                compat_mode: compat,
+            };
+            let cmd = launch::build_command(&spec);
+            println!("{}", cmd.describe());
+            if dry_run {
+                return Ok(());
+            }
+
+            let (out_log, err_log) = (
+                dirs.logs().join("client.stdout.log"),
+                dirs.logs().join("client.stderr.log"),
+            );
+            let mut child = launch::spawn(&cmd, &out_log, &err_log)?;
+            println!(
+                "started (pid {}); client logs in {}",
+                child.id(),
+                dirs.logs().display()
+            );
+
+            let status = child.wait()?;
+            println!("client exited: {status}");
+            if !status.success() {
+                let tail = std::fs::read_to_string(&out_log).unwrap_or_default();
+                let tail: Vec<&str> = tail.lines().rev().take(15).collect();
+                for line in tail.into_iter().rev() {
+                    println!("  | {line}");
+                }
+                anyhow::bail!("the client did not exit cleanly");
+            }
         }
     }
     Ok(())

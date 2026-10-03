@@ -38,3 +38,8 @@ NOTES.md
 # all markdown is considered AI-written notes, except README
 *.md
 !README.md
+
+# --- .NET build output (loader) ---
+bin/
+obj/
+loader/out/

@@ -83,6 +83,18 @@ impl ServerAddr {
         out
     }
 
+    /// The address as .NET prints it (what the official launcher passes to the client):
+    /// `scheme://host[:port]/path`, with `/` when the path is empty.
+    pub fn normalized(&self) -> String {
+        let mut out = format!("{}://{}", self.url.scheme(), self.host());
+        if let Some(p) = self.url.port() {
+            out.push_str(&format!(":{p}"));
+        }
+        let path = self.url.path();
+        out.push_str(if path.is_empty() { "/" } else { path });
+        out
+    }
+
     pub fn status_url(&self) -> String {
         format!("{}status", self.api_base())
     }
@@ -182,6 +194,21 @@ mod tests {
         assert_eq!(a.default_connect_url(), "udp://example.com:1212/");
         let b = ServerAddr::parse("ss14://example.com:1214").unwrap();
         assert_eq!(b.default_connect_url(), "udp://example.com:1214/");
+    }
+
+    #[test]
+    fn normalized_form() {
+        let n = |s: &str| ServerAddr::parse(s).unwrap().normalized();
+        assert_eq!(
+            n("ss14s://lizard.spacestation14.com"),
+            "ss14s://lizard.spacestation14.com/"
+        );
+        assert_eq!(n("ss14://104.243.34.95:1212"), "ss14://104.243.34.95:1212/");
+        assert_eq!(
+            n("ss14s://server.ss14.org/perseus/"),
+            "ss14s://server.ss14.org/perseus/"
+        );
+        assert_eq!(n("example.com"), "ss14://example.com/");
     }
 
     #[test]

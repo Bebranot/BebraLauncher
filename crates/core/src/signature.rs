@@ -17,6 +17,11 @@ const SPKI_PREFIX: [u8; 12] = [
     0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
 ];
 
+/// The key as a PEM text, for tools that read it from a file.
+pub fn official_key_pem() -> &'static str {
+    OFFICIAL_KEY_PEM
+}
+
 pub fn official_key() -> Result<VerifyingKey> {
     parse_pem(OFFICIAL_KEY_PEM)
 }
