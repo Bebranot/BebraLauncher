@@ -463,6 +463,15 @@ impl ContentDb {
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
+    /// `(module, version)` pairs of every stored version; the engine itself is `Robust`.
+    pub fn all_engine_dependencies(&self) -> Result<Vec<(String, String)>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT DISTINCT ModuleName, ModuleVersion FROM ContentEngineDependency")?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
     /// Do we already have this build? (docs/protocol.md, section 2, step 2.)
     /// The manifest hash is the source of truth, then the zip hash, then fork and version.
     /// With several candidates, one that matches fork, version and engine exactly comes first.

@@ -5,10 +5,13 @@ use bebra_core::accounts::{
     self, CredentialStore, Freshness, LoginResult, StoredAccount, TokenStore,
 };
 use bebra_core::auth::{AuthClient, Identity};
+use bebra_core::content_db::ContentDb;
 use bebra_core::hub::{HubClient, HubServerEntry};
 use bebra_core::launch;
+use bebra_core::server::{self, AuthMode};
+use bebra_core::storage;
 use bebra_core::ServerAddr;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
@@ -43,7 +46,7 @@ pub fn app_info(state: State<'_, AppState>) -> AppInfo {
 }
 
 /// One row of the server list, flattened for the UI.
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct ServerRow {
     address: String,
     name: Option<String>,
@@ -88,7 +91,128 @@ pub async fn list_servers(state: State<'_, AppState>) -> CmdResult<Vec<ServerRow
         .list_servers()
         .await
         .map_err(err)?;
-    Ok(servers.into_iter().map(ServerRow::from).collect())
+    let rows: Vec<ServerRow> = servers.into_iter().map(ServerRow::from).collect();
+    // So the next start has something to show before the hub answers.
+    if let Ok(json) = serde_json::to_vec(&rows) {
+        let _ = std::fs::write(cache_path(&state), json);
+    }
+    Ok(rows)
+}
+
+fn cache_path(state: &AppState) -> std::path::PathBuf {
+    state.dirs.root().join("servers-cache.json")
+}
+
+/// The server list of the last successful refresh (maybe long ago); empty if there is none.
+#[tauri::command]
+pub fn cached_servers(state: State<'_, AppState>) -> Vec<ServerRow> {
+    std::fs::read(cache_path(&state))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default()
+}
+
+#[derive(Serialize)]
+pub struct InfoLinkRow {
+    name: String,
+    url: String,
+}
+
+#[derive(Serialize)]
+pub struct ServerDetails {
+    /// Description written by the server's owners: untrusted text.
+    description: Option<String>,
+    links: Vec<InfoLinkRow>,
+    /// `optional`, `required` or `disabled`.
+    auth: &'static str,
+}
+
+/// What the server says about itself (`/info`). Shown next to the Play button.
+#[tauri::command]
+pub async fn server_info(state: State<'_, AppState>, address: String) -> CmdResult<ServerDetails> {
+    let addr = ServerAddr::parse(&address).map_err(err)?;
+    let info = server::fetch_info_preview(&state.client, &addr)
+        .await
+        .map_err(err)?;
+    Ok(ServerDetails {
+        description: info.desc.filter(|d| !d.trim().is_empty()),
+        links: info
+            .links
+            .into_iter()
+            .filter(|l| crate::system::is_safe_web_url(&l.url))
+            .map(|l| InfoLinkRow {
+                name: l.name,
+                url: l.url,
+            })
+            .collect(),
+        auth: match info.auth.mode {
+            AuthMode::Optional => "optional",
+            AuthMode::Required => "required",
+            AuthMode::Disabled => "disabled",
+        },
+    })
+}
+
+#[tauri::command]
+pub fn open_url(url: String) -> CmdResult<()> {
+    crate::system::open_url(&url)
+}
+
+#[tauri::command]
+pub fn get_autostart() -> bool {
+    crate::system::autostart_enabled()
+}
+
+#[tauri::command]
+pub fn set_autostart(enabled: bool) -> CmdResult<bool> {
+    crate::system::set_autostart(enabled)?;
+    Ok(crate::system::autostart_enabled())
+}
+
+#[derive(Serialize)]
+pub struct StorageRow {
+    content: u64,
+    engines: u64,
+    modules: u64,
+    other: u64,
+    total: u64,
+}
+
+#[tauri::command]
+pub fn storage_info(state: State<'_, AppState>) -> StorageRow {
+    let r = storage::report(&state.dirs);
+    StorageRow {
+        content: r.content_db,
+        engines: r.engines,
+        modules: r.modules,
+        other: r.scratch + r.logs,
+        total: r.total(),
+    }
+}
+
+#[derive(Serialize)]
+pub struct CleanRow {
+    freed: u64,
+    versions_removed: usize,
+    engines_removed: usize,
+    modules_removed: usize,
+}
+
+/// Removes old game versions and engines nobody needs any more. Refused while a game is
+/// being prepared or running.
+#[tauri::command]
+pub fn clean_storage(state: State<'_, AppState>) -> CmdResult<CleanRow> {
+    if state.game.is_active() {
+        return Err("Очистка недоступна, пока идёт запуск или игра".into());
+    }
+    let db = ContentDb::open(&state.dirs.content_db()).map_err(err)?;
+    let r = storage::clean(&state.dirs, &db).map_err(err)?;
+    Ok(CleanRow {
+        freed: r.bytes_freed,
+        versions_removed: r.cull.versions_removed,
+        engines_removed: r.engines_removed,
+        modules_removed: r.modules_removed,
+    })
 }
 
 #[derive(Serialize)]
@@ -225,12 +349,13 @@ pub fn get_settings(state: State<'_, AppState>) -> Settings {
 #[tauri::command]
 pub fn set_settings(state: State<'_, AppState>, settings: Settings) -> CmdResult<Settings> {
     let mut current = state.settings.lock().unwrap();
-    // The form only edits these four; favourites and history have their own commands.
+    // The form only edits these five; favourites and history have their own commands.
     let merged = Settings {
         guest_name: settings.guest_name,
         compat_mode: settings.compat_mode,
         minimize_on_play: settings.minimize_on_play,
         theme: settings.theme,
+        language: settings.language,
         ..current.clone()
     }
     .sanitized();
@@ -286,6 +411,7 @@ pub fn start_play(
             guest_name: settings.guest_name,
             compat_mode: settings.compat_mode,
             minimize_on_play: settings.minimize_on_play,
+            history_key: address.to_string(),
         },
     )?;
 

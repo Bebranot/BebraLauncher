@@ -74,6 +74,11 @@ impl GameState {
         *self.active.lock().unwrap() = None;
     }
 
+    /// Is a game being prepared or running?
+    pub fn is_active(&self) -> bool {
+        self.active.lock().unwrap().is_some()
+    }
+
     /// Stops the preparation (downloads). Does nothing once the game itself is running.
     pub fn cancel(&self) {
         if let Some(c) = self.active.lock().unwrap().as_ref() {
@@ -99,6 +104,8 @@ pub struct PlayParams {
     pub guest_name: String,
     pub compat_mode: bool,
     pub minimize_on_play: bool,
+    /// The address string the history is keyed by (as the hub lists it).
+    pub history_key: String,
 }
 
 pub fn start(app: AppHandle, game: Arc<GameState>, params: PlayParams) -> Result<(), String> {
@@ -247,6 +254,14 @@ fn set_minimized(app: &AppHandle, minimized: bool) {
     }
 }
 
+/// Adds the time of this game to the server's total.
+fn record_play_time(app: &AppHandle, key: &str, seconds: u64) {
+    let state = app.state::<crate::AppState>();
+    let mut settings = state.settings.lock().unwrap();
+    settings.add_play_time(key, seconds);
+    let _ = settings.save(state.dirs.root());
+}
+
 fn run_game(
     app: &AppHandle,
     emit: &impl Fn(PlayEvent),
@@ -276,7 +291,9 @@ fn run_game(
         set_minimized(app, true);
     }
 
+    let started = std::time::Instant::now();
     let code = child.wait().ok().and_then(|s| s.code());
+    record_play_time(app, &params.history_key, started.elapsed().as_secs());
     let log_tail = if code == Some(0) {
         Vec::new()
     } else {

@@ -21,6 +21,7 @@ pub mod process;
 pub mod secret;
 pub mod server;
 pub mod signature;
+pub mod storage;
 pub mod updater;
 pub mod zipmode;
 

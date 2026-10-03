@@ -16,6 +16,8 @@ pub struct Settings {
     pub minimize_on_play: bool,
     /// Id of the colour theme; the UI knows the list and falls back to the default.
     pub theme: String,
+    /// `auto` (follow Windows), `ru` or `en`.
+    pub language: String,
     /// The account chosen last (user id); preselected next time.
     pub last_account: Option<String>,
     /// Addresses of favourite servers.
@@ -30,6 +32,9 @@ pub struct HistoryEntry {
     pub name: Option<String>,
     /// RFC 3339.
     pub last_played: String,
+    /// Time spent in the game on this server, in seconds.
+    #[serde(default)]
+    pub play_seconds: u64,
 }
 
 /// How many recent servers are remembered.
@@ -42,6 +47,7 @@ impl Default for Settings {
             compat_mode: false,
             minimize_on_play: true,
             theme: "dark".to_string(),
+            language: "auto".to_string(),
             last_account: None,
             favorites: Vec::new(),
             history: Vec::new(),
@@ -72,6 +78,11 @@ impl Settings {
 
     /// Moves the server to the top of the history.
     pub fn remember_played(&mut self, address: &str, name: Option<String>, when: String) {
+        let play_seconds = self
+            .history
+            .iter()
+            .find(|h| h.address == address)
+            .map_or(0, |h| h.play_seconds);
         self.history.retain(|h| h.address != address);
         self.history.insert(
             0,
@@ -79,9 +90,18 @@ impl Settings {
                 address: address.to_string(),
                 name,
                 last_played: when,
+                play_seconds,
             },
         );
         self.history.truncate(HISTORY_LIMIT);
+    }
+
+    /// Adds time played to a server that is in the history (a server that dropped off the
+    /// list in the meantime is simply not counted).
+    pub fn add_play_time(&mut self, address: &str, seconds: u64) {
+        if let Some(h) = self.history.iter_mut().find(|h| h.address == address) {
+            h.play_seconds = h.play_seconds.saturating_add(seconds);
+        }
     }
 
     /// Adds or removes a favourite. Returns whether it is a favourite now.
@@ -182,6 +202,20 @@ mod tests {
         }
         assert_eq!(s.history.len(), HISTORY_LIMIT);
         assert_eq!(s.history[0].address, "s49");
+    }
+
+    #[test]
+    fn play_time_accumulates_and_survives_replaying() {
+        let mut s = Settings::default();
+        s.remember_played("a", None, "1".into());
+        s.add_play_time("a", 60);
+        s.add_play_time("a", 30);
+        s.add_play_time("unknown", 999);
+        s.remember_played("b", None, "2".into());
+        s.remember_played("a", None, "3".into());
+        assert_eq!(s.history[0].address, "a");
+        assert_eq!(s.history[0].play_seconds, 90);
+        assert_eq!(s.history[1].play_seconds, 0);
     }
 
     #[test]

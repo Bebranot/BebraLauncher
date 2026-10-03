@@ -5,11 +5,13 @@ mod commands;
 mod game;
 mod redial;
 mod settings;
+mod system;
 
 use std::sync::{Arc, Mutex};
 
 use bebra_core::http::{self, Client};
 use bebra_core::paths::DataDirs;
+use tauri::Manager;
 
 use crate::game::GameState;
 use crate::settings::Settings;
@@ -37,9 +39,17 @@ fn main() {
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             commands::handle_launcher_args(app, argv.get(1..).unwrap_or_default());
         }))
+        .plugin(tauri_plugin_window_state::Builder::default().build())
         .setup(|app| {
+            let mut args: Vec<String> = std::env::args().skip(1).collect();
+            // Started by Windows at login: stay out of the way.
+            if args.iter().any(|a| a == system::AUTOSTART_ARG) {
+                args.retain(|a| a != system::AUTOSTART_ARG);
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.minimize();
+                }
+            }
             // Started with commands (the launcher was not running when the game asked to redial).
-            let args: Vec<String> = std::env::args().skip(1).collect();
             if !args.is_empty() {
                 commands::handle_launcher_args(app.handle(), &args);
             }
@@ -55,6 +65,13 @@ fn main() {
             commands::get_settings,
             commands::set_settings,
             commands::toggle_favorite,
+            commands::server_info,
+            commands::cached_servers,
+            commands::open_url,
+            commands::get_autostart,
+            commands::set_autostart,
+            commands::storage_info,
+            commands::clean_storage,
             commands::play,
             commands::cancel_play,
             commands::open_logs_folder,
