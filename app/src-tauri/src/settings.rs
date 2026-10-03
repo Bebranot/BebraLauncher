@@ -30,6 +30,10 @@ pub struct Settings {
     pub enabled_packs: Vec<String>,
     /// Do not follow the game's requests to reconnect (redial).
     pub ignore_redial: bool,
+    /// Write more detail to the launcher log (the launch command, with secrets hidden).
+    pub verbose_log: bool,
+    /// Proxy for the launcher's own requests (`http://`, `https://`, `socks5://`); empty = none.
+    pub proxy: String,
     /// `auto` (follow Windows), `ru` or `en`.
     pub language: String,
     /// The account chosen last (user id); preselected next time.
@@ -145,6 +149,8 @@ impl Default for Settings {
             columns: Columns::default(),
             enabled_packs: Vec::new(),
             ignore_redial: false,
+            verbose_log: false,
+            proxy: String::new(),
             language: "auto".to_string(),
             last_account: None,
             favorites: Vec::new(),
@@ -250,6 +256,12 @@ impl Settings {
             .chars()
             .take(64)
             .collect();
+
+        // A proxy that cannot be used is dropped rather than kept to fail on every start.
+        self.proxy = self.proxy.trim().to_string();
+        if !bebra_core::http::is_valid_proxy(&self.proxy) {
+            self.proxy.clear();
+        }
 
         // Pack ids are plain file names, each at most once.
         let mut seen = std::collections::HashSet::new();
@@ -399,6 +411,22 @@ mod tests {
             s.custom_theme.gradient_end,
             CustomTheme::default().gradient_end
         );
+    }
+
+    #[test]
+    fn unusable_proxies_are_dropped() {
+        let ok = Settings {
+            proxy: " socks5://127.0.0.1:1080 ".into(),
+            ..Settings::default()
+        }
+        .sanitized();
+        assert_eq!(ok.proxy, "socks5://127.0.0.1:1080");
+        let bad = Settings {
+            proxy: "not a proxy".into(),
+            ..Settings::default()
+        }
+        .sanitized();
+        assert_eq!(bad.proxy, "");
     }
 
     #[test]

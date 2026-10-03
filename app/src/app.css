@@ -1,50 +1,41 @@
-/* Theme tokens. Phase 4 themes only have to override these. */
+/*
+ * Look of the official Space Station 14 launcher: flat dark surfaces, a gold line under the
+ * header, buttons with two cut corners, tabs at the bottom. Every colour is a variable set by
+ * `applyTheme` (lib/themes.ts); the values here are only what shows before it runs.
+ */
+@import "@fontsource/noto-sans/cyrillic-400.css";
+@import "@fontsource/noto-sans/cyrillic-700.css";
+@import "@fontsource/noto-sans/latin-400.css";
+@import "@fontsource/noto-sans/latin-700.css";
+
 :root {
-  --bg: #14141c;
-  --bg-elev: #1b1b26;
-  --bg-hover: #232333;
-  --bg-active: #2a2a44;
-  --border: #2b2b3b;
-  --text: #e6e6f0;
-  --text-dim: #9a9ab0;
-  --accent: #7c6cf0;
-  --accent-hover: #8f81f5;
-  --accent-text: #ffffff;
-  --good: #4cc38a;
-  --warn: #e5a93d;
-  --bad: #e5564f;
-  --radius: 8px;
+  --bg: #25252a;
+  --popup: #202025;
+  --fg: #eeeeee;
+  --muted: #666666;
+  --ctrl-mid: #464966;
+  --ctrl-high: #525259;
+  --accent: #ada24b;
+  --sub: #aaaaaa;
+  --stripe-edge: #525252;
+  --btn-hover: #575b7f;
+  --tab-selected: #3e6c45cc;
+  --tab-hover: #575b7fcc;
+  --sep: #575b7faa;
+  --sep-fade: #575b7f00;
+  --border-mid: #6b6f8f;
+  --border-high: #8e94b8;
+  --alt-row: #26262c;
+  --scroll-sep: #2e2e35;
+  --bg-fill: #25252a;
+  --decor: none;
+  --overlay: #000000aa;
+  --font: "Noto Sans", "Segoe UI", system-ui, sans-serif;
+  --good: #57c969;
+  --warn: #e8c547;
+  --bad: #e46363;
+  --cut: 8px;
   color-scheme: dark;
-}
-
-/* Other themes: see lib/themes.ts. Each one overrides the tokens above. */
-:root[data-theme="light"] {
-  --bg: #f4f4f8;
-  --bg-elev: #ffffff;
-  --bg-hover: #ececf4;
-  --bg-active: #e1defa;
-  --border: #d5d5e2;
-  --text: #1c1c28;
-  --text-dim: #6a6a80;
-  --accent: #6252e0;
-  --accent-hover: #5042cc;
-  --good: #1f9d63;
-  --warn: #c98512;
-  --bad: #d23c35;
-  color-scheme: light;
-}
-
-:root[data-theme="ocean"] {
-  --bg: #0d1a22;
-  --bg-elev: #12242f;
-  --bg-hover: #183140;
-  --bg-active: #1d4257;
-  --border: #21404f;
-  --text: #dcecf2;
-  --text-dim: #85a3b1;
-  --accent: #2aa8c4;
-  --accent-hover: #3dbbd6;
-  --accent-text: #04202a;
 }
 
 * {
@@ -59,15 +50,48 @@ body,
 }
 
 body {
-  background: var(--bg);
-  color: var(--text);
-  font: 14px/1.4 "Segoe UI", system-ui, sans-serif;
+  background: var(--bg-fill);
+  color: var(--fg);
+  font: 15px/1.35 var(--font);
   overflow: hidden;
   user-select: none;
 }
 
+h1,
+h2,
+h3 {
+  margin: 0;
+  color: var(--accent);
+  font-weight: 700;
+}
+h1 {
+  font-size: 30px;
+}
+h2 {
+  font-size: 20px;
+}
+h3 {
+  font-size: 15px;
+}
+
+.sub {
+  color: var(--sub);
+}
+.error {
+  color: var(--bad);
+}
+.warn {
+  color: var(--warn);
+}
+.good {
+  color: var(--good);
+}
+
+/* ------------------------------------------------------------------ controls */
+
 input,
 select,
+textarea,
 button {
   font: inherit;
   color: inherit;
@@ -75,69 +99,178 @@ button {
 
 input[type="text"],
 input[type="password"],
-select {
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 7px 10px;
+input[type="number"],
+select,
+textarea {
+  background: var(--popup);
+  border: 1px solid var(--ctrl-mid);
+  padding: 5px 9px;
   outline: none;
   user-select: text;
 }
 
-input:focus,
-select:focus {
+input[type="text"]:focus,
+input[type="password"]:focus,
+input[type="number"]:focus,
+select:focus,
+textarea:focus {
   border-color: var(--accent);
 }
 
-button {
-  background: var(--bg-hover);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 7px 14px;
+select option {
+  background: var(--popup);
+  color: var(--fg);
+}
+
+/* A button: top right and bottom left corners cut, like the official launcher's AngleBox.
+   `open-r`: the right side is open (flush with a neighbour); `open-l`: the left side. */
+.btn {
+  appearance: none;
+  border: 0;
+  margin: 1px;
+  padding: 5px 16px;
+  background: var(--ctrl-mid);
+  color: var(--fg);
+  cursor: pointer;
+  clip-path: polygon(
+    0 0,
+    calc(100% - var(--cut)) 0,
+    100% var(--cut),
+    100% 100%,
+    var(--cut) 100%,
+    0 calc(100% - var(--cut))
+  );
+}
+.btn.open-r {
+  padding-right: 10px;
+  clip-path: polygon(0 0, 100% 0, 100% 100%, var(--cut) 100%, 0 calc(100% - var(--cut)));
+}
+.btn.open-l {
+  padding-left: 10px;
+  clip-path: polygon(0 0, calc(100% - var(--cut)) 0, 100% var(--cut), 100% 100%, 0 100%);
+}
+.btn.open-both {
+  padding-left: 10px;
+  padding-right: 10px;
+  clip-path: none;
+}
+.btn:hover:not(:disabled) {
+  background: var(--btn-hover);
+}
+.btn:active:not(:disabled) {
+  background: var(--ctrl-high);
+}
+.btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.btn.icon {
+  padding: 5px 9px;
+  display: inline-flex;
+  align-items: center;
+}
+.btn.primary {
+  background: var(--ctrl-high);
+}
+.btn.primary:hover:not(:disabled) {
+  background: var(--btn-hover);
+}
+
+/* A flat text link. */
+.link {
+  appearance: none;
+  background: none;
+  border: 0;
+  padding: 0;
+  color: var(--accent);
+  cursor: pointer;
+  text-align: left;
+}
+.link:hover {
+  text-decoration: underline;
+}
+
+/* Check box. */
+input[type="checkbox"] {
+  appearance: none;
+  flex: none;
+  width: 18px;
+  height: 18px;
+  margin: 2px 0 0;
+  background: var(--popup);
+  border: 1px solid var(--border-mid);
+  display: inline-grid;
+  place-content: center;
+  cursor: pointer;
+}
+input[type="checkbox"]:hover {
+  border-color: var(--border-high);
+}
+input[type="checkbox"]:checked {
+  background: var(--ctrl-high);
+  border-color: var(--border-high);
+}
+input[type="checkbox"]:checked::after {
+  content: "";
+  width: 9px;
+  height: 5px;
+  border-left: 2px solid var(--fg);
+  border-bottom: 2px solid var(--fg);
+  transform: translateY(-1px) rotate(-45deg);
+}
+
+input[type="color"] {
+  width: 34px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--ctrl-mid);
+  background: var(--popup);
   cursor: pointer;
 }
 
-button:hover:not(:disabled) {
-  background: var(--bg-active);
-}
+/* ------------------------------------------------------------------ chrome */
 
-button:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-
-button.primary {
+.gold-line {
+  height: 2px;
   background: var(--accent);
-  border-color: var(--accent);
-  color: var(--accent-text);
-  font-weight: 600;
 }
 
-button.primary:hover:not(:disabled) {
-  background: var(--accent-hover);
-}
-
-button.danger {
-  color: var(--bad);
-}
-
-.dim {
-  color: var(--text-dim);
-}
-
-.error {
-  color: var(--bad);
+.rule {
+  height: 1px;
+  background: var(--scroll-sep);
 }
 
 ::-webkit-scrollbar {
-  width: 10px;
+  width: 14px;
+  height: 14px;
 }
-
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
 ::-webkit-scrollbar-thumb {
-  background: var(--border);
-  border-radius: 5px;
+  background: var(--ctrl-mid);
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--btn-hover);
+  background-clip: padding-box;
 }
 
-::-webkit-scrollbar-thumb:hover {
-  background: var(--text-dim);
+/* A slim progress bar. */
+progress {
+  appearance: none;
+  height: 10px;
+  border: 0;
+  background: var(--popup);
+  color: var(--accent);
+}
+progress::-webkit-progress-bar {
+  background: var(--popup);
+}
+progress::-webkit-progress-value {
+  background: var(--accent);
 }

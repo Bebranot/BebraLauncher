@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
   import { t } from "./i18n.svelte";
+  import Icon from "./Icon.svelte";
 
   let {
     title,
@@ -13,10 +14,12 @@
 
 <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
 <div class="backdrop" onclick={(e) => e.target === e.currentTarget && onclose()}>
-  <div class="modal" role="dialog" aria-modal="true" aria-label={title}>
+  <div class="box" role="dialog" aria-modal="true" aria-label={title}>
     <header>
       <h2>{title}</h2>
-      <button class="close" onclick={onclose} aria-label={t("dialog.close")}>✕</button>
+      <button class="close" onclick={onclose} aria-label={t("dialog.close")}>
+        <Icon name="close" size={18} />
+      </button>
     </header>
     <div class="body">{@render children()}</div>
   </div>
@@ -26,35 +29,37 @@
   .backdrop {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.55);
+    z-index: 20;
     display: grid;
     place-items: center;
-    z-index: 10;
+    background: var(--overlay);
   }
-  .modal {
+  .box {
     width: min(480px, calc(100vw - 32px));
     max-height: calc(100vh - 48px);
     display: flex;
     flex-direction: column;
-    background: var(--bg-elev);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
+    background: var(--popup);
+    border: 1px solid var(--ctrl-mid);
   }
   header {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 12px 16px;
-    border-bottom: 1px solid var(--border);
-  }
-  h2 {
-    margin: 0;
-    font-size: 16px;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--scroll-sep);
   }
   .close {
-    border: none;
+    appearance: none;
     background: none;
-    padding: 4px 8px;
+    border: 0;
+    padding: 2px;
+    cursor: pointer;
+    color: var(--sub);
+    display: grid;
+  }
+  .close:hover {
+    color: var(--fg);
   }
   .body {
     padding: 16px;

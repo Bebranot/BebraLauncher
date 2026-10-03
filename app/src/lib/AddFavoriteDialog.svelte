@@ -6,33 +6,40 @@
   let { onclose }: { onclose: () => void } = $props();
 
   let address = $state("");
+  let invalid = $state(false);
   let input = $state<HTMLInputElement>();
 
   $effect(() => input?.focus());
 
-  function submit(e: SubmitEvent) {
+  async function submit(e: SubmitEvent) {
     e.preventDefault();
     if (!address.trim()) return;
-    onclose();
-    void app.connectTo(address);
+    // The backend knows what an address looks like; it says no for a bad one.
+    const problem = await app.addFavorite(address);
+    if (problem) {
+      invalid = true;
+    } else {
+      onclose();
+    }
   }
 </script>
 
-<Modal title={t("direct.title")} {onclose}>
+<Modal title={t("addfav.title")} {onclose}>
   <form onsubmit={submit}>
+    <label for="fav-address">{t("addfav.address")}</label>
     <input
+      id="fav-address"
       type="text"
       placeholder={t("direct.placeholder")}
       bind:value={address}
       bind:this={input}
+      oninput={() => (invalid = false)}
       spellcheck="false"
       autocomplete="off"
     />
-    <small class="dim">{t("direct.hint")}</small>
+    {#if invalid}<div class="error">{t("addfav.invalid")}</div>{/if}
     <div>
-      <button class="primary" type="submit" disabled={!address.trim() || app.busy}>
-        {t("direct.connect")}
-      </button>
+      <button class="btn" type="submit" disabled={!address.trim()}>{t("addfav.add")}</button>
     </div>
   </form>
 </Modal>
@@ -42,8 +49,5 @@
     display: flex;
     flex-direction: column;
     gap: 10px;
-  }
-  small {
-    font-size: 12px;
   }
 </style>

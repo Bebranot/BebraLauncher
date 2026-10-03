@@ -29,6 +29,20 @@ export interface ServerDetails {
   auth: "optional" | "required" | "disabled";
 }
 
+export interface PingRow {
+  address: string;
+  /** Milliseconds for a status request; null if the server did not answer. */
+  ms: number | null;
+  /** What the server answered (for servers the hub does not list). */
+  status: ServerRow | null;
+}
+
+export interface NewsItem {
+  title: string;
+  link: string;
+  date: string;
+}
+
 export type AccountState = "valid" | "renew" | "expired";
 
 export interface AccountRow {
@@ -59,15 +73,52 @@ export interface HistoryEntry {
   account: string | null;
 }
 
+export interface CustomTheme {
+  background: string;
+  accent: string;
+  foreground: string;
+  popup: string;
+  gradient_start: string;
+  gradient_end: string;
+}
+
+export interface Columns {
+  round_time: boolean;
+  players: boolean;
+  map: boolean;
+  mode: boolean;
+  ping: boolean;
+}
+
 export interface Settings {
   guest_name: string;
   compat_mode: boolean;
   minimize_on_play: boolean;
   theme: string;
+  theme_gradient: boolean;
+  theme_decor: boolean;
+  custom_theme: CustomTheme;
+  font: string;
+  columns: Columns;
+  enabled_packs: string[];
+  ignore_redial: boolean;
+  verbose_log: boolean;
+  proxy: string;
   language: string;
   last_account: string | null;
   favorites: string[];
   history: HistoryEntry[];
+}
+
+export interface PackRow {
+  id: string;
+  name: string;
+  description: string;
+  files: number;
+  bytes: number;
+  cultures: string[];
+  problems: string[];
+  enabled: boolean;
 }
 
 export interface StorageRow {
@@ -85,6 +136,29 @@ export interface CleanRow {
   modules_removed: number;
 }
 
+export interface DumpRow {
+  files: number;
+  bytes: number;
+  version_id: number;
+  dir: string;
+}
+
+export interface VersionRow {
+  id: number;
+  fork: string;
+  version: string;
+  engine: string;
+  files: number;
+  last_used: string;
+}
+
+export interface DiagRow {
+  name: string;
+  ok: boolean;
+  ms: number | null;
+  detail: string;
+}
+
 export type PlayStage = "account" | "info" | "files" | "engine" | "starting";
 
 export type PlayEvent =
@@ -93,7 +167,8 @@ export type PlayEvent =
   | { kind: "running"; pid: number; plays_as: string }
   | { kind: "exited"; code: number | null; log_tail: string[] }
   | { kind: "failed"; code: string; message: string }
-  | { kind: "cancelled" };
+  | { kind: "cancelled" }
+  | { kind: "preview"; command: string };
 
 /** The game asked the launcher to connect again (possibly to another server). */
 export interface RedialEvent {
@@ -106,7 +181,9 @@ export const api = {
   appInfo: () => invoke<AppInfo>("app_info"),
   listServers: () => invoke<ServerRow[]>("list_servers"),
   cachedServers: () => invoke<ServerRow[]>("cached_servers"),
+  pingServers: (addresses: string[]) => invoke<PingRow[]>("ping_servers", { addresses }),
   serverInfo: (address: string) => invoke<ServerDetails>("server_info", { address }),
+  news: () => invoke<NewsItem[]>("news"),
   listAccounts: () => invoke<AccountRow[]>("list_accounts"),
   login: (args: { username?: string; userId?: string; password: string; tfaCode?: string }) =>
     invoke<LoginOutcome>("login", args),
@@ -114,10 +191,21 @@ export const api = {
   getSettings: () => invoke<Settings>("get_settings"),
   setSettings: (settings: Settings) => invoke<Settings>("set_settings", { settings }),
   toggleFavorite: (address: string) => invoke<string[]>("toggle_favorite", { address }),
+  addFavorite: (address: string) => invoke<string[]>("add_favorite", { address }),
+  raiseFavorite: (address: string) => invoke<string[]>("raise_favorite", { address }),
   play: (address: string, name: string | null, account: string | null) =>
     invoke<void>("play", { address, name, account }),
+  launchPreview: (address: string, account: string | null) =>
+    invoke<void>("launch_preview", { address, account }),
+  dumpLocale: () => invoke<DumpRow>("dump_locale"),
+  diagnostics: () => invoke<DiagRow[]>("diagnostics"),
+  contentVersions: () => invoke<VersionRow[]>("content_versions"),
+  resetSettings: () => invoke<Settings>("reset_settings"),
+  openDataFolder: () => invoke<void>("open_data_folder"),
   cancelPlay: () => invoke<void>("cancel_play"),
   openLogsFolder: () => invoke<void>("open_logs_folder"),
+  openPacksFolder: () => invoke<void>("open_packs_folder"),
+  listPacks: () => invoke<PackRow[]>("list_packs"),
   openUrl: (url: string) => invoke<void>("open_url", { url }),
   getAutostart: () => invoke<boolean>("get_autostart"),
   setAutostart: (enabled: boolean) => invoke<boolean>("set_autostart", { enabled }),

@@ -14,11 +14,34 @@ use crate::{Error, Result};
 pub const ATTEMPT_DELAY: Duration = Duration::from_secs(3);
 
 pub fn build_client() -> Result<Client> {
-    let client = Client::builder()
+    build_client_with_proxy(None)
+}
+
+/// Proxy kinds the launcher accepts for its own traffic.
+const PROXY_SCHEMES: [&str; 4] = ["http://", "https://", "socks5://", "socks5h://"];
+
+/// Is this a proxy address we can use (`http://host:port`, `socks5://host:port`, ...)?
+pub fn is_valid_proxy(url: &str) -> bool {
+    let lower = url.trim().to_ascii_lowercase();
+    PROXY_SCHEMES.iter().any(|s| lower.starts_with(s))
+        && lower.len() <= 300
+        && !lower.chars().any(|c| c.is_control() || c.is_whitespace())
+        && reqwest::Url::parse(&lower).is_ok_and(|u| u.host_str().is_some())
+}
+
+/// Like [`build_client`], optionally sending everything through a proxy. This is for the
+/// launcher's own requests (server list, login, downloads); the game connects by itself.
+pub fn build_client_with_proxy(proxy: Option<&str>) -> Result<Client> {
+    let mut builder = Client::builder()
         .user_agent(concat!("BebraLauncher/", env!("CARGO_PKG_VERSION")))
-        .connect_timeout(Duration::from_secs(10))
-        .build()?;
-    Ok(client)
+        .connect_timeout(Duration::from_secs(10));
+    if let Some(url) = proxy.map(str::trim).filter(|p| !p.is_empty()) {
+        if !is_valid_proxy(url) {
+            return Err(Error::Other(format!("not a usable proxy address: {url}")));
+        }
+        builder = builder.proxy(reqwest::Proxy::all(url)?);
+    }
+    Ok(builder.build()?)
 }
 
 /// A base URL with fallback mirrors. Every URL ends with `/`.
@@ -194,6 +217,32 @@ mod tests {
         let addr = l.local_addr().unwrap();
         drop(l);
         format!("http://{addr}/")
+    }
+
+    #[test]
+    fn proxy_addresses_are_checked() {
+        for ok in [
+            "http://127.0.0.1:8080",
+            "https://proxy.example:3128",
+            "socks5://localhost:1080",
+            "SOCKS5H://user:pass@proxy.example:1080",
+        ] {
+            assert!(is_valid_proxy(ok), "{ok}");
+        }
+        for bad in [
+            "",
+            "proxy.example:8080",
+            "ftp://proxy.example",
+            "http://",
+            "http://exa mple",
+            "javascript:alert(1)",
+        ] {
+            assert!(!is_valid_proxy(bad), "{bad:?}");
+        }
+        assert!(build_client_with_proxy(None).is_ok());
+        assert!(build_client_with_proxy(Some("")).is_ok());
+        assert!(build_client_with_proxy(Some("socks5://127.0.0.1:1080")).is_ok());
+        assert!(build_client_with_proxy(Some("nonsense")).is_err());
     }
 
     #[test]

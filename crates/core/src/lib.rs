@@ -7,6 +7,7 @@ pub mod addr;
 pub mod auth;
 pub mod content_db;
 pub mod download;
+pub mod dump;
 pub mod engine;
 pub mod error;
 pub mod hash;

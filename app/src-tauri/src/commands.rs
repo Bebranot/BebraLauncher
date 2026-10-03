@@ -6,6 +6,7 @@ use bebra_core::accounts::{
 };
 use bebra_core::auth::{AuthClient, Identity};
 use bebra_core::content_db::ContentDb;
+use bebra_core::dump;
 use bebra_core::hub::{HubClient, HubServerEntry};
 use bebra_core::launch;
 use bebra_core::packs;
@@ -64,16 +65,22 @@ pub struct ServerRow {
 
 impl From<HubServerEntry> for ServerRow {
     fn from(e: HubServerEntry) -> Self {
-        let s = e.status;
+        Self::from_status(e.address, e.status, e.inferred_tags)
+    }
+}
+
+impl ServerRow {
+    /// A row from a server's `/status`; `inferred_tags` are the extra tags the hub worked out.
+    fn from_status(address: String, s: server::ServerStatus, inferred_tags: Vec<String>) -> Self {
         // The server's own tags, plus the ones the hub worked out; no duplicates.
         let mut tags = s.tags;
-        for t in e.inferred_tags {
+        for t in inferred_tags {
             if !tags.contains(&t) {
                 tags.push(t);
             }
         }
         Self {
-            address: e.address,
+            address,
             name: s.name,
             players: s.players,
             soft_max_players: s.soft_max_players,
@@ -390,6 +397,19 @@ pub fn toggle_favorite(state: State<'_, AppState>, address: String) -> CmdResult
     Ok(s.favorites.clone())
 }
 
+/// Adds a favourite server by address (one the hub may not list). Returns the new list.
+#[tauri::command]
+pub fn add_favorite(state: State<'_, AppState>, address: String) -> CmdResult<Vec<String>> {
+    let address = address.trim().to_string();
+    ServerAddr::parse(&address).map_err(err)?;
+    let mut s = state.settings.lock().unwrap();
+    if !s.favorites.contains(&address) {
+        s.favorites.push(address);
+    }
+    s.save(state.dirs.root()).map_err(err)?;
+    Ok(s.favorites.clone())
+}
+
 /// Moves a favourite server to the top of the list. Returns the new list of favourites.
 #[tauri::command]
 pub fn raise_favorite(state: State<'_, AppState>, address: String) -> CmdResult<Vec<String>> {
@@ -412,7 +432,24 @@ pub fn play(
     let account = account
         .map(|a| a.parse::<Uuid>().map_err(|_| "Неверный id аккаунта"))
         .transpose()?;
-    start_play(&app, &state, &address, name, account)
+    start_play(&app, &state, &address, name, account, false)
+}
+
+/// Debug: prepares everything for a server and reports the command that would start the game,
+/// without starting it. Secrets in the command are hidden. The result arrives as a
+/// `play` event of kind `preview`.
+#[tauri::command]
+pub fn launch_preview(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    address: String,
+    account: Option<String>,
+) -> CmdResult<()> {
+    let account = account
+        .filter(|a| !a.is_empty())
+        .map(|a| a.parse::<Uuid>().map_err(|_| "Неверный id аккаунта"))
+        .transpose()?;
+    start_play(&app, &state, &address, None, account, true)
 }
 
 /// Starts the game. The server and the account are remembered once the game is running.
@@ -422,6 +459,7 @@ pub fn start_play(
     address: &str,
     name: Option<String>,
     account: Option<Uuid>,
+    preview: bool,
 ) -> CmdResult<()> {
     let addr = ServerAddr::parse(address).map_err(err)?;
     let settings = state.settings.lock().unwrap().clone();
@@ -438,6 +476,8 @@ pub fn start_play(
             compat_mode: settings.compat_mode,
             minimize_on_play: settings.minimize_on_play,
             enabled_packs: settings.enabled_packs,
+            preview,
+            verbose: settings.verbose_log,
             history_key: address.to_string(),
             server_name: name,
         },
@@ -515,7 +555,7 @@ fn redial_connect(app: &AppHandle, address: String, reason: Option<String>) {
 
     let deadline = std::time::Instant::now() + REDIAL_WAIT;
     loop {
-        match start_play(app, &state, &address, None, account) {
+        match start_play(app, &state, &address, None, account, false) {
             Err(e) if e == game::BUSY && std::time::Instant::now() < deadline => {
                 std::thread::sleep(std::time::Duration::from_millis(500));
             }
@@ -551,6 +591,200 @@ pub fn open_logs_folder(state: State<'_, AppState>) -> CmdResult<()> {
 #[tauri::command]
 pub fn open_packs_folder(state: State<'_, AppState>) -> CmdResult<()> {
     open_folder(state.dirs.packs())
+}
+
+#[tauri::command]
+pub fn open_data_folder(state: State<'_, AppState>) -> CmdResult<()> {
+    open_folder(state.dirs.root().to_path_buf())
+}
+
+#[derive(Serialize)]
+pub struct DumpRow {
+    files: usize,
+    bytes: u64,
+    version_id: i64,
+    dir: String,
+}
+
+/// Writes the texts of the newest installed game version to a folder, as a start for a
+/// translation (a text pack). Then shows the folder.
+#[tauri::command]
+pub fn dump_locale(state: State<'_, AppState>) -> CmdResult<DumpRow> {
+    let db = ContentDb::open(&state.dirs.content_db()).map_err(err)?;
+    let out = state.dirs.root().join("dump");
+    let r = dump::dump_locale(&db, &out).map_err(err)?;
+    let _ = open_folder(r.dir.clone());
+    Ok(DumpRow {
+        files: r.files,
+        bytes: r.bytes,
+        version_id: r.version_id,
+        dir: r.dir.display().to_string(),
+    })
+}
+
+#[derive(Serialize)]
+pub struct VersionRow {
+    id: i64,
+    fork: String,
+    version: String,
+    engine: String,
+    files: usize,
+    last_used: String,
+}
+
+/// The game versions stored on this computer (debug view).
+#[tauri::command]
+pub fn content_versions(state: State<'_, AppState>) -> CmdResult<Vec<VersionRow>> {
+    let db = ContentDb::open(&state.dirs.content_db()).map_err(err)?;
+    let mut rows = Vec::new();
+    for v in db.list_versions().map_err(err)? {
+        let engine = db
+            .engine_dependencies(v.id)
+            .map_err(err)?
+            .into_iter()
+            .find(|(m, _)| m == "Robust")
+            .map(|(_, ver)| ver)
+            .unwrap_or_default();
+        rows.push(VersionRow {
+            id: v.id,
+            fork: v.fork_id.unwrap_or_default(),
+            version: v.fork_version.unwrap_or_default(),
+            engine,
+            files: db.manifest_entries(v.id).map_err(err)?.len(),
+            last_used: v.last_used,
+        });
+    }
+    Ok(rows)
+}
+
+/// Puts every option back to its default. Favourites, history, the chosen account and the
+/// saved logins stay.
+#[tauri::command]
+pub fn reset_settings(state: State<'_, AppState>) -> CmdResult<Settings> {
+    let mut current = state.settings.lock().unwrap();
+    let fresh = Settings {
+        favorites: current.favorites.clone(),
+        history: current.history.clone(),
+        last_account: current.last_account.clone(),
+        ..Settings::default()
+    };
+    fresh.save(state.dirs.root()).map_err(err)?;
+    *current = fresh.clone();
+    Ok(fresh)
+}
+
+#[derive(Serialize)]
+pub struct DiagRow {
+    name: &'static str,
+    ok: bool,
+    /// How long the check took, for network checks.
+    ms: Option<u32>,
+    detail: String,
+}
+
+/// Checks the things the launcher depends on, and says what is wrong (debug view).
+#[tauri::command]
+pub async fn diagnostics(app: AppHandle, state: State<'_, AppState>) -> CmdResult<Vec<DiagRow>> {
+    let client = state.client.clone();
+    // Any answer, even an error status, shows the server is reachable; only a failure to
+    // get an answer at all is a problem.
+    async fn reach(client: &bebra_core::http::Client, name: &'static str, url: &str) -> DiagRow {
+        let started = std::time::Instant::now();
+        let result = client
+            .get(url)
+            .timeout(std::time::Duration::from_secs(10))
+            .send()
+            .await;
+        let ms = started.elapsed().as_millis().min(u128::from(u32::MAX)) as u32;
+        match result {
+            Ok(resp) => DiagRow {
+                name,
+                ok: resp.status().as_u16() < 500,
+                ms: Some(ms),
+                detail: format!("HTTP {}", resp.status().as_u16()),
+            },
+            Err(e) => DiagRow {
+                name,
+                ok: false,
+                ms: None,
+                detail: e.to_string(),
+            },
+        }
+    }
+
+    let (hub, auth, builds) = tokio::join!(
+        reach(&client, "Hub", "https://hub.spacestation14.com/api/servers"),
+        reach(
+            &client,
+            "Auth",
+            "https://auth.spacestation14.com/api/auth/ping"
+        ),
+        reach(
+            &client,
+            "Builds",
+            "https://robust-builds.cdn.spacestation14.com/manifest.json"
+        ),
+    );
+
+    let loader = match launch::find_loader() {
+        Ok(path) => DiagRow {
+            name: "Loader",
+            ok: true,
+            ms: None,
+            detail: path.display().to_string(),
+        },
+        Err(e) => DiagRow {
+            name: "Loader",
+            ok: false,
+            ms: None,
+            detail: e.to_string(),
+        },
+    };
+
+    // Can we write to the data folder?
+    let probe = state.dirs.root().join(".write-test");
+    let data = match std::fs::create_dir_all(state.dirs.root())
+        .and_then(|()| std::fs::write(&probe, b"x"))
+        .and_then(|()| std::fs::remove_file(&probe))
+    {
+        Ok(()) => DiagRow {
+            name: "Data folder",
+            ok: true,
+            ms: None,
+            detail: state.dirs.root().display().to_string(),
+        },
+        Err(e) => DiagRow {
+            name: "Data folder",
+            ok: false,
+            ms: None,
+            detail: e.to_string(),
+        },
+    };
+
+    let accounts = match CredentialStore::default().list() {
+        Ok(list) => DiagRow {
+            name: "Saved logins",
+            ok: true,
+            ms: None,
+            detail: format!("{}", list.len()),
+        },
+        Err(e) => DiagRow {
+            name: "Saved logins",
+            ok: false,
+            ms: None,
+            detail: e.to_string(),
+        },
+    };
+
+    let webview = DiagRow {
+        name: "WebView2",
+        ok: tauri::webview_version().is_ok(),
+        ms: None,
+        detail: tauri::webview_version().unwrap_or_else(|e| e.to_string()),
+    };
+    let _ = app;
+
+    Ok(vec![hub, auth, builds, loader, data, accounts, webview])
 }
 
 /// A text pack found in the packs folder.
@@ -616,13 +850,16 @@ pub struct PingRow {
     address: String,
     /// Round trip of a status request in milliseconds; `None` if the server did not answer.
     ms: Option<u32>,
+    /// What the server answered: a row for servers the hub does not list (favourites by address).
+    status: Option<ServerRow>,
 }
 
 /// Most servers measured in one call, and most requests in flight at once.
 const PING_MAX_SERVERS: usize = 200;
 const PING_PARALLEL: usize = 12;
 
-/// Times a `/status` request to each server. This is what the list's ping column shows.
+/// Asks each server for its `/status` and times the answer. This is what the list's ping
+/// column shows, and how favourite servers that are not on the hub get their numbers.
 #[tauri::command]
 pub async fn ping_servers(
     state: State<'_, AppState>,
@@ -639,11 +876,16 @@ pub async fn ping_servers(
         tasks.spawn(async move {
             let _slot = gate.acquire().await;
             let started = std::time::Instant::now();
-            let ms = server::fetch_status(&client, &addr)
-                .await
-                .ok()
-                .map(|_| started.elapsed().as_millis().min(u128::from(u32::MAX)) as u32);
-            PingRow { address, ms }
+            let status = server::fetch_status(&client, &addr).await.ok();
+            let ms = status
+                .is_some()
+                .then(|| started.elapsed().as_millis().min(u128::from(u32::MAX)) as u32);
+            let status = status.map(|s| ServerRow::from_status(address.clone(), s, Vec::new()));
+            PingRow {
+                address,
+                ms,
+                status,
+            }
         });
     }
     let mut rows = Vec::new();

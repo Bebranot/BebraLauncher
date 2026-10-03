@@ -35,9 +35,15 @@ fn main() {
         "start BebraLauncher {}",
         env!("CARGO_PKG_VERSION")
     ));
+    let settings = Settings::load(dirs.root());
+    let client = http::build_client_with_proxy(Some(&settings.proxy)).unwrap_or_else(|e| {
+        // A broken proxy setting must not keep the launcher from starting.
+        applog::line(&format!("proxy ignored: {e}"));
+        http::build_client().expect("failed to set up the http client")
+    });
     let state = AppState {
-        client: http::build_client().expect("failed to set up the http client"),
-        settings: Mutex::new(Settings::load(dirs.root())),
+        client,
+        settings: Mutex::new(settings),
         dirs,
         game: Arc::default(),
         news: Mutex::new(None),
@@ -92,6 +98,13 @@ fn main() {
             commands::news,
             commands::ping_servers,
             commands::raise_favorite,
+            commands::add_favorite,
+            commands::launch_preview,
+            commands::dump_locale,
+            commands::diagnostics,
+            commands::content_versions,
+            commands::reset_settings,
+            commands::open_data_folder,
         ])
         .run(tauri::generate_context!())
         .expect("error while running the app");

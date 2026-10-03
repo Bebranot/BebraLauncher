@@ -15,14 +15,14 @@
       {
         "label": "main",
         "title": "BebraLauncher",
-        "width": 1100,
-        "height": 720,
-        "minWidth": 820,
-        "minHeight": 520
+        "width": 1000,
+        "height": 650,
+        "minWidth": 800,
+        "minHeight": 500
       }
     ],
     "security": {
-      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' data:; style-src 'self' 'unsafe-inline'"
+      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' data:; font-src 'self' data:; style-src 'self' 'unsafe-inline'"
     }
   },
   "bundle": {

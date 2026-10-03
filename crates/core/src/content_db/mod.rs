@@ -328,6 +328,15 @@ impl ContentDb {
         Ok(())
     }
 
+    /// Every stored version, newest first.
+    pub fn list_versions(&self) -> Result<Vec<ContentVersion>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT Id, Hash, ForkId, ForkVersion, LastUsed, ZipHash FROM ContentVersion ORDER BY Id DESC",
+        )?;
+        let rows = stmt.query_map([], row_to_version)?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
     pub fn get_version(&self, version_id: i64) -> Result<Option<ContentVersion>> {
         Ok(self
             .conn

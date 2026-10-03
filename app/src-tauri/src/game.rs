@@ -52,6 +52,10 @@ pub enum PlayEvent {
         message: String,
     },
     Cancelled,
+    /// Debug: what would be started, with secrets hidden. The game is not started.
+    Preview {
+        command: String,
+    },
 }
 
 /// At most one game is being prepared or run by the launcher at a time.
@@ -112,6 +116,10 @@ pub struct PlayParams {
     pub server_name: Option<String>,
     /// Text packs to mount over the game's files.
     pub enabled_packs: Vec<String>,
+    /// Prepare everything but do not start the game; report the command instead.
+    pub preview: bool,
+    /// Log the launch command (secrets hidden).
+    pub verbose: bool,
 }
 
 pub fn start(app: AppHandle, game: Arc<GameState>, params: PlayParams) -> Result<(), String> {
@@ -154,7 +162,21 @@ pub fn start(app: AppHandle, game: Arc<GameState>, params: PlayParams) -> Result
                 }
             });
             match prepared {
-                Ok(game) => run_game(&app, &emit, &params, game),
+                Ok(game) if params.preview => {
+                    crate::applog::line("launch preview");
+                    emit(PlayEvent::Preview {
+                        command: game.command.describe(),
+                    });
+                }
+                Ok(game) => {
+                    if params.verbose {
+                        crate::applog::line(&format!(
+                            "launch command: {}",
+                            game.command.describe()
+                        ));
+                    }
+                    run_game(&app, &emit, &params, game);
+                }
                 Err(None) => emit(PlayEvent::Cancelled),
                 Err(Some(failure)) => emit(PlayEvent::failed(failure.code, failure.message)),
             }

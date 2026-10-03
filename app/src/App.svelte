@@ -1,42 +1,45 @@
 <script lang="ts">
-  import { onMount } from "svelte";
-  import AccountsModal from "./lib/AccountsModal.svelte";
-  import DirectConnectModal from "./lib/DirectConnectModal.svelte";
-  import { t } from "./lib/i18n.svelte";
-  import ServerList from "./lib/ServerList.svelte";
-  import ServerPanel from "./lib/ServerPanel.svelte";
-  import SettingsModal from "./lib/SettingsModal.svelte";
+  import { onMount, tick } from "svelte";
+  import ConnectingOverlay from "./lib/ConnectingOverlay.svelte";
+  import DialogHost from "./lib/DialogHost.svelte";
+  import FavoritesTab from "./lib/FavoritesTab.svelte";
+  import Header from "./lib/Header.svelte";
+  import NewsTab from "./lib/NewsTab.svelte";
+  import OptionsTab from "./lib/OptionsTab.svelte";
+  import RecentTab from "./lib/RecentTab.svelte";
+  import ServersTab from "./lib/ServersTab.svelte";
+  import TabBar from "./lib/TabBar.svelte";
+  import Toast from "./lib/Toast.svelte";
   import { app } from "./lib/store.svelte";
 
-  let dialog = $state<"accounts" | "settings" | "direct" | null>(null);
   let searchInput = $state<HTMLInputElement>();
-
-  const account = $derived(app.accounts.find((a) => a.user_id === app.selectedAccount) ?? null);
 
   onMount(() => {
     void app.init();
   });
 
-  /** Keyboard: `/` or Ctrl+F search, arrows move through the list, Enter plays. */
+  /** `/` or Ctrl+F: search the server list. */
+  async function focusSearch() {
+    app.tab = "servers";
+    await tick();
+    searchInput?.focus();
+    searchInput?.select();
+  }
+
   function onkeydown(e: KeyboardEvent) {
-    if (dialog) return;
+    if (app.dialog || app.play.phase !== "idle") return;
     const el = e.target as HTMLElement | null;
     const typing =
-      el instanceof HTMLInputElement || el instanceof HTMLSelectElement || el instanceof HTMLTextAreaElement;
+      el instanceof HTMLInputElement ||
+      el instanceof HTMLSelectElement ||
+      el instanceof HTMLTextAreaElement;
 
     if ((e.key === "/" && !typing) || (e.key === "f" && e.ctrlKey)) {
       e.preventDefault();
-      searchInput?.focus();
-      searchInput?.select();
+      void focusSearch();
     } else if (e.key === "Escape" && el === searchInput) {
       app.search = "";
       searchInput?.blur();
-    } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-      if (el instanceof HTMLSelectElement) return;
-      e.preventDefault();
-      app.moveSelection(e.key === "ArrowDown" ? 1 : -1);
-    } else if (e.key === "Enter" && !typing && !(el instanceof HTMLButtonElement)) {
-      void app.startPlay();
     }
   }
 </script>
@@ -44,29 +47,26 @@
 <svelte:window {onkeydown} />
 
 <div class="shell">
-  <header>
-    <div class="brand">BebraLauncher</div>
-    <div class="spacer"></div>
-    <button onclick={() => (dialog = "direct")}>{t("nav.direct")}</button>
-    <button onclick={() => (dialog = "accounts")}>
-      {account ? account.username : app.accounts.length > 0 ? t("nav.accounts") : t("nav.signIn")}
-    </button>
-    <button onclick={() => (dialog = "settings")} aria-label={t("nav.settings")}>⚙</button>
-  </header>
-
+  <Header />
   <main>
-    <ServerList bind:searchInput />
-    <ServerPanel onmanageaccounts={() => (dialog = "accounts")} />
+    {#if app.tab === "favorites"}
+      <FavoritesTab />
+    {:else if app.tab === "servers"}
+      <ServersTab bind:searchInput />
+    {:else if app.tab === "recent"}
+      <RecentTab />
+    {:else if app.tab === "news"}
+      <NewsTab />
+    {:else}
+      <OptionsTab />
+    {/if}
   </main>
+  <TabBar />
 </div>
 
-{#if dialog === "accounts"}
-  <AccountsModal onclose={() => (dialog = null)} />
-{:else if dialog === "settings"}
-  <SettingsModal onclose={() => (dialog = null)} />
-{:else if dialog === "direct"}
-  <DirectConnectModal onclose={() => (dialog = null)} />
-{/if}
+<ConnectingOverlay />
+<DialogHost />
+<Toast />
 
 <style>
   .shell {
@@ -74,26 +74,9 @@
     flex-direction: column;
     height: 100%;
   }
-  header {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 8px 16px;
-    background: var(--bg-elev);
-    border-bottom: 1px solid var(--border);
-  }
-  .brand {
-    font-weight: 700;
-    font-size: 16px;
-    letter-spacing: 0.3px;
-  }
-  .spacer {
-    flex: 1;
-  }
   main {
     flex: 1;
     min-height: 0;
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) 340px;
+    padding-top: 4px;
   }
 </style>

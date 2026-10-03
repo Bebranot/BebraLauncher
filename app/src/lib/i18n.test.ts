@@ -27,9 +27,9 @@ describe("detectLang", () => {
 describe("t", () => {
   it("follows the language preference", () => {
     i18n.preference = "ru";
-    expect(t("tab.all")).toBe("Все");
+    expect(t("tab.servers")).toBe("Серверы");
     i18n.preference = "en";
-    expect(t("tab.all")).toBe("All");
+    expect(t("tab.servers")).toBe("Servers");
     i18n.preference = "auto";
   });
 
