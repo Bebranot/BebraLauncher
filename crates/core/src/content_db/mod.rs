@@ -125,17 +125,61 @@ impl ContentDb {
 
     /// Runs `f` in one transaction: commit on `Ok`, roll back on `Err`. Must not be nested.
     pub fn transaction<T>(&self, f: impl FnOnce(&Self) -> Result<T>) -> Result<T> {
-        self.conn.execute_batch("BEGIN IMMEDIATE")?;
+        self.begin()?;
         match f(self) {
             Ok(v) => {
-                self.conn.execute_batch("COMMIT")?;
+                self.commit()?;
                 Ok(v)
             }
             Err(e) => {
-                let _ = self.conn.execute_batch("ROLLBACK");
+                let _ = self.rollback();
                 Err(e)
             }
         }
+    }
+
+    /// Manual transaction control, for code that awaits between writes
+    /// (a closure for [`ContentDb::transaction`] can't). Never nest.
+    pub fn begin(&self) -> Result<()> {
+        Ok(self.conn.execute_batch("BEGIN IMMEDIATE")?)
+    }
+
+    pub fn commit(&self) -> Result<()> {
+        Ok(self.conn.execute_batch("COMMIT")?)
+    }
+
+    pub fn rollback(&self) -> Result<()> {
+        Ok(self.conn.execute_batch("ROLLBACK")?)
+    }
+
+    // ---- interrupted downloads ----
+    //
+    // Blobs are committed while a download runs. Until the version that uses them exists,
+    // they are tied to an InterruptedDownload row so that cleanup keeps them and a retry can
+    // continue from them. Finishing the download removes the row.
+
+    pub fn begin_interrupted_download(&self) -> Result<i64> {
+        self.conn.execute(
+            "INSERT INTO InterruptedDownload(Added) VALUES (datetime('now'))",
+            [],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    pub fn link_interrupted_blob(&self, download_id: i64, content_id: i64) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR IGNORE INTO InterruptedDownloadContent(InterruptedDownloadId, ContentId) VALUES (?1, ?2)",
+            [download_id, content_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn finish_download(&self, download_id: i64) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM InterruptedDownload WHERE Id = ?1",
+            [download_id],
+        )?;
+        Ok(())
     }
 
     // ---- blobs ----

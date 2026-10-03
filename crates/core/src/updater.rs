@@ -1,0 +1,451 @@
+//! Brings a build into the content database (docs/protocol.md, sections 2 and 3).
+
+use reqwest::Client;
+
+use crate::content_db::ContentDb;
+use crate::download::{self, ProgressFn};
+use crate::server::BuildInfo;
+use crate::{Error, Result};
+
+/// How a build is delivered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DownloadMode {
+    /// File list plus only the missing files (delta updates). Preferred.
+    Manifest,
+    /// One big zip. Older servers.
+    Zip,
+}
+
+/// Docs section 2, step 1: manifest mode needs all of `manifest_url`, `manifest_download_url` and
+/// `manifest_hash`; otherwise the zip is used if there is one.
+pub fn download_mode(build: &BuildInfo) -> Result<DownloadMode> {
+    if build.manifest_url().is_some()
+        && build.manifest_download_url().is_some()
+        && build.manifest_hash().is_some()
+    {
+        Ok(DownloadMode::Manifest)
+    } else if build.download_url().is_some() {
+        Ok(DownloadMode::Zip)
+    } else {
+        Err(Error::Other(
+            "server gave no download information at all".into(),
+        ))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct InstalledContent {
+    pub version_id: i64,
+    pub mode: DownloadMode,
+    /// Files in the build.
+    pub files: usize,
+    /// Distinct files fetched from the network this time.
+    pub downloaded: usize,
+    /// The version was already in the database, nothing was done.
+    pub reused: bool,
+}
+
+/// Makes sure `build` is fully present in the database and returns its version id.
+pub async fn install_content(
+    client: &Client,
+    db: &ContentDb,
+    build: &BuildInfo,
+    progress: Option<ProgressFn<'_>>,
+) -> Result<InstalledContent> {
+    let mode = download_mode(build)?;
+
+    if let Some(existing) = db.find_version(build)? {
+        if is_exact_match(db, build, existing.id, &existing)? {
+            db.touch_version(existing.id)?;
+            let files = db.manifest_entries(existing.id)?.len();
+            return Ok(InstalledContent {
+                version_id: existing.id,
+                mode,
+                files,
+                downloaded: 0,
+                reused: true,
+            });
+        }
+        // Same content under another name or engine: fall through. With the manifest mode all blobs
+        // are already here, so this costs only the manifest download and some rows.
+    }
+
+    match mode {
+        DownloadMode::Manifest => install_manifest(client, db, build, progress).await,
+        DownloadMode::Zip => Err(Error::Other("zip downloads are not implemented yet".into())),
+    }
+}
+
+fn is_exact_match(
+    db: &ContentDb,
+    build: &BuildInfo,
+    version_id: i64,
+    v: &crate::content_db::ContentVersion,
+) -> Result<bool> {
+    let engine = db
+        .engine_dependencies(version_id)?
+        .into_iter()
+        .find(|(m, _)| m == "Robust")
+        .map(|(_, ver)| ver);
+    Ok(v.fork_id.as_deref() == Some(build.fork_id.as_str())
+        && v.fork_version.as_deref() == Some(build.version.as_str())
+        && engine.as_deref() == Some(build.engine_version.as_str()))
+}
+
+async fn install_manifest(
+    client: &Client,
+    db: &ContentDb,
+    build: &BuildInfo,
+    progress: Option<ProgressFn<'_>>,
+) -> Result<InstalledContent> {
+    // `download_mode` checked these.
+    let manifest_url = build.manifest_url().expect("manifest mode");
+    let download_url = build.manifest_download_url().expect("manifest mode");
+    let manifest_hash = build.manifest_hash().expect("manifest mode");
+
+    let manifest = download::fetch_manifest(client, manifest_url, manifest_hash).await?;
+    let missing = db.missing_entries(&manifest)?;
+
+    let download_id = db.begin_interrupted_download()?;
+    if !missing.is_empty() {
+        download::check_download_protocol(client, download_url).await?;
+        download::download_blobs(
+            client,
+            db,
+            download_url,
+            &manifest,
+            &missing,
+            download_id,
+            progress,
+        )
+        .await?;
+    }
+
+    let version_id = db.transaction(|db| {
+        let id = db.create_version(&build.fork_id, &build.version)?;
+        db.fill_manifest(id, &manifest)?;
+
+        // The stored files must add up to exactly the manifest the server promised.
+        let stored = db.compute_manifest_hash(id)?;
+        if stored != manifest.hash {
+            return Err(Error::HashMismatch {
+                expected: crate::hash::to_hex(&manifest.hash),
+                actual: crate::hash::to_hex(&stored),
+            });
+        }
+        db.set_version_hash(id, &manifest.hash)?;
+        db.add_engine_dependency(id, "Robust", &build.engine_version)?;
+        db.finish_download(download_id)?;
+        Ok(id)
+    })?;
+
+    Ok(InstalledContent {
+        version_id,
+        mode: DownloadMode::Manifest,
+        files: manifest.entries.len(),
+        downloaded: missing.len(),
+        reused: false,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn build(manifest: bool, zip: bool, hash: bool) -> BuildInfo {
+        BuildInfo {
+            manifest_url: manifest.then(|| "https://x/manifest".to_string()),
+            manifest_download_url: manifest.then(|| "https://x/download".to_string()),
+            manifest_hash: (manifest && hash).then(|| "0".repeat(64)),
+            download_url: zip.then(|| "https://x/c.zip".to_string()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn manifest_mode_needs_all_three_fields() {
+        assert_eq!(
+            download_mode(&build(true, true, true)).unwrap(),
+            DownloadMode::Manifest
+        );
+        assert_eq!(
+            download_mode(&build(true, false, true)).unwrap(),
+            DownloadMode::Manifest
+        );
+        // No manifest hash: the manifest could not be trusted, so fall back to the zip.
+        assert_eq!(
+            download_mode(&build(true, true, false)).unwrap(),
+            DownloadMode::Zip
+        );
+        assert_eq!(
+            download_mode(&build(false, true, false)).unwrap(),
+            DownloadMode::Zip
+        );
+        assert!(download_mode(&build(false, false, false)).is_err());
+        assert!(download_mode(&build(true, false, false)).is_err());
+    }
+
+    #[test]
+    fn empty_strings_do_not_count() {
+        let b = BuildInfo {
+            manifest_url: Some(String::new()),
+            manifest_download_url: Some(String::new()),
+            manifest_hash: Some(String::new()),
+            download_url: Some("https://x/c.zip".into()),
+            ..Default::default()
+        };
+        assert_eq!(download_mode(&b).unwrap(), DownloadMode::Zip);
+    }
+}
+
+#[cfg(test)]
+mod e2e_tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::hash::{blake2b256, to_hex};
+    use crate::http::build_client;
+    use crate::manifest::HEADER;
+    use crate::test_util::{serve, Req};
+
+    fn files() -> Vec<(&'static str, Vec<u8>)> {
+        vec![
+            ("a.txt", b"alpha".to_vec()),
+            ("b.bin", vec![b'b'; 6000]),
+            ("c.txt", b"gamma".to_vec()),
+        ]
+    }
+
+    fn manifest_text(files: &[(&str, Vec<u8>)]) -> String {
+        let mut t = format!("{HEADER}\n");
+        for (p, d) in files {
+            t.push_str(&format!("{} {p}\n", to_hex(&blake2b256(d))));
+        }
+        t
+    }
+
+    /// Pre-compressed blob stream for the entries asked for in a POST body.
+    fn stream_for(files: &[(&str, Vec<u8>)], body: &[u8]) -> Vec<u8> {
+        let mut out = 1i32.to_le_bytes().to_vec();
+        for chunk in body.chunks(4) {
+            let idx = i32::from_le_bytes(chunk.try_into().unwrap()) as usize;
+            let data = &files[idx].1;
+            out.extend((data.len() as i32).to_le_bytes());
+            if data.len() > 100 {
+                let packed = zstd::bulk::compress(data, 3).unwrap();
+                out.extend((packed.len() as i32).to_le_bytes());
+                out.extend(packed);
+            } else {
+                out.extend(0i32.to_le_bytes());
+                out.extend(data);
+            }
+        }
+        out
+    }
+
+    struct Fake {
+        base: String,
+        seen: Arc<std::sync::Mutex<Vec<Req>>>,
+        broken: Arc<AtomicBool>,
+    }
+
+    async fn fake_cdn() -> Fake {
+        let files = files();
+        let text = manifest_text(&files);
+        let packed_manifest = zstd::bulk::compress(text.as_bytes(), 3).unwrap();
+        let broken = Arc::new(AtomicBool::new(false));
+        let broken2 = broken.clone();
+        let (base, seen) = serve(
+            move |req: &Req| match (req.method.as_str(), req.path.as_str()) {
+                ("GET", "/manifest") => (
+                    200,
+                    vec![("Content-Encoding", "zstd".into())],
+                    packed_manifest.clone(),
+                ),
+                ("OPTIONS", "/download") => (
+                    204,
+                    vec![
+                        ("X-Robust-Download-Min-Protocol", "1".into()),
+                        ("X-Robust-Download-Max-Protocol", "1".into()),
+                    ],
+                    vec![],
+                ),
+                ("POST", "/download") => {
+                    let stream = if broken2.load(Ordering::SeqCst) {
+                        // The first requested file arrives whole, then the stream dies in the middle
+                        // of the next file header.
+                        let mut s = stream_for(&files, &req.body[..4]);
+                        s.extend([0xff, 0xff]);
+                        s
+                    } else {
+                        stream_for(&files, &req.body)
+                    };
+                    (
+                        200,
+                        vec![("Content-Encoding", "zstd".into())],
+                        zstd::bulk::compress(&stream, 3).unwrap(),
+                    )
+                }
+                _ => (404, vec![], vec![]),
+            },
+        )
+        .await;
+        Fake { base, seen, broken }
+    }
+
+    fn build_for(base: &str) -> BuildInfo {
+        let text = manifest_text(&files());
+        BuildInfo {
+            manifest_url: Some(format!("{base}manifest")),
+            manifest_download_url: Some(format!("{base}download")),
+            manifest_hash: Some(to_hex(&blake2b256(text.as_bytes()))),
+            fork_id: "testfork".into(),
+            version: "v1".into(),
+            engine_version: "100.0.0".into(),
+            ..Default::default()
+        }
+    }
+
+    fn posts(fake: &Fake) -> Vec<Req> {
+        fake.seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|r| r.method == "POST")
+            .cloned()
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn installs_then_reuses() {
+        let fake = fake_cdn().await;
+        let db = ContentDb::open_in_memory().unwrap();
+        let client = build_client().unwrap();
+        let build = build_for(&fake.base);
+
+        let first = install_content(&client, &db, &build, None).await.unwrap();
+        assert!(!first.reused);
+        assert_eq!((first.files, first.downloaded), (3, 3));
+        assert_eq!(first.mode, DownloadMode::Manifest);
+
+        // Everything is really there and adds up.
+        let entries = db.manifest_entries(first.version_id).unwrap();
+        assert_eq!(entries.len(), 3);
+        let v = db.get_version(first.version_id).unwrap().unwrap();
+        assert_eq!(
+            v.hash,
+            blake2b256(manifest_text(&files()).as_bytes()).to_vec()
+        );
+        assert_eq!(
+            db.engine_dependencies(first.version_id).unwrap(),
+            [("Robust".to_string(), "100.0.0".to_string())]
+        );
+        for (i, (_, data)) in files().iter().enumerate() {
+            let cid = db.find_content_id(&entries[i].hash).unwrap().unwrap();
+            assert_eq!(&db.read_blob(cid).unwrap(), data);
+        }
+        let leftovers: i64 = db
+            .connection()
+            .query_row("SELECT COUNT(*) FROM InterruptedDownload", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            leftovers, 0,
+            "a finished download leaves no interrupted-download row"
+        );
+
+        let requests_before = fake.seen.lock().unwrap().len();
+        let again = install_content(&client, &db, &build, None).await.unwrap();
+        assert!(again.reused);
+        assert_eq!(again.version_id, first.version_id);
+        assert_eq!(
+            fake.seen.lock().unwrap().len(),
+            requests_before,
+            "no network when already installed"
+        );
+    }
+
+    #[tokio::test]
+    async fn same_content_under_a_new_version_name_downloads_nothing() {
+        let fake = fake_cdn().await;
+        let db = ContentDb::open_in_memory().unwrap();
+        let client = build_client().unwrap();
+
+        let a = install_content(&client, &db, &build_for(&fake.base), None)
+            .await
+            .unwrap();
+        let mut renamed = build_for(&fake.base);
+        renamed.version = "v2".into();
+        let b = install_content(&client, &db, &renamed, None).await.unwrap();
+
+        assert_ne!(a.version_id, b.version_id);
+        assert_eq!((b.files, b.downloaded, b.reused), (3, 0, false));
+        assert_eq!(posts(&fake).len(), 1, "blobs were fetched only once");
+    }
+
+    #[tokio::test]
+    async fn interrupted_download_resumes_from_stored_blobs() {
+        let fake = fake_cdn().await;
+        let db = ContentDb::open_in_memory().unwrap();
+        let client = build_client().unwrap();
+        let build = build_for(&fake.base);
+
+        fake.broken.store(true, Ordering::SeqCst);
+        assert!(install_content(&client, &db, &build, None).await.is_err());
+        let kept: i64 = db
+            .connection()
+            .query_row("SELECT COUNT(*) FROM Content", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(kept, 1, "the file that arrived whole is kept");
+        let versions: i64 = db
+            .connection()
+            .query_row("SELECT COUNT(*) FROM ContentVersion", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(versions, 0, "no half-built version");
+
+        fake.broken.store(false, Ordering::SeqCst);
+        let done = install_content(&client, &db, &build, None).await.unwrap();
+        assert_eq!(
+            (done.files, done.downloaded),
+            (3, 2),
+            "only the two missing files are fetched"
+        );
+        let last_post = posts(&fake).pop().unwrap();
+        assert_eq!(last_post.body.len(), 2 * 4);
+    }
+
+    #[tokio::test]
+    async fn wrong_manifest_hash_creates_nothing() {
+        let fake = fake_cdn().await;
+        let db = ContentDb::open_in_memory().unwrap();
+        let mut build = build_for(&fake.base);
+        build.manifest_hash = Some("0".repeat(64));
+
+        let err = install_content(&build_client().unwrap(), &db, &build, None)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::HashMismatch { .. }), "{err}");
+        assert!(
+            posts(&fake).is_empty(),
+            "nothing is downloaded for an untrusted manifest"
+        );
+        let versions: i64 = db
+            .connection()
+            .query_row("SELECT COUNT(*) FROM ContentVersion", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(versions, 0);
+    }
+
+    #[tokio::test]
+    async fn zip_mode_is_reported_as_not_ready() {
+        let db = ContentDb::open_in_memory().unwrap();
+        let build = BuildInfo {
+            download_url: Some("http://127.0.0.1:1/c.zip".into()),
+            ..Default::default()
+        };
+        let err = install_content(&build_client().unwrap(), &db, &build, None)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("not implemented"));
+    }
+}
