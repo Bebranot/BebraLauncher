@@ -12,7 +12,9 @@ import {
   nextSort,
   parseFilters,
   primaryLanguage,
+  canonicalRegion,
   regionName,
+  regionsOf,
   sortServers,
   tagValuesOf,
 } from "./filters";
@@ -219,6 +221,25 @@ describe("names", () => {
     expect(languageName("RU-ru")).toBe("Русский");
     expect(languageName("de")).toBe("Deutsch");
     expect(languageName("not a code!")).toBe("not a code!");
+  });
+
+  it("files codes of the servers' own under the launcher's regions", () => {
+    expect(canonicalRegion("ru")).toBe("eu_e");
+    expect(canonicalRegion("UA")).toBe("eu_e");
+    expect(canonicalRegion("es")).toBe("eu_w");
+    expect(canonicalRegion("eu")).toBe("eu_w");
+    expect(canonicalRegion("na")).toBe("am_n_e");
+    expect(canonicalRegion("us_w")).toBe("am_n_w");
+    expect(canonicalRegion("eu_e")).toBe("eu_e");
+    expect(canonicalRegion("mars")).toBeNull();
+    expect(regionsOf(["region:ru", "region:eu_e", "region:mars"])).toEqual(["eu_e"]);
+  });
+
+  it("the region list holds no bare codes, and the filter finds such servers", () => {
+    const servers = [row({ tags: ["region:ru"] }), row({ tags: ["region:es"] }), row({ tags: ["region:eu_e"] })];
+    expect(availableValues(servers, "region:")).toEqual(["eu_e", "eu_w"]);
+    const f = { ...emptyFilters(), regions: ["eu_e"] };
+    expect(servers.filter((s) => matchesFilters(s, f))).toHaveLength(2);
   });
 
   it("lists the available values, most common first, one count per server", () => {

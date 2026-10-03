@@ -98,7 +98,7 @@ export function matchesFilters(s: ServerRow, f: FilterState): boolean {
   }
   const languages = tagValuesOf(s.tags, "lang:").map(primaryLanguage);
   if (!categoryMatches(f.languages, languages)) return false;
-  if (!categoryMatches(f.regions, tagValuesOf(s.tags, "region:"))) return false;
+  if (!categoryMatches(f.regions, regionsOf(s.tags))) return false;
   if (!categoryMatches(f.rp, tagValuesOf(s.tags, "rp:"))) return false;
 
   if (f.hideEmpty && s.players === 0) return false;
@@ -214,6 +214,49 @@ const REGIONS: Record<string, Record<Lang, string>> = {
   am_s_w: { ru: "Южная Америка: запад", en: "South America: West", uk: "Південна Америка: захід", de: "Südamerika: Westen" },
 };
 
+/**
+ * Servers sometimes write their own region codes (`ru`, `ua`, `es`, `na`, `us_e`, ...) instead of
+ * the launcher's list. Each such code is filed under the list's region it belongs to, so the
+ * filter never shows a bare two-letter code. A plain `eu`/`na` does not say which half: the
+ * western one for Europe and the east coast for North America are taken.
+ */
+const REGION_ALIASES: Record<string, string> = {
+  // Europe
+  eu: "eu_w", gb: "eu_w", uk: "eu_w", ie: "eu_w", fr: "eu_w", de: "eu_w", nl: "eu_w", be: "eu_w",
+  lu: "eu_w", ch: "eu_w", at: "eu_w", es: "eu_w", pt: "eu_w", it: "eu_w", se: "eu_w", no: "eu_w",
+  dk: "eu_w", fi: "eu_w", is: "eu_w", gr: "eu_w",
+  ru: "eu_e", ua: "eu_e", by: "eu_e", pl: "eu_e", cz: "eu_e", sk: "eu_e", hu: "eu_e", ro: "eu_e",
+  bg: "eu_e", rs: "eu_e", hr: "eu_e", lt: "eu_e", lv: "eu_e", ee: "eu_e", md: "eu_e", kz: "eu_e",
+  ge: "eu_e", am: "eu_e", az: "eu_e",
+  // North America
+  na: "am_n_e", us: "am_n_e", usa: "am_n_e", ca: "am_n_e", us_e: "am_n_e", us_c: "am_n_c",
+  us_w: "am_n_w", ca_e: "am_n_e", ca_w: "am_n_w", mx: "am_c",
+  // South America
+  sa: "am_s_e", br: "am_s_e", ar: "am_s_s", cl: "am_s_s", pe: "am_s_w", co: "am_s_w",
+  // Asia, Oceania, Africa
+  as: "as_e", asia: "as_e", cn: "as_e", jp: "as_e", kr: "as_e", tw: "as_e", hk: "as_e",
+  sg: "as_se", th: "as_se", vn: "as_se", id: "as_se", my: "as_se", ph: "as_se",
+  in: "ind", tr: "me", ae: "me", il: "me", sa_ar: "me",
+  au: "oce", nz: "oce", af: "af_s", za: "af_s", eg: "af_n",
+};
+
+/** The launcher's region for a region code from a server's tag, or null if there is none. */
+export function canonicalRegion(code: string): string | null {
+  const c = code.trim().toLowerCase().replace(/-/g, "_");
+  if (c in REGIONS) return c;
+  return REGION_ALIASES[c] ?? null;
+}
+
+/** The distinct launcher regions a server's tags put it in (codes nobody knows count for none). */
+export function regionsOf(tags: string[]): string[] {
+  const found = new Set<string>();
+  for (const raw of tagValuesOf(tags, "region:")) {
+    const region = canonicalRegion(raw);
+    if (region) found.add(region);
+  }
+  return [...found];
+}
+
 /** The name of a region code in the given language; unknown codes are shown as they are. */
 export function regionName(code: string, lang: Lang): string {
   return REGIONS[code]?.[lang] ?? code;
@@ -228,7 +271,10 @@ export function languageName(code: string): string {
 export function tagLabel(tag: string, lang: Lang): string {
   const lower = tag.toLowerCase();
   if (lower.startsWith("lang:")) return nativeName(tag.slice(5));
-  if (lower.startsWith("region:")) return regionName(lower.slice(7), lang);
+  if (lower.startsWith("region:")) {
+    const code = lower.slice(7);
+    return regionName(canonicalRegion(code) ?? code, lang);
+  }
   return tag;
 }
 
@@ -237,7 +283,8 @@ export function availableValues(servers: ServerRow[], prefix: string, primary = 
   const counts = new Map<string, number>();
   for (const s of servers) {
     const seen = new Set<string>();
-    for (const raw of tagValuesOf(s.tags, prefix)) {
+    const raws = prefix === "region:" ? regionsOf(s.tags) : tagValuesOf(s.tags, prefix);
+    for (const raw of raws) {
       const v = primary ? primaryLanguage(raw) : raw;
       if (!seen.has(v)) {
         seen.add(v);
