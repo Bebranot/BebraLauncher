@@ -19,6 +19,7 @@ pub struct Settings {
     /// `auto` (follow Windows), `ru` or `en`.
     pub language: String,
     /// The account chosen last (user id); preselected next time.
+    /// An empty string means the player chose to play as a guest; `None`: never chosen.
     pub last_account: Option<String>,
     /// Addresses of favourite servers.
     pub favorites: Vec<String>,

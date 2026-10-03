@@ -196,10 +196,13 @@ class Store {
 
   private pickDefaultAccount() {
     const last = this.settings?.last_account;
-    if (last && this.accounts.some((a) => a.user_id === last)) {
+    if (last === "") {
+      this.selectedAccount = null; // the player chose to be a guest
+    } else if (last && this.accounts.some((a) => a.user_id === last)) {
       this.selectedAccount = last;
-    } else if (this.accounts.length === 1) {
-      this.selectedAccount = this.accounts[0].user_id;
+    } else {
+      // Never chosen (or that account is gone): the first account, if there is one.
+      this.selectedAccount = this.accounts[0]?.user_id ?? null;
     }
   }
 

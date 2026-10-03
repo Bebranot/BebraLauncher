@@ -2,6 +2,7 @@
 
 const ru = {
   "nav.signIn": "Войти",
+  "nav.accounts": "Аккаунты",
   "nav.settings": "Настройки",
   "nav.direct": "По адресу…",
 
@@ -155,6 +156,7 @@ export type Key = keyof typeof ru;
 
 const en: Record<Key, string> = {
   "nav.signIn": "Sign in",
+  "nav.accounts": "Accounts",
   "nav.settings": "Settings",
   "nav.direct": "Connect by address…",
 

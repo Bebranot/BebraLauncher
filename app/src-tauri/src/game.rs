@@ -108,6 +108,8 @@ pub struct PlayParams {
     pub minimize_on_play: bool,
     /// The address string the history is keyed by (as the hub lists it).
     pub history_key: String,
+    /// The server's name, for the history.
+    pub server_name: Option<String>,
 }
 
 pub fn start(app: AppHandle, game: Arc<GameState>, params: PlayParams) -> Result<(), String> {
@@ -286,6 +288,20 @@ fn set_minimized(app: &AppHandle, minimized: bool) {
     }
 }
 
+/// The game is running: this server goes to the top of the history and this account is the
+/// one to preselect next time.
+fn remember_game(app: &AppHandle, params: &PlayParams) {
+    let state = app.state::<crate::AppState>();
+    let mut settings = state.settings.lock().unwrap();
+    // An empty string means: the player chose to play as a guest.
+    settings.last_account = Some(params.account.map_or_else(String::new, |a| a.to_string()));
+    let now = time::OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_default();
+    settings.remember_played(&params.history_key, params.server_name.clone(), now);
+    let _ = settings.save(state.dirs.root());
+}
+
 /// Adds the time of this game to the server's total.
 fn record_play_time(app: &AppHandle, key: &str, seconds: u64) {
     let state = app.state::<crate::AppState>();
@@ -314,6 +330,7 @@ fn run_game(
         }
     };
     crate::applog::line(&format!("game started, pid {}", child.id()));
+    remember_game(app, params);
     emit(PlayEvent::Running {
         pid: child.id(),
         plays_as: game.plays_as,

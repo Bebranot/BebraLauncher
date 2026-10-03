@@ -405,7 +405,7 @@ pub fn play(
     start_play(&app, &state, &address, name, account)
 }
 
-/// Starts the game and, if it did start, remembers the server and the account.
+/// Starts the game. The server and the account are remembered once the game is running.
 pub fn start_play(
     app: &AppHandle,
     state: &AppState,
@@ -428,17 +428,9 @@ pub fn start_play(
             compat_mode: settings.compat_mode,
             minimize_on_play: settings.minimize_on_play,
             history_key: address.to_string(),
+            server_name: name,
         },
-    )?;
-
-    let mut s = state.settings.lock().unwrap();
-    s.last_account = account.map(|a| a.to_string());
-    let now = OffsetDateTime::now_utc()
-        .format(&Rfc3339)
-        .unwrap_or_default();
-    s.remember_played(address, name, now);
-    let _ = s.save(state.dirs.root());
-    Ok(())
+    )
 }
 
 /// What the UI is told when the game asks for a reconnect.

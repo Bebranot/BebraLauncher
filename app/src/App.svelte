@@ -49,7 +49,7 @@
     <div class="spacer"></div>
     <button onclick={() => (dialog = "direct")}>{t("nav.direct")}</button>
     <button onclick={() => (dialog = "accounts")}>
-      {account ? account.username : t("nav.signIn")}
+      {account ? account.username : app.accounts.length > 0 ? t("nav.accounts") : t("nav.signIn")}
     </button>
     <button onclick={() => (dialog = "settings")} aria-label={t("nav.settings")}>⚙</button>
   </header>
