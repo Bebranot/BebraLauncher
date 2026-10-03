@@ -12,6 +12,10 @@ pub struct Settings {
     pub guest_name: String,
     /// Start the game in the GLES2 fallback renderer.
     pub compat_mode: bool,
+    /// Minimize the launcher while the game runs, and bring it back when the game closes.
+    pub minimize_on_play: bool,
+    /// Id of the colour theme; the UI knows the list and falls back to the default.
+    pub theme: String,
     /// The account chosen last (user id); preselected next time.
     pub last_account: Option<String>,
     /// Addresses of favourite servers.
@@ -36,6 +40,8 @@ impl Default for Settings {
         Self {
             guest_name: FALLBACK_USERNAME.to_string(),
             compat_mode: false,
+            minimize_on_play: true,
+            theme: "dark".to_string(),
             last_account: None,
             favorites: Vec::new(),
             history: Vec::new(),
@@ -117,6 +123,7 @@ mod tests {
     fn roundtrip_and_defaults() {
         let dir = tempdir();
         assert_eq!(Settings::load(&dir).guest_name, FALLBACK_USERNAME);
+        assert!(Settings::load(&dir).minimize_on_play);
 
         let s = Settings {
             guest_name: "Bebra".into(),

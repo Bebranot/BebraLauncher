@@ -224,10 +224,12 @@ pub fn get_settings(state: State<'_, AppState>) -> Settings {
 #[tauri::command]
 pub fn set_settings(state: State<'_, AppState>, settings: Settings) -> CmdResult<Settings> {
     let mut current = state.settings.lock().unwrap();
-    // The form only edits these two; favourites and history have their own commands.
+    // The form only edits these four; favourites and history have their own commands.
     let merged = Settings {
         guest_name: settings.guest_name,
         compat_mode: settings.compat_mode,
+        minimize_on_play: settings.minimize_on_play,
+        theme: settings.theme,
         ..current.clone()
     }
     .sanitized();
@@ -281,6 +283,7 @@ pub fn play(
             account,
             guest_name: settings.guest_name,
             compat_mode: settings.compat_mode,
+            minimize_on_play: settings.minimize_on_play,
         },
     )
 }

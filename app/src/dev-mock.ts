@@ -40,6 +40,8 @@ let accounts: AccountRow[] = [
 let settings: Settings = {
   guest_name: "JoeGenero",
   compat_mode: false,
+  minimize_on_play: true,
+  theme: "dark",
   last_account: null,
   favorites: ["ss14s://example-two.test"],
   history: [{ address: "ss14s://example-one.test", name: null, last_played: new Date().toISOString() }],

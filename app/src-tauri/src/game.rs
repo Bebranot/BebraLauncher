@@ -15,7 +15,7 @@ use bebra_core::paths::DataDirs;
 use bebra_core::play::{self, PlayRequest, Stage};
 use bebra_core::ServerAddr;
 use serde::Serialize;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use time::OffsetDateTime;
 use tokio::sync::Notify;
 use uuid::Uuid;
@@ -95,6 +95,7 @@ pub struct PlayParams {
     pub account: Option<Uuid>,
     pub guest_name: String,
     pub compat_mode: bool,
+    pub minimize_on_play: bool,
 }
 
 pub fn start(app: AppHandle, game: Arc<GameState>, params: PlayParams) -> Result<(), String> {
@@ -130,7 +131,7 @@ pub fn start(app: AppHandle, game: Arc<GameState>, params: PlayParams) -> Result
                 }
             });
             match prepared {
-                Ok(game) => run_game(&emit, &params.dirs, game),
+                Ok(game) => run_game(&app, &emit, &params, game),
                 Err(None) => emit(PlayEvent::Cancelled),
                 Err(Some(message)) => emit(PlayEvent::Failed { message }),
             }
@@ -224,7 +225,26 @@ async fn resolve_account(client: &Client, id: Uuid) -> Result<StoredAccount, Str
     }
 }
 
-fn run_game(emit: &impl Fn(PlayEvent), dirs: &DataDirs, game: play::PreparedGame) {
+/// Minimizes or restores the launcher window. Failures don't matter: it is only a convenience.
+fn set_minimized(app: &AppHandle, minimized: bool) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    if minimized {
+        let _ = window.minimize();
+    } else {
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+}
+
+fn run_game(
+    app: &AppHandle,
+    emit: &impl Fn(PlayEvent),
+    params: &PlayParams,
+    game: play::PreparedGame,
+) {
+    let dirs = &params.dirs;
     emit(PlayEvent::Stage { stage: "starting" });
     let (out_log, err_log) = (
         dirs.logs().join("client.stdout.log"),
@@ -243,6 +263,9 @@ fn run_game(emit: &impl Fn(PlayEvent), dirs: &DataDirs, game: play::PreparedGame
         pid: child.id(),
         plays_as: game.plays_as,
     });
+    if params.minimize_on_play {
+        set_minimized(app, true);
+    }
 
     let code = child.wait().ok().and_then(|s| s.code());
     let log_tail = if code == Some(0) {
@@ -253,5 +276,8 @@ fn run_game(emit: &impl Fn(PlayEvent), dirs: &DataDirs, game: play::PreparedGame
         tail.reverse();
         tail
     };
+    if params.minimize_on_play {
+        set_minimized(app, false);
+    }
     emit(PlayEvent::Exited { code, log_tail });
 }

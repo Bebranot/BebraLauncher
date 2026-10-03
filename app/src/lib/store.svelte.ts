@@ -10,6 +10,7 @@ import {
   type Settings,
 } from "./api";
 import { serverTitle } from "./format";
+import { applyTheme } from "./themes";
 
 export type SortKey = "players" | "name";
 export type ListFilter = "all" | "favorites" | "recent";
@@ -123,6 +124,7 @@ class Store {
 
   private async loadSettings() {
     this.settings = await api.getSettings().catch(() => null);
+    applyTheme(this.settings?.theme);
   }
 
   async loadAccounts() {
@@ -157,6 +159,7 @@ class Store {
 
   async saveSettings(next: Settings) {
     this.settings = await api.setSettings(next);
+    applyTheme(this.settings.theme);
   }
 
   async toggleFavorite(address: string) {

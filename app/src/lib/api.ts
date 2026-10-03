@@ -51,6 +51,8 @@ export interface HistoryEntry {
 export interface Settings {
   guest_name: string;
   compat_mode: boolean;
+  minimize_on_play: boolean;
+  theme: string;
   last_account: string | null;
   favorites: string[];
   history: HistoryEntry[];

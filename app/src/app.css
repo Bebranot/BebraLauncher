@@ -17,6 +17,36 @@
   color-scheme: dark;
 }
 
+/* Other themes: see lib/themes.ts. Each one overrides the tokens above. */
+:root[data-theme="light"] {
+  --bg: #f4f4f8;
+  --bg-elev: #ffffff;
+  --bg-hover: #ececf4;
+  --bg-active: #e1defa;
+  --border: #d5d5e2;
+  --text: #1c1c28;
+  --text-dim: #6a6a80;
+  --accent: #6252e0;
+  --accent-hover: #5042cc;
+  --good: #1f9d63;
+  --warn: #c98512;
+  --bad: #d23c35;
+  color-scheme: light;
+}
+
+:root[data-theme="ocean"] {
+  --bg: #0d1a22;
+  --bg-elev: #12242f;
+  --bg-hover: #183140;
+  --bg-active: #1d4257;
+  --border: #21404f;
+  --text: #dcecf2;
+  --text-dim: #85a3b1;
+  --accent: #2aa8c4;
+  --accent-hover: #3dbbd6;
+  --accent-text: #04202a;
+}
+
 * {
   box-sizing: border-box;
 }
