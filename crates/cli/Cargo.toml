@@ -1,0 +1,13 @@
+[package]
+name = "bebra-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Debug CLI on top of bebra-core"
+
+[[bin]]
+name = "bebra"
+path = "src/main.rs"
+
+[dependencies]
+bebra-core = { path = "../core" }

@@ -1,0 +1,8 @@
+[package]
+name = "bebra-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "UI-less core of the launcher: hub, auth, content download, engine launch"
+
+[dependencies]

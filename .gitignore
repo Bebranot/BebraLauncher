@@ -1,0 +1,40 @@
+# --- Rust ---
+/target/
+**/*.rs.bk
+
+# --- Node / frontend ---
+node_modules/
+dist/
+.svelte-kit/
+
+# --- Tauri ---
+app/src-tauri/target/
+app/src-tauri/gen/
+
+# --- Local runtime data (launcher data dir, DBs, logs) ---
+*.db
+*.db-wal
+*.db-shm
+*.log
+.env
+.env.*
+
+# --- IDE / OS ---
+.vs/
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+
+# --- Claude / AI tooling (keep out of the repo) ---
+.claude/
+.claude-mem/
+.codegraph/
+CLAUDE.md
+CLAUDE.local.md
+AGENTS.md
+NOTES.md
+.mcp.json
+# all markdown is considered AI-written notes, except README
+*.md
+!README.md
