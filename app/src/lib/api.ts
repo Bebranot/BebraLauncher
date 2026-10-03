@@ -90,7 +90,7 @@ export type PlayEvent =
   | { kind: "progress"; stage: PlayStage; done: number; total: number; unit: "items" | "bytes" }
   | { kind: "running"; pid: number; plays_as: string }
   | { kind: "exited"; code: number | null; log_tail: string[] }
-  | { kind: "failed"; message: string }
+  | { kind: "failed"; code: string; message: string }
   | { kind: "cancelled" };
 
 /** The game asked the launcher to connect again (possibly to another server). */

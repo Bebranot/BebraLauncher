@@ -46,7 +46,9 @@ pub enum PlayEvent {
         code: Option<i32>,
         log_tail: Vec<String>,
     },
+    /// `code` names the problem (the UI translates it), `message` is the technical detail.
     Failed {
+        code: &'static str,
         message: String,
     },
     Cancelled,
@@ -127,9 +129,7 @@ pub fn start(app: AppHandle, game: Arc<GameState>, params: PlayParams) -> Result
             {
                 Ok(rt) => rt,
                 Err(e) => {
-                    emit(PlayEvent::Failed {
-                        message: format!("не удалось запустить рантайм: {e}"),
-                    });
+                    emit(PlayEvent::failed("other", format!("runtime: {e}")));
                     return;
                 }
             };
@@ -143,7 +143,7 @@ pub fn start(app: AppHandle, game: Arc<GameState>, params: PlayParams) -> Result
             match prepared {
                 Ok(game) => run_game(&app, &emit, &params, game),
                 Err(None) => emit(PlayEvent::Cancelled),
-                Err(Some(message)) => emit(PlayEvent::Failed { message }),
+                Err(Some(failure)) => emit(PlayEvent::failed(failure.code, failure.message)),
             }
         });
     spawned.map(drop).map_err(|e| {
@@ -152,7 +152,31 @@ pub fn start(app: AppHandle, game: Arc<GameState>, params: PlayParams) -> Result
     })
 }
 
-async fn prepare(app: &AppHandle, params: &PlayParams) -> Result<play::PreparedGame, String> {
+/// Why the game could not be started: a code for the UI and the technical detail.
+struct Failure {
+    code: &'static str,
+    message: String,
+}
+
+impl Failure {
+    fn new(code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+}
+
+impl PlayEvent {
+    pub fn failed(code: &'static str, message: impl Into<String>) -> Self {
+        Self::Failed {
+            code,
+            message: message.into(),
+        }
+    }
+}
+
+async fn prepare(app: &AppHandle, params: &PlayParams) -> Result<play::PreparedGame, Failure> {
     let emit = |event: PlayEvent| {
         let _ = app.emit(EVENT, event);
     };
@@ -163,7 +187,8 @@ async fn prepare(app: &AppHandle, params: &PlayParams) -> Result<play::PreparedG
         None => None,
     };
 
-    let loader_exe = launch::find_loader().map_err(|e| e.to_string())?;
+    let loader_exe =
+        launch::find_loader().map_err(|e| Failure::new("loader_missing", e.to_string()))?;
     let req = PlayRequest {
         addr: params.addr.clone(),
         via_hub: false,
@@ -201,7 +226,7 @@ async fn prepare(app: &AppHandle, params: &PlayParams) -> Result<play::PreparedG
         }
     })
     .await
-    .map_err(|e| e.to_string())
+    .map_err(|e| Failure::new(e.code(), e.detail()))
 }
 
 fn stage_name(stage: Stage) -> &'static str {
@@ -213,26 +238,25 @@ fn stage_name(stage: Stage) -> &'static str {
 }
 
 /// The saved account, with its login checked (and renewed if it is about to expire).
-async fn resolve_account(client: &Client, id: Uuid) -> Result<StoredAccount, String> {
+async fn resolve_account(client: &Client, id: Uuid) -> Result<StoredAccount, Failure> {
     let store = CredentialStore::default();
     let saved = store
         .list()
-        .map_err(|e| e.to_string())?
+        .map_err(|e| Failure::new("other", e.to_string()))?
         .into_iter()
         .find(|a| a.user_id == id)
-        .ok_or("Аккаунт не найден: войдите заново")?;
+        .ok_or_else(|| Failure::new("account_missing", ""))?;
 
     let now = OffsetDateTime::now_utc();
     let auth = AuthClient::official(client.clone());
     match accounts::ensure_fresh(&auth, &store, saved.clone(), now, true).await {
         Ok((account, AccountStatus::Available)) => Ok(account),
-        Ok((account, AccountStatus::Expired)) => Err(format!(
-            "Вход в аккаунт {} истёк: войдите заново",
-            account.username
-        )),
+        Ok((account, AccountStatus::Expired)) => {
+            Err(Failure::new("account_expired", account.username))
+        }
         // The auth server can't be reached right now; the saved login may still work.
         Err(_) if accounts::freshness(saved.expire_time, now) != Freshness::Expired => Ok(saved),
-        Err(e) => Err(e.to_string()),
+        Err(e) => Err(Failure::new("other", e.to_string())),
     }
 }
 
@@ -277,9 +301,7 @@ fn run_game(
     let mut child = match launch::spawn(&game.command, &out_log, &err_log) {
         Ok(c) => c,
         Err(e) => {
-            emit(PlayEvent::Failed {
-                message: e.to_string(),
-            });
+            emit(PlayEvent::failed("start", e.to_string()));
             return;
         }
     };

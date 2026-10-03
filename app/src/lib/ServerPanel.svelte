@@ -8,7 +8,7 @@
     serverTitle,
     stageText,
   } from "./format";
-  import { t } from "./i18n.svelte";
+  import { hasKey, t, type Key } from "./i18n.svelte";
   import { app } from "./store.svelte";
 
   let { onmanageaccounts }: { onmanageaccounts: () => void } = $props();
@@ -31,6 +31,12 @@
   const percent = $derived(
     progress && progress.total > 0 ? Math.min(100, (progress.done / progress.total) * 100) : null,
   );
+
+  /** The translated headline for a failure code; unknown codes get the general one. */
+  function failText(code: string): string {
+    const key = `fail.${code}`;
+    return t(hasKey(key) ? (key as Key) : "fail.other");
+  }
 
   let copied = $state(false);
   async function copyAddress() {
@@ -179,8 +185,11 @@
       {/if}
 
       {#if app.play.phase === "failed"}
-        <div class="result error">
-          <div>{app.play.message}</div>
+        <div class="result">
+          <div class="error">{failText(app.play.code)}</div>
+          {#if app.play.message}
+            <div class="dim detail">{app.play.message}</div>
+          {/if}
           <button class="link" onclick={() => app.dismissPlayResult()}>{t("play.hide")}</button>
         </div>
       {:else if app.play.phase === "exited"}
@@ -370,6 +379,10 @@
   .result .row {
     display: flex;
     gap: 14px;
+  }
+  .detail {
+    font-size: 12px;
+    word-break: break-word;
   }
   pre {
     margin: 0;

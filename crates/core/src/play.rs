@@ -15,7 +15,7 @@ use crate::launch::{self, AuthEnv, ConnectTarget, LaunchCommand, LaunchSpec};
 use crate::paths::DataDirs;
 use crate::server::{self, AuthMode, ServerInfo};
 use crate::updater::{self, DownloadMode, Sources};
-use crate::{Error, Result};
+use crate::Error;
 
 /// The steps `prepare` goes through, in order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,6 +26,44 @@ pub enum Stage {
     Files,
     /// Engine and engine modules.
     Engine,
+}
+
+/// Why preparing the game failed. The variant tells the UI what to say; the text inside is the
+/// technical detail.
+#[derive(Debug, thiserror::Error)]
+pub enum PlayError {
+    #[error("{url} did not answer: {source}")]
+    InfoUnreachable { url: String, source: Error },
+    #[error("the server gave no build information")]
+    NoBuild,
+    #[error("failed to install game files: {0}")]
+    Files(Error),
+    #[error("failed to install the engine: {0}")]
+    Engine(Error),
+    #[error(transparent)]
+    Other(#[from] Error),
+}
+
+impl PlayError {
+    /// Stable name for the UI to pick a translated message by.
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::InfoUnreachable { .. } => "info_unreachable",
+            Self::NoBuild => "no_build",
+            Self::Files(_) => "files",
+            Self::Engine(_) => "engine",
+            Self::Other(_) => "other",
+        }
+    }
+
+    /// The technical detail without the headline.
+    pub fn detail(&self) -> String {
+        match self {
+            Self::InfoUnreachable { url, source } => format!("{url}: {source}"),
+            Self::NoBuild => String::new(),
+            Self::Files(e) | Self::Engine(e) | Self::Other(e) => e.to_string(),
+        }
+    }
 }
 
 /// Called with the current stage; the progress is `None` when a step has no measurable progress.
@@ -68,7 +106,7 @@ pub async fn prepare(
     dirs: &DataDirs,
     req: &PlayRequest,
     on_stage: StageFn<'_>,
-) -> Result<PreparedGame> {
+) -> std::result::Result<PreparedGame, PlayError> {
     dirs.ensure()?;
 
     on_stage(Stage::Info, None);
@@ -77,14 +115,14 @@ pub async fn prepare(
             .server_info(req.addr.as_str())
             .await?
     } else {
-        server::fetch_info(client, &req.addr).await.map_err(|e| {
-            Error::Other(format!("{} did not answer /info: {e}", req.addr.info_url()))
-        })?
+        server::fetch_info(client, &req.addr)
+            .await
+            .map_err(|source| PlayError::InfoUnreachable {
+                url: req.addr.info_url(),
+                source,
+            })?
     };
-    let mut build = info
-        .build
-        .clone()
-        .ok_or_else(|| Error::Other("the server gave no build information".into()))?;
+    let mut build = info.build.clone().ok_or(PlayError::NoBuild)?;
     if req.via_hub {
         build.apply_self_hosting(&req.addr);
     }
@@ -94,7 +132,7 @@ pub async fn prepare(
     on_stage(Stage::Files, None);
     let content = updater::install_content(client, &db, &build, &dirs.scratch(), Some(&files))
         .await
-        .map_err(|e| Error::Other(format!("failed to install game files: {e}")))?;
+        .map_err(PlayError::Files)?;
     let cleanup = updater::cleanup(&db)?;
 
     let engine = |p: Progress| on_stage(Stage::Engine, Some(p));
@@ -109,7 +147,7 @@ pub async fn prepare(
         Some(engine_progress),
     )
     .await
-    .map_err(|e| Error::Other(format!("failed to install the engine: {e}")))?;
+    .map_err(PlayError::Engine)?;
 
     let auth_client = AuthClient::official(client.clone());
     let auth = req

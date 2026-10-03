@@ -29,7 +29,7 @@ export type PlayState =
       unit: "items" | "bytes";
     }
   | { phase: "running"; playsAs: string }
-  | { phase: "failed"; message: string }
+  | { phase: "failed"; code: string; message: string }
   | { phase: "exited"; code: number | null; logTail: string[] };
 
 export type DetailsState = ServerDetails | "loading" | "failed";
@@ -274,7 +274,7 @@ class Store {
       // The backend put the server on top of the history; take it from there.
       await this.loadSettings();
     } catch (e) {
-      this.play = { phase: "failed", message: errorText(e) };
+      this.play = { phase: "failed", code: "other", message: errorText(e) };
     }
   }
 
@@ -320,7 +320,7 @@ class Store {
         void this.loadSettings();
         break;
       case "failed":
-        this.play = { phase: "failed", message: e.message };
+        this.play = { phase: "failed", code: e.code, message: e.message };
         break;
       case "cancelled":
         this.play = { phase: "idle" };

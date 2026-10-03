@@ -42,7 +42,7 @@ Rust-ядро + Tauri 2 (WebView2) + Svelte 5. Установщик около 3
 cargo fmt --all --check
 cargo clippy --workspace --all-targets
 cargo test --workspace
-cd app; pnpm install; pnpm check
+cd app; pnpm install; pnpm check; pnpm test
 
 # запуск в режиме разработки (сначала один раз соберите Loader, см. loader/README.md)
 cd app; pnpm tauri dev

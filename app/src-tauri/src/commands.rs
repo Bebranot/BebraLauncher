@@ -461,9 +461,7 @@ fn redial_connect(app: &AppHandle, address: String, reason: Option<String>) {
     if let Err(e) = ServerAddr::parse(&address) {
         let _ = app.emit(
             game::EVENT,
-            game::PlayEvent::Failed {
-                message: e.to_string(),
-            },
+            game::PlayEvent::failed("invalid_address", e.to_string()),
         );
         return;
     }
@@ -492,7 +490,7 @@ fn redial_connect(app: &AppHandle, address: String, reason: Option<String>) {
                 std::thread::sleep(std::time::Duration::from_millis(500));
             }
             Err(e) => {
-                let _ = app.emit(game::EVENT, game::PlayEvent::Failed { message: e });
+                let _ = app.emit(game::EVENT, game::PlayEvent::failed("other", e));
                 return;
             }
             Ok(()) => return,
