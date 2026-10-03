@@ -11,12 +11,15 @@
   import ServersTab from "./lib/ServersTab.svelte";
   import UpdatesTab from "./lib/UpdatesTab.svelte";
   import Toast from "./lib/Toast.svelte";
+  import { promo } from "./lib/rofl.svelte";
   import { app } from "./lib/store.svelte";
 
   let searchInput = $state<HTMLInputElement>();
 
   onMount(() => {
     void app.init();
+    // The joke sale's timer runs from the launch, whichever tab is open.
+    promo.start();
   });
 
   /** `/` or Ctrl+F: search the server list. */

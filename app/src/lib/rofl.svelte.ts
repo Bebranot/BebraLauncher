@@ -11,11 +11,11 @@ class Promo {
 
   private started = false;
 
-  /** Starts the countdown once: after 5-40 s from launch, for 2-59 minutes. Safe to call again. */
+  /** Starts the countdown once: after 3-20 s from launch, for 2-59 minutes. Safe to call again. */
   start() {
     if (this.started) return;
     this.started = true;
-    setTimeout(() => this.run(), rand(5, 40) * 1000);
+    setTimeout(() => this.run(), rand(3, 20) * 1000);
   }
 
   private run() {

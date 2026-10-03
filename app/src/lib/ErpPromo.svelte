@@ -1,8 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
   import { clock, promo } from "./rofl.svelte";
-
-  onMount(() => promo.start());
 </script>
 
 <!-- A joke: a Russian-only "sale". -->
