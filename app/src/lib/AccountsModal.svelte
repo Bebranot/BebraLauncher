@@ -1,21 +1,11 @@
 <script lang="ts">
-  import { api, errorText, type DenyCode } from "./api";
+  import { api, errorText } from "./api";
   import { formatDate } from "./format";
+  import { t, type Key } from "./i18n.svelte";
   import Modal from "./Modal.svelte";
   import { app } from "./store.svelte";
 
   let { onclose }: { onclose: () => void } = $props();
-
-  const denyText: Record<DenyCode, string> = {
-    invalid_credentials: "Неверное имя или пароль.",
-    account_unconfirmed: "Аккаунт не подтверждён: подтвердите почту.",
-    tfa_required: "Нужен код двухфакторной аутентификации.",
-    tfa_invalid: "Неверный код двухфакторной аутентификации.",
-    account_locked: "Аккаунт заблокирован.",
-    unknown: "Сервер отклонил вход.",
-  };
-
-  const stateText = { valid: "вход действует", renew: "вход действует", expired: "нужен вход" };
 
   // Logging in: a new name, or an existing account that has to log in again (userId).
   let username = $state("");
@@ -37,6 +27,12 @@
     tfaCode = "";
     askTfa = false;
     message = null;
+  }
+
+  function cancelRelogin() {
+    relogin = null;
+    username = "";
+    reset();
   }
 
   async function submit(e: SubmitEvent) {
@@ -62,7 +58,8 @@
           askTfa = true;
           tfaCode = "";
         }
-        message = [denyText[out.code], ...out.errors.filter((x) => x !== "")].join(" ");
+        // Texts the server added are shown as they are, after ours.
+        message = [t(`deny.${out.code}` as Key), ...out.errors.filter((x) => x !== "")].join(" ");
         password = "";
       }
     } catch (err) {
@@ -77,17 +74,14 @@
     try {
       const told = await api.logout(userId);
       await app.loadAccounts();
-      if (!told) {
-        message =
-          "Аккаунт удалён из лаунчера, но сервер входа не ответил: старый токен останется действительным до истечения.";
-      }
+      if (!told) message = t("acc.offline");
     } catch (err) {
       message = errorText(err);
     }
   }
 </script>
 
-<Modal title="Аккаунты Wizards' Den" {onclose}>
+<Modal title={t("acc.title")} {onclose}>
   {#if app.accounts.length > 0}
     <ul class="accounts">
       {#each app.accounts as a (a.user_id)}
@@ -95,35 +89,42 @@
           <div class="who">
             <b>{a.username}</b>
             <span class="dim small" class:error={a.state === "expired"}>
-              {stateText[a.state]}{a.state !== "expired" ? ` до ${formatDate(a.expire_time)}` : ""}
+              {a.state === "expired"
+                ? t("acc.expired")
+                : t("acc.valid", { date: formatDate(a.expire_time) })}
             </span>
           </div>
           {#if a.state === "expired"}
-            <button onclick={() => startRelogin(a.user_id, a.username)}>Войти заново</button>
+            <button onclick={() => startRelogin(a.user_id, a.username)}>{t("acc.relogin")}</button>
           {/if}
-          <button class="danger" onclick={() => logout(a.user_id)}>Выйти</button>
+          <button class="danger" onclick={() => logout(a.user_id)}>{t("acc.logout")}</button>
         </li>
       {/each}
     </ul>
   {:else}
-    <p class="dim">Нет сохранённых аккаунтов. Можно играть гостем на серверах без обязательной авторизации.</p>
+    <p class="dim">{t("acc.empty")}</p>
   {/if}
 
   <form onsubmit={submit}>
-    <h3>{relogin ? `Войти заново: ${relogin.username}` : "Добавить аккаунт"}</h3>
+    <h3>{relogin ? t("acc.reloginTitle", { name: relogin.username }) : t("acc.add")}</h3>
     {#if !relogin}
-      <input type="text" placeholder="Имя аккаунта" bind:value={username} autocomplete="username" />
+      <input
+        type="text"
+        placeholder={t("acc.name")}
+        bind:value={username}
+        autocomplete="username"
+      />
     {/if}
     <input
       type="password"
-      placeholder="Пароль"
+      placeholder={t("acc.password")}
       bind:value={password}
       autocomplete="current-password"
     />
     {#if askTfa}
       <input
         type="text"
-        placeholder="Код двухфакторной аутентификации"
+        placeholder={t("acc.tfa")}
         bind:value={tfaCode}
         inputmode="numeric"
         autocomplete="one-time-code"
@@ -131,17 +132,18 @@
     {/if}
     {#if message}<div class="error small">{message}</div>{/if}
     <div class="actions">
-      <button class="primary" type="submit" disabled={busy || !password || (!relogin && !username.trim())}>
-        {busy ? "Вход…" : "Войти"}
+      <button
+        class="primary"
+        type="submit"
+        disabled={busy || !password || (!relogin && !username.trim())}
+      >
+        {busy ? t("acc.submitting") : t("acc.submit")}
       </button>
       {#if relogin}
-        <button type="button" onclick={() => ((relogin = null), (username = ""), reset())}>Отмена</button>
+        <button type="button" onclick={cancelRelogin}>{t("acc.cancel")}</button>
       {/if}
     </div>
-    <p class="dim small">
-      Пароль уходит только на сервер входа Wizards' Den и нигде не сохраняется. Лаунчер хранит
-      лишь токен — в Диспетчере учётных данных Windows.
-    </p>
+    <p class="dim small">{t("acc.privacy")}</p>
   </form>
 </Modal>
 

@@ -1,0 +1,312 @@
+// UI strings. Russian is the reference; English must have the same keys (checked by the types).
+
+const ru = {
+  "nav.signIn": "Войти",
+  "nav.settings": "Настройки",
+  "nav.direct": "По адресу…",
+
+  "tab.all": "Все",
+  "tab.favorites": "Избранное",
+  "tab.recent": "Недавние",
+  "list.search": "Поиск по названию, адресу, тегам…",
+  "list.anyLanguage": "Любой язык",
+  "list.language": "Язык",
+  "list.sort": "Сортировка",
+  "list.sortPlayers": "По онлайну",
+  "list.sortName": "По названию",
+  "list.hideEmpty": "Без пустых",
+  "list.hideFull": "Без полных",
+  "list.refresh": "Обновить",
+  "list.refreshing": "Обновление…",
+  "list.refreshError": "Не удалось обновить список: {error}",
+  "list.cached": "Показан сохранённый список.",
+  "list.loading": "Загрузка списка серверов…",
+  "list.empty": "Список пуст.",
+  "list.nothing": "Ничего не найдено.",
+  "list.favEmpty": "Пока пусто: отметьте сервер звёздочкой.",
+  "list.recentEmpty": "Вы ещё не играли на серверах из этого списка.",
+  "list.count": "{shown} из {total} серверов",
+  "list.starAdd": "В избранное",
+  "list.starRemove": "Убрать из избранного",
+  "list.listbox": "Серверы",
+
+  "panel.pick": "Выберите сервер в списке",
+  "panel.players": "Игроки",
+  "panel.status": "Статус",
+  "panel.map": "Карта",
+  "panel.preset": "Режим",
+  "panel.bunker": "Паник-бункер",
+  "panel.bunkerOn": "включён",
+  "panel.playedTime": "Вы играли здесь",
+  "panel.links": "Ссылки",
+  "panel.authRequired": "Нужен аккаунт Wizards' Den: гостем сюда не зайти.",
+  "panel.authDisabled": "Сервер не использует аккаунты.",
+  "panel.infoFailed": "Сервер не ответил на запрос описания.",
+  "panel.copyAddress": "Копировать адрес",
+  "panel.copied": "Скопировано",
+
+  "run.lobby": "Лобби",
+  "run.round": "Раунд идёт",
+  "run.ended": "Конец раунда",
+
+  "play.as": "Играть как",
+  "play.guest": "Гость ({name})",
+  "play.accounts": "Аккаунты…",
+  "play.needLogin": "нужен вход",
+  "play.expired": "Вход в аккаунт истёк. Войдите заново в «Аккаунты».",
+  "play.guestHint": "Гостем можно играть только на серверах без обязательной авторизации.",
+  "play.button": "Играть",
+  "play.cancel": "Отмена",
+  "play.running": "Игра запущена как {name}",
+  "play.hide": "Скрыть",
+  "play.crashed": "Игра завершилась с ошибкой",
+  "play.crashedCode": "Игра завершилась с ошибкой (код {code}).",
+  "play.openLogs": "Открыть папку логов",
+  "play.redial": "Игра просит переподключиться",
+  "play.redialReason": "Сообщение сервера: {reason}",
+  "stage.account": "Проверка аккаунта…",
+  "stage.info": "Запрос к серверу…",
+  "stage.files": "Загрузка файлов игры",
+  "stage.engine": "Загрузка движка",
+  "stage.starting": "Запуск игры…",
+
+  "unit.min": "мин",
+  "unit.hour": "ч",
+  "unit.B": "Б",
+  "unit.KB": "КБ",
+  "unit.MB": "МБ",
+  "unit.GB": "ГБ",
+
+  "acc.title": "Аккаунты Wizards' Den",
+  "acc.valid": "вход действует до {date}",
+  "acc.expired": "нужен вход",
+  "acc.relogin": "Войти заново",
+  "acc.logout": "Выйти",
+  "acc.empty":
+    "Нет сохранённых аккаунтов. Можно играть гостем на серверах без обязательной авторизации.",
+  "acc.add": "Добавить аккаунт",
+  "acc.reloginTitle": "Войти заново: {name}",
+  "acc.name": "Имя аккаунта",
+  "acc.password": "Пароль",
+  "acc.tfa": "Код двухфакторной аутентификации",
+  "acc.submit": "Войти",
+  "acc.submitting": "Вход…",
+  "acc.cancel": "Отмена",
+  "acc.privacy":
+    "Пароль уходит только на сервер входа Wizards' Den и нигде не сохраняется. Лаунчер хранит лишь токен: в Диспетчере учётных данных Windows.",
+  "acc.offline":
+    "Аккаунт удалён из лаунчера, но сервер входа не ответил: старый токен останется действительным до истечения.",
+  "deny.invalid_credentials": "Неверное имя или пароль.",
+  "deny.account_unconfirmed": "Аккаунт не подтверждён: подтвердите почту.",
+  "deny.tfa_required": "Нужен код двухфакторной аутентификации.",
+  "deny.tfa_invalid": "Неверный код двухфакторной аутентификации.",
+  "deny.account_locked": "Аккаунт заблокирован.",
+  "deny.unknown": "Сервер отклонил вход.",
+
+  "set.title": "Настройки",
+  "set.guestName": "Имя гостя",
+  "set.guestHint": "Под этим именем игра запускается без аккаунта.",
+  "set.theme": "Тема",
+  "set.language": "Язык интерфейса",
+  "set.langAuto": "Как в Windows",
+  "set.compat": "Режим совместимости (GLES2)",
+  "set.compatHint": "Включите, если игра не запускается или не рисует графику.",
+  "set.minimize": "Сворачивать лаунчер, пока идёт игра",
+  "set.minimizeHint": "После закрытия игры окно вернётся.",
+  "set.autostart": "Запускать вместе с Windows",
+  "set.autostartHint": "Лаунчер стартует свёрнутым.",
+  "set.storage": "Хранилище",
+  "set.storageTotal": "Занято: {size}",
+  "set.storageDetails": "игры {content}, движки {engines}, модули {modules}, прочее {other}",
+  "set.clean": "Очистить неиспользуемое",
+  "set.cleaning": "Очистка…",
+  "set.cleaned": "Освобождено {size}.",
+  "set.cleanedNothing": "Нечего удалять.",
+  "set.openLogs": "Открыть папку логов",
+  "set.data": "Данные: {path}",
+  "set.save": "Сохранить",
+  "set.cancel": "Отмена",
+  "theme.dark": "Тёмная",
+  "theme.light": "Светлая",
+  "theme.ocean": "Океан",
+
+  "direct.title": "Подключиться по адресу",
+  "direct.placeholder": "ss14://адрес:1212 или просто адрес",
+  "direct.hint": "Для серверов, которых нет в списке. Адрес вида ss14s:// означает HTTPS.",
+  "direct.connect": "Подключиться",
+  "dialog.close": "Закрыть",
+} as const;
+
+export type Key = keyof typeof ru;
+
+const en: Record<Key, string> = {
+  "nav.signIn": "Sign in",
+  "nav.settings": "Settings",
+  "nav.direct": "Connect by address…",
+
+  "tab.all": "All",
+  "tab.favorites": "Favorites",
+  "tab.recent": "Recent",
+  "list.search": "Search by name, address, tags…",
+  "list.anyLanguage": "Any language",
+  "list.language": "Language",
+  "list.sort": "Sort",
+  "list.sortPlayers": "By players",
+  "list.sortName": "By name",
+  "list.hideEmpty": "Hide empty",
+  "list.hideFull": "Hide full",
+  "list.refresh": "Refresh",
+  "list.refreshing": "Refreshing…",
+  "list.refreshError": "Could not refresh the list: {error}",
+  "list.cached": "Showing the saved list.",
+  "list.loading": "Loading the server list…",
+  "list.empty": "The list is empty.",
+  "list.nothing": "Nothing found.",
+  "list.favEmpty": "Nothing here yet: star a server to add it.",
+  "list.recentEmpty": "You have not played on any server of this list yet.",
+  "list.count": "{shown} of {total} servers",
+  "list.starAdd": "Add to favorites",
+  "list.starRemove": "Remove from favorites",
+  "list.listbox": "Servers",
+
+  "panel.pick": "Pick a server from the list",
+  "panel.players": "Players",
+  "panel.status": "Status",
+  "panel.map": "Map",
+  "panel.preset": "Mode",
+  "panel.bunker": "Panic bunker",
+  "panel.bunkerOn": "on",
+  "panel.playedTime": "You played here",
+  "panel.links": "Links",
+  "panel.authRequired": "A Wizards' Den account is required: guests cannot join.",
+  "panel.authDisabled": "This server does not use accounts.",
+  "panel.infoFailed": "The server did not answer the description request.",
+  "panel.copyAddress": "Copy address",
+  "panel.copied": "Copied",
+
+  "run.lobby": "Lobby",
+  "run.round": "Round in progress",
+  "run.ended": "Round ended",
+
+  "play.as": "Play as",
+  "play.guest": "Guest ({name})",
+  "play.accounts": "Accounts…",
+  "play.needLogin": "login needed",
+  "play.expired": "The login has expired. Log in again under “Accounts”.",
+  "play.guestHint": "As a guest you can only join servers that do not require an account.",
+  "play.button": "Play",
+  "play.cancel": "Cancel",
+  "play.running": "The game is running as {name}",
+  "play.hide": "Dismiss",
+  "play.crashed": "The game exited with an error",
+  "play.crashedCode": "The game exited with an error (code {code}).",
+  "play.openLogs": "Open the logs folder",
+  "play.redial": "The game asks to reconnect",
+  "play.redialReason": "Message from the server: {reason}",
+  "stage.account": "Checking the account…",
+  "stage.info": "Asking the server…",
+  "stage.files": "Downloading game files",
+  "stage.engine": "Downloading the engine",
+  "stage.starting": "Starting the game…",
+
+  "unit.min": "min",
+  "unit.hour": "h",
+  "unit.B": "B",
+  "unit.KB": "KB",
+  "unit.MB": "MB",
+  "unit.GB": "GB",
+
+  "acc.title": "Wizards' Den accounts",
+  "acc.valid": "logged in until {date}",
+  "acc.expired": "login needed",
+  "acc.relogin": "Log in again",
+  "acc.logout": "Log out",
+  "acc.empty": "No saved accounts. You can play as a guest on servers that do not require one.",
+  "acc.add": "Add an account",
+  "acc.reloginTitle": "Log in again: {name}",
+  "acc.name": "Account name",
+  "acc.password": "Password",
+  "acc.tfa": "Two-factor code",
+  "acc.submit": "Log in",
+  "acc.submitting": "Logging in…",
+  "acc.cancel": "Cancel",
+  "acc.privacy":
+    "The password goes only to the Wizards' Den login server and is never saved. The launcher keeps just a token, in the Windows Credential Manager.",
+  "acc.offline":
+    "The account was removed from the launcher, but the login server did not answer: the old token stays valid until it expires.",
+  "deny.invalid_credentials": "Wrong name or password.",
+  "deny.account_unconfirmed": "The account is not confirmed: confirm your email.",
+  "deny.tfa_required": "A two-factor code is needed.",
+  "deny.tfa_invalid": "The two-factor code is wrong.",
+  "deny.account_locked": "The account is locked.",
+  "deny.unknown": "The server refused the login.",
+
+  "set.title": "Settings",
+  "set.guestName": "Guest name",
+  "set.guestHint": "The name used when playing without an account.",
+  "set.theme": "Theme",
+  "set.language": "Interface language",
+  "set.langAuto": "Same as Windows",
+  "set.compat": "Compatibility mode (GLES2)",
+  "set.compatHint": "Turn on if the game does not start or draws nothing.",
+  "set.minimize": "Minimize the launcher while the game runs",
+  "set.minimizeHint": "The window comes back when the game closes.",
+  "set.autostart": "Start with Windows",
+  "set.autostartHint": "The launcher starts minimized.",
+  "set.storage": "Storage",
+  "set.storageTotal": "Used: {size}",
+  "set.storageDetails": "games {content}, engines {engines}, modules {modules}, other {other}",
+  "set.clean": "Clean up unused files",
+  "set.cleaning": "Cleaning…",
+  "set.cleaned": "Freed {size}.",
+  "set.cleanedNothing": "Nothing to remove.",
+  "set.openLogs": "Open the logs folder",
+  "set.data": "Data: {path}",
+  "set.save": "Save",
+  "set.cancel": "Cancel",
+  "theme.dark": "Dark",
+  "theme.light": "Light",
+  "theme.ocean": "Ocean",
+
+  "direct.title": "Connect by address",
+  "direct.placeholder": "ss14://address:1212 or just the address",
+  "direct.hint": "For servers that are not in the list. An ss14s:// address means HTTPS.",
+  "direct.connect": "Connect",
+  "dialog.close": "Close",
+};
+
+export type Lang = "ru" | "en";
+const dictionaries: Record<Lang, Record<Key, string>> = { ru, en };
+
+/** Windows language to ours: Russian-speaking locales get Russian, everything else English. */
+export function detectLang(navigatorLanguage: string): Lang {
+  return /^(ru|uk|be)\b/i.test(navigatorLanguage) ? "ru" : "en";
+}
+
+class I18n {
+  /** `auto`, `ru` or `en`, as saved in the settings. */
+  preference = $state("auto");
+
+  get lang(): Lang {
+    if (this.preference === "ru" || this.preference === "en") return this.preference;
+    return detectLang(typeof navigator === "undefined" ? "en" : navigator.language);
+  }
+}
+
+export const i18n = new I18n();
+
+export function interpolate(text: string, params?: Record<string, string | number>): string {
+  if (!params) return text;
+  return text.replace(/\{(\w+)\}/g, (whole, name: string) =>
+    name in params ? String(params[name]) : whole,
+  );
+}
+
+/** Translates a key. Reads `i18n.lang`, so templates update when the language changes. */
+export function t(key: Key, params?: Record<string, string | number>): string {
+  return interpolate(dictionaries[i18n.lang][key], params);
+}
+
+export function hasKey(key: string): key is Key {
+  return key in ru;
+}

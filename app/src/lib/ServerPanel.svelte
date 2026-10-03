@@ -1,52 +1,89 @@
 <script lang="ts">
   import { api } from "./api";
+  import {
+    formatBytes,
+    formatPlayed,
+    roundDuration,
+    runLevelText,
+    serverTitle,
+    stageText,
+  } from "./format";
+  import { t } from "./i18n.svelte";
   import { app } from "./store.svelte";
-  import { formatBytes, roundDuration, runLevelText, serverTitle, stageText } from "./format";
 
   let { onmanageaccounts }: { onmanageaccounts: () => void } = $props();
 
   const server = $derived(app.selected);
+  const details = $derived(app.selectedDetails);
+  const ready = $derived(details && details !== "loading" && details !== "failed" ? details : null);
   const account = $derived(app.accounts.find((a) => a.user_id === app.selectedAccount) ?? null);
+  const needsAccount = $derived(ready?.auth === "required" && !account);
   const playable = $derived(
-    !!server && !app.busy && !app.info?.loader_problem && account?.state !== "expired",
+    !!server &&
+      !app.busy &&
+      !app.info?.loader_problem &&
+      account?.state !== "expired" &&
+      !needsAccount,
   );
+  const played = $derived(server ? app.historyOf(server.address) : undefined);
 
   const progress = $derived(app.play.phase === "preparing" ? app.play : null);
   const percent = $derived(
     progress && progress.total > 0 ? Math.min(100, (progress.done / progress.total) * 100) : null,
   );
+
+  let copied = $state(false);
+  async function copyAddress() {
+    if (!server) return;
+    try {
+      await navigator.clipboard.writeText(server.address);
+      copied = true;
+      setTimeout(() => (copied = false), 1500);
+    } catch {
+      // No clipboard access: nothing to do, the address is selectable text anyway.
+    }
+  }
 </script>
 
 <aside>
   {#if !server}
-    <div class="placeholder dim">Выберите сервер в списке</div>
+    <div class="placeholder dim">{t("panel.pick")}</div>
   {:else}
     {@const level = runLevelText(server.run_level)}
     {@const round = server.run_level === 1 ? roundDuration(server.round_start_time) : null}
     <div class="info">
       <h2>{serverTitle(server)}</h2>
-      <div class="addr dim">{server.address}</div>
+      <div class="addr dim">
+        <span class="addr-text">{server.address}</span>
+        <button class="link" onclick={copyAddress}>
+          {copied ? t("panel.copied") : t("panel.copyAddress")}
+        </button>
+      </div>
 
       <dl>
-        <dt>Игроки</dt>
+        <dt>{t("panel.players")}</dt>
         <dd>
           {server.players}{#if server.soft_max_players > 0} / {server.soft_max_players}{/if}
         </dd>
         {#if level}
-          <dt>Статус</dt>
+          <dt>{t("panel.status")}</dt>
           <dd>{[level, round].filter(Boolean).join(" · ")}</dd>
         {/if}
         {#if server.map}
-          <dt>Карта</dt>
+          <dt>{t("panel.map")}</dt>
           <dd>{server.map}</dd>
         {/if}
         {#if server.preset}
-          <dt>Режим</dt>
+          <dt>{t("panel.preset")}</dt>
           <dd>{server.preset}</dd>
         {/if}
         {#if server.panic_bunker}
-          <dt>Паник-бункер</dt>
-          <dd class="warn">включён</dd>
+          <dt>{t("panel.bunker")}</dt>
+          <dd class="warn">{t("panel.bunkerOn")}</dd>
+        {/if}
+        {#if played && played.play_seconds > 0}
+          <dt>{t("panel.playedTime")}</dt>
+          <dd>{formatPlayed(played.play_seconds)}</dd>
         {/if}
       </dl>
 
@@ -55,30 +92,57 @@
           {#each server.tags as tag}<span class="tag">{tag}</span>{/each}
         </div>
       {/if}
+
+      {#if ready}
+        {#if ready.description}
+          <p class="desc">{ready.description}</p>
+        {/if}
+        {#if ready.links.length > 0}
+          <div class="links">
+            {#each ready.links as link (link.url)}
+              <button class="link" onclick={() => api.openUrl(link.url)} title={link.url}>
+                {link.name}
+              </button>
+            {/each}
+          </div>
+        {/if}
+        {#if ready.auth === "required"}
+          <div class="note warn small">{t("panel.authRequired")}</div>
+        {:else if ready.auth === "disabled"}
+          <div class="note dim small">{t("panel.authDisabled")}</div>
+        {/if}
+      {:else if details === "failed"}
+        <div class="note dim small">{t("panel.infoFailed")}</div>
+      {/if}
     </div>
 
     <div class="play">
+      {#if app.redial}
+        <div class="redial">
+          <b>{t("play.redial")}</b>
+          {#if app.redial.reason}
+            <div class="reason">{t("play.redialReason", { reason: app.redial.reason })}</div>
+          {/if}
+        </div>
+      {/if}
+
       <label class="field">
-        <span class="dim">Играть как</span>
+        <span class="dim">{t("play.as")}</span>
         <select bind:value={app.selectedAccount} disabled={app.busy}>
-          <option value={null}>Гость ({app.settings?.guest_name ?? "…"})</option>
+          <option value={null}>{t("play.guest", { name: app.settings?.guest_name ?? "…" })}</option>
           {#each app.accounts as a (a.user_id)}
             <option value={a.user_id}>
-              {a.username}{a.state === "expired" ? " (нужен вход)" : ""}
+              {a.username}{a.state === "expired" ? ` (${t("play.needLogin")})` : ""}
             </option>
           {/each}
         </select>
       </label>
-      <button class="link" onclick={onmanageaccounts}>Аккаунты…</button>
+      <button class="link" onclick={onmanageaccounts}>{t("play.accounts")}</button>
 
       {#if account?.state === "expired"}
-        <div class="error small">
-          Вход в аккаунт истёк. Войдите заново в «Аккаунты».
-        </div>
-      {:else if !account}
-        <div class="dim small">
-          Гостем можно играть только на серверах без обязательной авторизации.
-        </div>
+        <div class="error small">{t("play.expired")}</div>
+      {:else if !account && !needsAccount}
+        <div class="dim small">{t("play.guestHint")}</div>
       {/if}
 
       {#if app.info?.loader_problem}
@@ -88,7 +152,7 @@
       {#if progress}
         <div class="progress">
           <div class="label">
-            <span>{stageText[progress.stage]}</span>
+            <span>{stageText(progress.stage)}</span>
             {#if percent !== null}
               <span class="dim">
                 {#if progress.unit === "bytes"}
@@ -104,34 +168,34 @@
           </div>
         </div>
         {#if progress.stage !== "starting"}
-          <button onclick={() => app.cancelPlay()}>Отмена</button>
+          <button onclick={() => app.cancelPlay()}>{t("play.cancel")}</button>
         {/if}
       {:else if app.play.phase === "running"}
-        <div class="running">Игра запущена как <b>{app.play.playsAs}</b></div>
+        <div class="running">{t("play.running", { name: app.play.playsAs })}</div>
       {:else}
         <button class="primary big" disabled={!playable} onclick={() => app.startPlay()}>
-          Играть
+          {t("play.button")}
         </button>
       {/if}
 
       {#if app.play.phase === "failed"}
         <div class="result error">
           <div>{app.play.message}</div>
-          <button class="link" onclick={() => app.dismissPlayResult()}>Скрыть</button>
+          <button class="link" onclick={() => app.dismissPlayResult()}>{t("play.hide")}</button>
         </div>
       {:else if app.play.phase === "exited"}
         <div class="result">
           <div class="error">
-            Игра завершилась с ошибкой{app.play.code !== null ? ` (код ${app.play.code})` : ""}.
+            {app.play.code !== null
+              ? t("play.crashedCode", { code: app.play.code })
+              : t("play.crashed")}
           </div>
           {#if app.play.logTail.length > 0}
             <pre>{app.play.logTail.join("\n")}</pre>
           {/if}
           <div class="row">
-            <button class="link" onclick={() => app.dismissPlayResult()}>Скрыть</button>
-            <button class="link" onclick={() => api.openLogsFolder()}>
-              Открыть папку логов
-            </button>
+            <button class="link" onclick={() => app.dismissPlayResult()}>{t("play.hide")}</button>
+            <button class="link" onclick={() => api.openLogsFolder()}>{t("play.openLogs")}</button>
           </div>
         </div>
       {/if}
@@ -162,8 +226,15 @@
     user-select: text;
   }
   .addr {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
     font-size: 12px;
     margin-bottom: 14px;
+  }
+  .addr-text {
+    flex: 1;
+    min-width: 0;
     user-select: text;
     word-break: break-all;
   }
@@ -195,12 +266,40 @@
     border: 1px solid var(--border);
     color: var(--text-dim);
   }
+  .desc {
+    margin: 14px 0 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+    user-select: text;
+    font-size: 13px;
+  }
+  .links {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 14px;
+    margin-top: 12px;
+  }
+  .note {
+    margin-top: 12px;
+  }
   .play {
     display: flex;
     flex-direction: column;
     gap: 10px;
     padding: 16px;
     border-top: 1px solid var(--border);
+  }
+  .redial {
+    padding: 8px 10px;
+    border-radius: var(--radius);
+    border: 1px solid var(--warn);
+    font-size: 13px;
+  }
+  .reason {
+    margin-top: 4px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    user-select: text;
   }
   .field {
     display: flex;

@@ -2,7 +2,7 @@
 // Never part of the release build: main.ts imports it only when `import.meta.env.DEV`.
 import { emit } from "@tauri-apps/api/event";
 import { mockIPC } from "@tauri-apps/api/mocks";
-import type { AccountRow, ServerRow, Settings } from "./lib/api";
+import type { AccountRow, ServerDetails, ServerRow, Settings } from "./lib/api";
 
 const server = (
   address: string,
@@ -42,10 +42,33 @@ let settings: Settings = {
   compat_mode: false,
   minimize_on_play: true,
   theme: "dark",
+  language: "auto",
   last_account: null,
   favorites: ["ss14s://example-two.test"],
-  history: [{ address: "ss14s://example-one.test", name: null, last_played: new Date().toISOString() }],
+  history: [
+    {
+      address: "ss14s://example-one.test",
+      name: null,
+      last_played: new Date().toISOString(),
+      play_seconds: 3 * 3600 + 25 * 60,
+    },
+  ],
 };
+
+const details: Record<string, ServerDetails> = {
+  "ss14s://lizard.spacestation14.com": {
+    description:
+      "Official Wizards' Den test server.\nExpect bugs, updates and short rounds.",
+    links: [
+      { name: "Discord", url: "https://discord.gg/example" },
+      { name: "Rules", url: "https://example.com/rules" },
+    ],
+    auth: "required",
+  },
+  "ss14s://example-two.test": { description: null, links: [], auth: "optional" },
+};
+
+let storageUsed = 410 * 1024 * 1024;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 let cancelled = false;
@@ -84,6 +107,33 @@ export function installMock() {
         case "set_settings":
           settings = a.settings as Settings;
           return settings;
+        case "cached_servers":
+          return servers.slice(0, 3);
+        case "server_info": {
+          const d = details[a.address as string];
+          if (!d) throw "timeout";
+          return d;
+        }
+        case "open_url":
+          console.log("open_url", a.url);
+          return null;
+        case "get_autostart":
+          return false;
+        case "set_autostart":
+          return a.enabled;
+        case "storage_info":
+          return {
+            content: storageUsed * 0.7,
+            engines: storageUsed * 0.2,
+            modules: 0,
+            other: storageUsed * 0.1,
+            total: storageUsed,
+          };
+        case "clean_storage": {
+          const freed = storageUsed * 0.4;
+          storageUsed -= freed;
+          return { freed, versions_removed: 2, engines_removed: 1, modules_removed: 0 };
+        }
         case "toggle_favorite": {
           const addr = a.address as string;
           settings.favorites = settings.favorites.includes(addr)

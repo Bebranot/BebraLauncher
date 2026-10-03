@@ -1,20 +1,28 @@
 <script lang="ts">
+  import { formatPlayed, runLevelText, serverTitle } from "./format";
+  import { t, type Key } from "./i18n.svelte";
   import { app } from "./store.svelte";
-  import { runLevelText, serverTitle } from "./format";
 
   const MAX_TAGS = 3;
+  const TABS: [typeof app.filter, Key][] = [
+    ["all", "tab.all"],
+    ["favorites", "tab.favorites"],
+    ["recent", "tab.recent"],
+  ];
+
+  let { searchInput = $bindable() }: { searchInput?: HTMLInputElement } = $props();
 </script>
 
 <section>
   <div class="tabs" role="tablist">
-    {#each [["all", "Все"], ["favorites", "Избранное"], ["recent", "Недавние"]] as [id, label]}
+    {#each TABS as [id, label]}
       <button
         role="tab"
         class:on={app.filter === id}
         aria-selected={app.filter === id}
-        onclick={() => (app.filter = id as typeof app.filter)}
+        onclick={() => (app.filter = id)}
       >
-        {label}
+        {t(label)}
       </button>
     {/each}
   </div>
@@ -22,44 +30,55 @@
     <input
       type="text"
       class="search"
-      placeholder="Поиск по названию, адресу, тегам…"
+      placeholder={t("list.search")}
       bind:value={app.search}
+      bind:this={searchInput}
     />
     {#if app.languages.length > 0}
-      <select bind:value={app.language} aria-label="Язык">
-        <option value="">Любой язык</option>
+      <select bind:value={app.language} aria-label={t("list.language")}>
+        <option value="">{t("list.anyLanguage")}</option>
         {#each app.languages as l}<option value={l}>{l}</option>{/each}
       </select>
     {/if}
-    <select bind:value={app.sort} aria-label="Сортировка" disabled={app.filter === "recent"}>
-      <option value="players">По онлайну</option>
-      <option value="name">По названию</option>
+    <select
+      bind:value={app.sort}
+      aria-label={t("list.sort")}
+      disabled={app.filter === "recent"}
+    >
+      <option value="players">{t("list.sortPlayers")}</option>
+      <option value="name">{t("list.sortName")}</option>
     </select>
     <label class="check">
-      <input type="checkbox" bind:checked={app.hideEmpty} /> Без пустых
+      <input type="checkbox" bind:checked={app.hideEmpty} />
+      {t("list.hideEmpty")}
+    </label>
+    <label class="check">
+      <input type="checkbox" bind:checked={app.hideFull} />
+      {t("list.hideFull")}
     </label>
     <button onclick={() => app.refreshServers()} disabled={app.serversLoading}>
-      {app.serversLoading ? "Обновление…" : "Обновить"}
+      {app.serversLoading ? t("list.refreshing") : t("list.refresh")}
     </button>
   </div>
 
   {#if app.serversError}
-    <div class="notice error">
-      Не удалось обновить список: {app.serversError}
-    </div>
+    <div class="notice error">{t("list.refreshError", { error: app.serversError })}</div>
+  {:else if app.serversFromCache}
+    <div class="notice dim">{t("list.cached")}</div>
   {/if}
 
-  <div class="list" role="listbox" aria-label="Серверы">
+  <div class="list" role="listbox" aria-label={t("list.listbox")}>
     {#each app.visible as s (s.address)}
       {@const level = runLevelText(s.run_level)}
+      {@const played = app.filter === "recent" ? app.historyOf(s.address) : undefined}
       <button
         class="row"
         class:active={s.address === app.selectedAddress}
         role="option"
         aria-selected={s.address === app.selectedAddress}
-        onclick={() => (app.selectedAddress = s.address)}
+        onclick={() => app.select(s.address)}
         ondblclick={() => {
-          app.selectedAddress = s.address;
+          app.select(s.address);
           void app.startPlay();
         }}
       >
@@ -68,7 +87,7 @@
           class:on={app.favorites.has(s.address)}
           role="button"
           tabindex="-1"
-          title={app.favorites.has(s.address) ? "Убрать из избранного" : "В избранное"}
+          title={app.favorites.has(s.address) ? t("list.starRemove") : t("list.starAdd")}
           onclick={(e) => {
             e.stopPropagation();
             void app.toggleFavorite(s.address);
@@ -81,7 +100,9 @@
         <span class="main">
           <span class="name">{serverTitle(s)}</span>
           <span class="meta dim">
-            {[level, s.map].filter(Boolean).join(" · ")}
+            {[level, s.map, played && played.play_seconds > 0 ? formatPlayed(played.play_seconds) : null]
+              .filter(Boolean)
+              .join(" · ")}
           </span>
         </span>
         <span class="tags">
@@ -96,22 +117,22 @@
     {:else}
       <div class="empty dim">
         {#if app.serversLoading && app.servers.length === 0}
-          Загрузка списка серверов…
+          {t("list.loading")}
         {:else if app.filter === "favorites" && app.servers.length > 0}
-          Пока пусто: отметьте сервер звёздочкой.
+          {t("list.favEmpty")}
         {:else if app.filter === "recent" && app.servers.length > 0}
-          Вы ещё не играли на серверах из этого списка.
+          {t("list.recentEmpty")}
         {:else if app.servers.length === 0}
-          Список пуст.
+          {t("list.empty")}
         {:else}
-          Ничего не найдено.
+          {t("list.nothing")}
         {/if}
       </div>
     {/each}
   </div>
 
   <footer class="dim">
-    {app.visible.length} из {app.servers.length} серверов
+    {t("list.count", { shown: app.visible.length, total: app.servers.length })}
   </footer>
 </section>
 
@@ -140,18 +161,6 @@
     color: var(--text);
     border-bottom-color: var(--accent);
   }
-  .star {
-    flex: none;
-    width: 22px;
-    text-align: center;
-    font-size: 17px;
-    color: var(--text-dim);
-    cursor: pointer;
-  }
-  .star:hover,
-  .star.on {
-    color: var(--warn);
-  }
   .toolbar {
     display: flex;
     flex-wrap: wrap;
@@ -172,7 +181,7 @@
     color: var(--text-dim);
   }
   .notice {
-    padding: 8px 16px;
+    padding: 6px 16px;
     font-size: 13px;
     border-bottom: 1px solid var(--border);
   }
@@ -202,6 +211,18 @@
   .row.active {
     background: var(--bg-active);
     border-color: var(--accent);
+  }
+  .star {
+    flex: none;
+    width: 22px;
+    text-align: center;
+    font-size: 17px;
+    color: var(--text-dim);
+    cursor: pointer;
+  }
+  .star:hover,
+  .star.on {
+    color: var(--warn);
   }
   .main {
     flex: 1;

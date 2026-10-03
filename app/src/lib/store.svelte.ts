@@ -4,12 +4,16 @@ import {
   errorText,
   type AccountRow,
   type AppInfo,
+  type HistoryEntry,
   type PlayEvent,
   type PlayStage,
+  type RedialEvent,
+  type ServerDetails,
   type ServerRow,
   type Settings,
 } from "./api";
 import { serverTitle } from "./format";
+import { i18n } from "./i18n.svelte";
 import { applyTheme } from "./themes";
 
 export type SortKey = "players" | "name";
@@ -28,7 +32,29 @@ export type PlayState =
   | { phase: "failed"; message: string }
   | { phase: "exited"; code: number | null; logTail: string[] };
 
+export type DetailsState = ServerDetails | "loading" | "failed";
+
 const REFRESH_MS = 60_000;
+
+function isFull(s: ServerRow): boolean {
+  return s.soft_max_players > 0 && s.players >= s.soft_max_players;
+}
+
+/// A server that is not in the hub list (typed in, or named by a redial).
+function adhocRow(address: string): ServerRow {
+  return {
+    address,
+    name: null,
+    players: 0,
+    soft_max_players: 0,
+    tags: [],
+    map: null,
+    preset: null,
+    run_level: null,
+    round_start_time: null,
+    panic_bunker: null,
+  };
+}
 
 class Store {
   info = $state<AppInfo | null>(null);
@@ -37,8 +63,8 @@ class Store {
   servers = $state<ServerRow[]>([]);
   serversLoading = $state(false);
   serversError = $state<string | null>(null);
-  /** When the list was last loaded (ms), for "updated N s ago". */
-  serversLoadedAt = $state<number | null>(null);
+  /** The list on screen is the saved one: the hub has not answered yet (or at all). */
+  serversFromCache = $state(false);
 
   accounts = $state<AccountRow[]>([]);
   /** User id of the account to play with; `null` = guest. */
@@ -47,14 +73,22 @@ class Store {
   search = $state("");
   sort = $state<SortKey>("players");
   hideEmpty = $state(false);
+  hideFull = $state(false);
   filter = $state<ListFilter>("all");
   /** Language tag value (the part after `lang:`); empty = any. */
   language = $state("");
 
   selectedAddress = $state<string | null>(null);
+  /** The selected server when it is not in the list. */
+  adhoc = $state<ServerRow | null>(null);
+  details = $state<Record<string, DetailsState>>({});
+
   play = $state<PlayState>({ phase: "idle" });
+  /** Shown above the Play button: the game asked to reconnect. */
+  redial = $state<{ reason: string | null } | null>(null);
 
   readonly favorites = $derived(new Set(this.settings?.favorites ?? []));
+  readonly history = $derived(new Map((this.settings?.history ?? []).map((h) => [h.address, h])));
 
   /** Languages the servers announce with `lang:xx` tags, most common first. */
   readonly languages = $derived.by(() => {
@@ -76,10 +110,7 @@ class Store {
     if (this.filter === "favorites") {
       list = list.filter((s) => this.favorites.has(s.address));
     } else if (this.filter === "recent") {
-      const order = new Map((this.settings?.history ?? []).map((h, i) => [h.address, i]));
-      return list
-        .filter((s) => order.has(s.address))
-        .sort((a, b) => order.get(a.address)! - order.get(b.address)!);
+      list = list.filter((s) => this.history.has(s.address));
     }
     if (this.language) {
       const tag = `lang:${this.language}`;
@@ -93,6 +124,12 @@ class Store {
       );
     }
     if (this.hideEmpty) list = list.filter((s) => s.players > 0);
+    if (this.hideFull) list = list.filter((s) => !isFull(s));
+
+    if (this.filter === "recent") {
+      const order = new Map((this.settings?.history ?? []).map((h, i) => [h.address, i]));
+      return [...list].sort((a, b) => order.get(a.address)! - order.get(b.address)!);
+    }
     return [...list].sort((a, b) =>
       this.sort === "players"
         ? b.players - a.players || serverTitle(a).localeCompare(serverTitle(b))
@@ -101,30 +138,50 @@ class Store {
   });
 
   readonly selected = $derived(
-    this.servers.find((s) => s.address === this.selectedAddress) ?? null,
+    this.servers.find((s) => s.address === this.selectedAddress) ??
+      (this.adhoc?.address === this.selectedAddress ? this.adhoc : null),
+  );
+
+  readonly selectedDetails = $derived(
+    this.selectedAddress ? (this.details[this.selectedAddress] ?? null) : null,
   );
 
   readonly busy = $derived(this.play.phase === "preparing" || this.play.phase === "running");
 
   async init() {
+    // Listen first, so nothing the backend sends at startup (a redial) is missed.
+    await api.onPlay((e) => this.onPlayEvent(e));
+    await api.onRedial((e) => this.onRedial(e));
+
     await Promise.all([this.loadInfo(), this.loadSettings(), this.loadAccounts()]);
     this.pickDefaultAccount();
+
+    // Something to look at while the hub answers.
+    const cached = await api.cachedServers().catch(() => []);
+    if (cached.length > 0) {
+      this.servers = cached;
+      this.serversFromCache = true;
+    }
     void this.refreshServers();
     setInterval(() => {
       if (document.visibilityState === "visible" && !this.serversLoading) {
         void this.refreshServers();
       }
     }, REFRESH_MS);
-    await api.onPlay((e) => this.onPlayEvent(e));
   }
 
   private async loadInfo() {
     this.info = await api.appInfo().catch(() => null);
   }
 
-  private async loadSettings() {
-    this.settings = await api.getSettings().catch(() => null);
+  async loadSettings() {
+    this.settings = await api.getSettings().catch(() => this.settings);
+    this.applySettings();
+  }
+
+  private applySettings() {
     applyTheme(this.settings?.theme);
+    i18n.preference = this.settings?.language ?? "auto";
   }
 
   async loadAccounts() {
@@ -148,7 +205,7 @@ class Store {
     try {
       this.servers = await api.listServers();
       this.serversError = null;
-      this.serversLoadedAt = Date.now();
+      this.serversFromCache = false;
     } catch (e) {
       // Keep the old list on screen; just say the refresh failed.
       this.serversError = errorText(e);
@@ -159,7 +216,7 @@ class Store {
 
   async saveSettings(next: Settings) {
     this.settings = await api.setSettings(next);
-    applyTheme(this.settings.theme);
+    this.applySettings();
   }
 
   async toggleFavorite(address: string) {
@@ -168,14 +225,54 @@ class Store {
     if (favorites) this.settings = { ...this.settings, favorites };
   }
 
+  historyOf(address: string): HistoryEntry | undefined {
+    return this.history.get(address);
+  }
+
+  select(address: string | null) {
+    this.selectedAddress = address;
+    if (address) void this.loadDetails(address);
+  }
+
+  /** Moves the selection through the visible list (arrow keys). */
+  moveSelection(delta: number) {
+    const list = this.visible;
+    if (list.length === 0) return;
+    const i = list.findIndex((s) => s.address === this.selectedAddress);
+    const next =
+      i < 0 ? (delta > 0 ? 0 : list.length - 1) : Math.min(list.length - 1, Math.max(0, i + delta));
+    this.select(list[next].address);
+  }
+
+  /** What the server says about itself; asked once per server and run of the launcher. */
+  async loadDetails(address: string) {
+    if (this.details[address]) return;
+    this.details[address] = "loading";
+    try {
+      this.details[address] = await api.serverInfo(address);
+    } catch {
+      this.details[address] = "failed";
+    }
+  }
+
+  /** Selects a server that may not be in the list, and starts the game there. */
+  async connectTo(address: string) {
+    const typed = address.trim();
+    if (!typed || this.busy) return;
+    if (!this.servers.some((s) => s.address === typed)) this.adhoc = adhocRow(typed);
+    this.select(typed);
+    await this.startPlay();
+  }
+
   async startPlay() {
     const server = this.selected;
     if (!server || this.busy) return;
+    this.redial = null;
     this.play = { phase: "preparing", stage: "account", done: 0, total: 0, unit: "items" };
     try {
       await api.play(server.address, server.name, this.selectedAccount);
       // The backend put the server on top of the history; take it from there.
-      this.settings = await api.getSettings().catch(() => this.settings);
+      await this.loadSettings();
     } catch (e) {
       this.play = { phase: "failed", message: errorText(e) };
     }
@@ -187,6 +284,13 @@ class Store {
 
   dismissPlayResult() {
     if (!this.busy) this.play = { phase: "idle" };
+  }
+
+  private onRedial(e: RedialEvent) {
+    if (!this.servers.some((s) => s.address === e.address)) this.adhoc = adhocRow(e.address);
+    this.select(e.address);
+    this.redial = { reason: e.reason };
+    this.play = { phase: "preparing", stage: "account", done: 0, total: 0, unit: "items" };
   }
 
   private onPlayEvent(e: PlayEvent) {
@@ -205,13 +309,15 @@ class Store {
         break;
       case "running":
         this.play = { phase: "running", playsAs: e.plays_as };
+        // The backend recorded the server and the account for this game.
+        void this.loadSettings();
         break;
       case "exited":
         // A clean exit needs no message.
         this.play =
-          e.code === 0
-            ? { phase: "idle" }
-            : { phase: "exited", code: e.code, logTail: e.log_tail };
+          e.code === 0 ? { phase: "idle" } : { phase: "exited", code: e.code, logTail: e.log_tail };
+        // Time played was added when the game closed.
+        void this.loadSettings();
         break;
       case "failed":
         this.play = { phase: "failed", message: e.message };

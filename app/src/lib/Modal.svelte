@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
+  import { t } from "./i18n.svelte";
 
   let {
     title,
@@ -15,7 +16,7 @@
   <div class="modal" role="dialog" aria-modal="true" aria-label={title}>
     <header>
       <h2>{title}</h2>
-      <button class="close" onclick={onclose} aria-label="Закрыть">✕</button>
+      <button class="close" onclick={onclose} aria-label={t("dialog.close")}>✕</button>
     </header>
     <div class="body">{@render children()}</div>
   </div>

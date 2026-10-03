@@ -1,8 +1,8 @@
 // Colour themes. The colours themselves are CSS variables in app.css (`:root[data-theme=…]`).
 export const themes = [
-  { id: "dark", label: "Тёмная" },
-  { id: "light", label: "Светлая" },
-  { id: "ocean", label: "Океан" },
+  { id: "dark", label: "theme.dark" },
+  { id: "light", label: "theme.light" },
+  { id: "ocean", label: "theme.ocean" },
 ] as const;
 
 export function applyTheme(id: string | undefined): void {
