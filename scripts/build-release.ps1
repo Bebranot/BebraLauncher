@@ -24,5 +24,5 @@ Write-Host '==> App + installer'
 pnpm tauri build --config src-tauri/tauri.release.json
 if ($LASTEXITCODE -ne 0) { throw 'tauri build failed' }
 
-$setup = Get-ChildItem "$root/target/release/bundle/nsis/*-setup.exe" | Select-Object -First 1
+$setup = Get-ChildItem "$root/target/release/bundle/nsis/*-setup.exe" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
 Write-Host "==> Done: $($setup.FullName) ($([math]::Round($setup.Length / 1MB, 1)) MB)"
