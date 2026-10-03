@@ -1,8 +1,11 @@
 //! HTTP client setup and fallback-mirror requests (docs/protocol.md, section 1.1).
 
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
-use reqwest::{Client, RequestBuilder, Response};
+pub use reqwest::Client;
+use reqwest::{RequestBuilder, Response};
 use tokio::task::JoinSet;
 
 use crate::{Error, Result};
@@ -23,6 +26,8 @@ pub fn build_client() -> Result<Client> {
 pub struct UrlFallbackSet {
     urls: Vec<String>,
     attempt_delay: Duration,
+    /// How often each mirror answered first. Shared by every copy and by `join`ed sets.
+    wins: Arc<Vec<AtomicU64>>,
 }
 
 impl UrlFallbackSet {
@@ -40,9 +45,11 @@ impl UrlFallbackSet {
             })
             .collect();
         assert!(!urls.is_empty(), "UrlFallbackSet needs at least one url");
+        let wins = Arc::new(urls.iter().map(|_| AtomicU64::new(0)).collect());
         Self {
             urls,
             attempt_delay: ATTEMPT_DELAY,
+            wins,
         }
     }
 
@@ -60,7 +67,20 @@ impl UrlFallbackSet {
         Self {
             urls: self.urls.iter().map(|u| format!("{u}{suffix}")).collect(),
             attempt_delay: self.attempt_delay,
+            wins: self.wins.clone(),
         }
+    }
+
+    /// The mirror that answered first most often (the first one if none has answered yet).
+    /// Passed to the game as the auth server so it keeps using what works for us.
+    pub fn most_successful(&self) -> &str {
+        let mut best = 0;
+        for i in 1..self.urls.len() {
+            if self.wins[i].load(Ordering::Relaxed) > self.wins[best].load(Ordering::Relaxed) {
+                best = i;
+            }
+        }
+        &self.urls[best]
     }
 
     pub async fn get(&self, client: &Client) -> Result<Response> {
@@ -74,7 +94,8 @@ impl UrlFallbackSet {
     where
         F: Fn(&str) -> RequestBuilder,
     {
-        let mut tasks: JoinSet<std::result::Result<Response, reqwest::Error>> = JoinSet::new();
+        let mut tasks: JoinSet<(usize, std::result::Result<Response, reqwest::Error>)> =
+            JoinSet::new();
         let mut next = 0;
         let mut last_err: Option<Error> = None;
 
@@ -83,7 +104,7 @@ impl UrlFallbackSet {
                 if next >= self.urls.len() {
                     break;
                 }
-                tasks.spawn(build(&self.urls[next]).send());
+                self.spawn_attempt(&mut tasks, &build, next);
                 next += 1;
             }
 
@@ -93,19 +114,34 @@ impl UrlFallbackSet {
 
             tokio::select! {
                 joined = tasks.join_next() => match joined {
-                    Some(Ok(Ok(resp))) => return Ok(resp),
-                    Some(Ok(Err(e))) => last_err = Some(e.into()),
+                    Some(Ok((index, Ok(resp)))) => {
+                        self.wins[index].fetch_add(1, Ordering::Relaxed);
+                        return Ok(resp);
+                    }
+                    Some(Ok((_, Err(e)))) => last_err = Some(e.into()),
                     Some(Err(e)) => last_err = Some(Error::Other(format!("request task failed: {e}"))),
                     None => {}
                 },
                 _ = &mut delay, if more_mirrors => {
-                    tasks.spawn(build(&self.urls[next]).send());
+                    self.spawn_attempt(&mut tasks, &build, next);
                     next += 1;
                 }
             }
         }
 
         Err(last_err.unwrap_or_else(|| Error::Other("no mirrors to try".into())))
+    }
+
+    fn spawn_attempt<F>(
+        &self,
+        tasks: &mut JoinSet<(usize, std::result::Result<Response, reqwest::Error>)>,
+        build: &F,
+        index: usize,
+    ) where
+        F: Fn(&str) -> RequestBuilder,
+    {
+        let request = build(&self.urls[index]).send();
+        tasks.spawn(async move { (index, request.await) });
     }
 }
 
@@ -225,6 +261,27 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(body, "first");
+    }
+
+    #[tokio::test]
+    async fn most_successful_follows_who_answers() {
+        let dead = dead_url().await;
+        let good = spawn_server(Behavior::Reply("ok")).await;
+        let set = UrlFallbackSet::new([dead.clone(), good.clone()]);
+        assert_eq!(
+            set.most_successful(),
+            dead,
+            "first one until someone has answered"
+        );
+
+        let client = build_client().unwrap();
+        set.get(&client).await.unwrap();
+        assert_eq!(set.most_successful(), good);
+
+        // `join`ed sets count towards the same statistics.
+        let joined = set.join("x");
+        joined.get(&client).await.unwrap();
+        assert_eq!(set.most_successful(), good);
     }
 
     #[tokio::test]

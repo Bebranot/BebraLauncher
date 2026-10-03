@@ -2,7 +2,9 @@
 //!
 //! Protocol details live in `docs/protocol.md`; comments here point to its sections.
 
+pub mod accounts;
 pub mod addr;
+pub mod auth;
 pub mod content_db;
 pub mod download;
 pub mod engine;
@@ -15,6 +17,7 @@ pub mod manifest;
 pub mod modules;
 pub mod paths;
 pub mod process;
+pub mod secret;
 pub mod server;
 pub mod signature;
 pub mod updater;

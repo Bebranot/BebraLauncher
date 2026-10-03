@@ -2,6 +2,10 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context, Result};
+use bebra_core::accounts::{
+    self, AccountStatus, CredentialStore, Freshness, LoginResult, StoredAccount, TokenStore,
+};
+use bebra_core::auth::{AuthClient, DenyCode, Identity};
 use bebra_core::content_db::ContentDb;
 use bebra_core::download::{Progress, ProgressUnit};
 use bebra_core::hub::HubClient;
@@ -10,6 +14,8 @@ use bebra_core::server::AuthMode;
 use bebra_core::server::{self, ServerStatus};
 use bebra_core::{http, launch, updater, ServerAddr};
 use clap::{Parser, Subcommand};
+use time::OffsetDateTime;
+use uuid::Uuid;
 
 #[derive(Parser)]
 #[command(name = "bebra", about = "Debug CLI for bebra-core")]
@@ -50,6 +56,23 @@ enum Command {
         #[arg(long)]
         via_hub: bool,
     },
+    /// Log in to a Wizards' Den account. The password is asked for here and never stored.
+    Login {
+        /// Account name (asked for if left out).
+        #[arg(long, conflicts_with = "user_id")]
+        username: Option<String>,
+        /// Log in again to a saved account, by user id.
+        #[arg(long)]
+        user_id: Option<Uuid>,
+    },
+    /// List saved accounts.
+    Accounts {
+        /// Also ask the server whether each login is still valid.
+        #[arg(long)]
+        check: bool,
+    },
+    /// Log out and forget a saved account (name or user id).
+    Logout { account: String },
     /// Show which stored versions are used by a running game client.
     Running {
         #[arg(long)]
@@ -68,6 +91,12 @@ enum Command {
         /// Name to play under without an account.
         #[arg(long, default_value = launch::FALLBACK_USERNAME)]
         username: String,
+        /// Account to play with (name or user id). Default: the only saved account, if there is one.
+        #[arg(long, conflicts_with = "guest")]
+        account: Option<String>,
+        /// Play as a guest even if an account is saved.
+        #[arg(long)]
+        guest: bool,
         /// Use the GLES2 fallback renderer.
         #[arg(long)]
         compat: bool,
@@ -237,6 +266,9 @@ async fn main() -> Result<()> {
                 );
             }
         }
+        Command::Login { username, user_id } => login_command(&client, username, user_id).await?,
+        Command::Accounts { check } => accounts_command(&client, check).await?,
+        Command::Logout { account } => logout_command(&client, &account).await?,
         Command::Running { data_dir } => {
             let dirs = match data_dir {
                 Some(p) => DataDirs::at(p),
@@ -261,6 +293,8 @@ async fn main() -> Result<()> {
             via_hub,
             loader,
             username,
+            account,
+            guest,
             compat,
             no_connect,
             dry_run,
@@ -292,10 +326,15 @@ async fn main() -> Result<()> {
             if via_hub {
                 build.apply_self_hosting(&addr);
             }
-            if !no_connect && info.auth.mode == AuthMode::Required {
-                eprintln!(
-                    "note: this server requires an account; playing as a guest will be refused (accounts come later)"
-                );
+            let auth_client = AuthClient::official(client.clone());
+            let player = if no_connect || guest {
+                None
+            } else {
+                pick_account(&auth_client, account.as_deref()).await?
+            };
+            match &player {
+                Some(a) => println!("playing as {}", a.username),
+                None => println!("playing as a guest ({username})"),
             }
 
             let db = ContentDb::open(&dirs.content_db())?;
@@ -336,8 +375,16 @@ async fn main() -> Result<()> {
                     .into_iter()
                     .map(|m| (m.name, m.dir))
                     .collect(),
-                username,
-                auth: None,
+                username: player.as_ref().map_or(username, |a| a.username.clone()),
+                // Only servers that use accounts get the token.
+                auth: player
+                    .filter(|_| info.auth.mode != AuthMode::Disabled)
+                    .map(|a| launch::AuthEnv {
+                        token: a.token.expose().to_string(),
+                        user_id: a.user_id.to_string(),
+                        server_public_key: info.auth.public_key.clone(),
+                        auth_server_url: auth_client.most_successful_url().to_string(),
+                    }),
                 build,
                 connect: (!no_connect).then(|| launch::ConnectTarget {
                     connect_url: info.connect_url(&addr),
@@ -345,6 +392,11 @@ async fn main() -> Result<()> {
                 }),
                 compat_mode: compat,
             };
+            if !no_connect && spec.auth.is_none() && info.auth.mode == AuthMode::Required {
+                eprintln!(
+                    "note: this server requires an account; playing as a guest will be refused"
+                );
+            }
             let cmd = launch::build_command(&spec);
             println!("{}", cmd.describe());
             if dry_run {
@@ -375,6 +427,157 @@ async fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn read_line(prompt: &str) -> Result<String> {
+    eprint!("{prompt}");
+    std::io::Write::flush(&mut std::io::stderr())?;
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line)?;
+    Ok(line.trim().to_string())
+}
+
+async fn login_command(
+    client: &http::Client,
+    username: Option<String>,
+    user_id: Option<Uuid>,
+) -> Result<()> {
+    let auth = AuthClient::official(client.clone());
+    let store = CredentialStore::default();
+
+    // Who: a saved account by id, or a name typed here.
+    let name;
+    let who = match user_id {
+        Some(id) => Identity::UserId(id),
+        None => {
+            name = match username {
+                Some(n) => n,
+                None => read_line("Account name: ")?,
+            };
+            if name.is_empty() {
+                anyhow::bail!("no account name given");
+            }
+            Identity::Username(&name)
+        }
+    };
+
+    let password = rpassword::prompt_password("Password (not shown, not saved): ")?;
+    let mut tfa: Option<String> = None;
+    for _ in 0..3 {
+        match accounts::login(&auth, &store, who, &password, tfa.as_deref()).await? {
+            LoginResult::Success(acc) => {
+                println!(
+                    "logged in as {} (login valid until {})",
+                    acc.username,
+                    acc.expire_time.date()
+                );
+                return Ok(());
+            }
+            LoginResult::Denied {
+                code: DenyCode::TfaRequired | DenyCode::TfaInvalid,
+                ..
+            } => {
+                tfa = Some(rpassword::prompt_password("Two-factor code: ")?);
+            }
+            LoginResult::Denied { errors, code } => {
+                for e in &errors {
+                    eprintln!("  {e}");
+                }
+                anyhow::bail!("login refused ({code:?})");
+            }
+        }
+    }
+    anyhow::bail!("login refused: the two-factor code was not accepted")
+}
+
+fn describe_freshness(acc: &StoredAccount, now: OffsetDateTime) -> &'static str {
+    match accounts::freshness(acc.expire_time, now) {
+        Freshness::Fine => "valid",
+        Freshness::NeedsRefresh => "valid, will be renewed",
+        Freshness::Expired => "expired: log in again",
+    }
+}
+
+async fn accounts_command(client: &http::Client, check: bool) -> Result<()> {
+    let store = CredentialStore::default();
+    let list = store.list()?;
+    if list.is_empty() {
+        println!("no saved accounts (use `bebra login`)");
+        return Ok(());
+    }
+    let auth = AuthClient::official(client.clone());
+    let now = OffsetDateTime::now_utc();
+    for acc in list {
+        let status = if check {
+            match accounts::ensure_fresh(&auth, &store, acc.clone(), now, true).await {
+                Ok((_, AccountStatus::Available)) => "accepted by the server".to_string(),
+                Ok((_, AccountStatus::Expired)) => "no longer accepted: log in again".to_string(),
+                Err(e) => format!("could not check ({e})"),
+            }
+        } else {
+            describe_freshness(&acc, now).to_string()
+        };
+        println!(
+            "{}  {}  until {}  {status}",
+            acc.username,
+            acc.user_id,
+            acc.expire_time.date()
+        );
+    }
+    Ok(())
+}
+
+async fn logout_command(client: &http::Client, selector: &str) -> Result<()> {
+    let store = CredentialStore::default();
+    let list = store.list()?;
+    let acc = accounts::find_account(&list, selector)?;
+    let told = accounts::logout(&AuthClient::official(client.clone()), &store, acc).await?;
+    println!(
+        "{} forgotten{}",
+        acc.username,
+        if told {
+            ""
+        } else {
+            " (the server could not be reached; the old login stays valid there until it expires)"
+        }
+    );
+    Ok(())
+}
+
+/// The account to play with: the one asked for, or the only saved one. Its login is renewed or
+/// checked first; an account that has to log in again is an error.
+async fn pick_account(auth: &AuthClient, selector: Option<&str>) -> Result<Option<StoredAccount>> {
+    let store = CredentialStore::default();
+    let list = store.list()?;
+    let chosen = match selector {
+        Some(s) => accounts::find_account(&list, s)?.clone(),
+        None => match list.as_slice() {
+            [] => return Ok(None),
+            [one] => one.clone(),
+            _ => anyhow::bail!(
+                "several accounts are saved: pick one with --account NAME, or use --guest"
+            ),
+        },
+    };
+
+    let now = OffsetDateTime::now_utc();
+    match accounts::ensure_fresh(auth, &store, chosen.clone(), now, true).await {
+        Ok((acc, AccountStatus::Available)) => Ok(Some(acc)),
+        Ok((acc, AccountStatus::Expired)) => anyhow::bail!(
+            "the login of {} has expired: run `bebra login --user-id {}`",
+            acc.username,
+            acc.user_id
+        ),
+        Err(e) if accounts::freshness(chosen.expire_time, now) != Freshness::Expired => {
+            // The auth server can't be reached right now; the saved token may still work.
+            eprintln!(
+                "warning: could not check the login of {} ({e}); using the saved one",
+                chosen.username
+            );
+            Ok(Some(chosen))
+        }
+        Err(e) => Err(e.into()),
+    }
 }
 
 fn print_cleanup(db: &ContentDb) -> Result<()> {
