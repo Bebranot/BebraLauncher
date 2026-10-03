@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { detectLang, i18n, interpolate, t } from "./i18n.svelte";
-// Importing the module also gives us both dictionaries through `t`; compare them by probing keys.
-import * as source from "./i18n.svelte?raw";
+import { detectLang, dictionaries, i18n, interpolate, t } from "./i18n.svelte";
+import { nativeName, UI_LANGUAGES } from "./languages";
 
 describe("interpolate", () => {
   it("fills named placeholders", () => {
@@ -15,12 +14,32 @@ describe("interpolate", () => {
 });
 
 describe("detectLang", () => {
-  it("gives Russian to Russian-speaking locales", () => {
-    for (const l of ["ru", "ru-RU", "uk-UA", "be"]) expect(detectLang(l)).toBe("ru");
+  it("picks the language of the Windows locale when there is a translation", () => {
+    expect(detectLang("ru-RU")).toBe("ru");
+    expect(detectLang("uk-UA")).toBe("uk");
+    expect(detectLang("de-AT")).toBe("de");
+    expect(detectLang("en-GB")).toBe("en");
   });
 
-  it("gives English to everything else", () => {
-    for (const l of ["en-US", "de-DE", "pt-BR", "", "rum"]) expect(detectLang(l)).toBe("en");
+  it("gives Belarusian speakers Russian and everything else English", () => {
+    expect(detectLang("be")).toBe("ru");
+    for (const l of ["fr-FR", "pt-BR", "", "rum"]) expect(detectLang(l)).toBe("en");
+  });
+});
+
+describe("nativeName", () => {
+  it("names a language by itself, whatever the case of the code", () => {
+    expect(nativeName("ru")).toBe("Русский");
+    expect(nativeName("ru-RU")).toBe("Русский");
+    expect(nativeName("RU-ru")).toBe("Русский");
+    expect(nativeName("uk")).toBe("Українська");
+    expect(nativeName("de")).toBe("Deutsch");
+    expect(nativeName("en")).toBe("English");
+  });
+
+  it("keeps the region where it changes the language, and leaves non-codes alone", () => {
+    expect(nativeName("pt-BR").toLowerCase()).toContain("brasil");
+    expect(nativeName("not a code!")).toBe("not a code!");
   });
 });
 
@@ -30,26 +49,29 @@ describe("t", () => {
     expect(t("tab.servers")).toBe("Серверы");
     i18n.preference = "en";
     expect(t("tab.servers")).toBe("Servers");
+    i18n.preference = "de";
+    expect(t("tab.servers")).toBe("Server");
     i18n.preference = "auto";
   });
 
-  it("both languages use the same placeholders in every string", () => {
-    // Pull `"key": "text"` pairs of the two dictionaries out of the source and compare them.
-    const text = (source as unknown as { default: string }).default;
-    const ruBlock = text.slice(text.indexOf("const ru = {"), text.indexOf("} as const;"));
-    const enBlock = text.slice(text.indexOf("const en: Record<Key, string> = {"));
-    const pairs = (block: string) =>
-      new Map(
-        [...block.matchAll(/"([\w.]+)":\s*\n?\s*"((?:[^"\\]|\\.)*)"/g)].map((m) => [m[1], m[2]]),
-      );
-    const placeholders = (s: string) => [...s.matchAll(/\{(\w+)\}/g)].map((m) => m[1]).sort();
+  it("falls back to the Windows language for a saved language it does not know", () => {
+    i18n.preference = "xx";
+    expect(UI_LANGUAGES as readonly string[]).toContain(i18n.lang);
+    i18n.preference = "auto";
+  });
 
-    const ru = pairs(ruBlock);
-    const en = pairs(enBlock);
-    expect(ru.size).toBeGreaterThan(100);
-    expect([...en.keys()].sort()).toEqual([...ru.keys()].sort());
-    for (const [key, value] of ru) {
-      expect(placeholders(en.get(key)!), key).toEqual(placeholders(value));
+  it("every language has the same keys and placeholders as Russian", () => {
+    const placeholders = (s: string) => [...s.matchAll(/\{(\w+)\}/g)].map((m) => m[1]).sort();
+    const reference = dictionaries.ru;
+    expect(Object.keys(reference).length).toBeGreaterThan(100);
+    for (const lang of UI_LANGUAGES) {
+      const dict = dictionaries[lang];
+      expect(Object.keys(dict).sort(), lang).toEqual(Object.keys(reference).sort());
+      for (const [key, value] of Object.entries(reference)) {
+        expect(placeholders(dict[key as keyof typeof dict]), `${lang}: ${key}`).toEqual(
+          placeholders(value),
+        );
+      }
     }
   });
 });

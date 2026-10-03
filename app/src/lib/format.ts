@@ -62,12 +62,12 @@ export function pingClass(ms: number | null | undefined): PingClass {
 /** The CSS grid columns of the server table for the columns the player wants. */
 export function gridTemplate(c: Columns): string {
   const parts = ["minmax(0, 1fr)"];
-  if (c.mode) parts.push("130px");
-  if (c.map) parts.push("130px");
-  if (c.ping) parts.push("84px");
-  if (c.round_time) parts.push("124px");
-  if (c.players) parts.push("100px");
-  parts.push("132px"); // the Connect button
+  if (c.mode) parts.push("110px");
+  if (c.map) parts.push("110px");
+  if (c.ping) parts.push("88px");
+  if (c.round_time) parts.push("96px");
+  if (c.players) parts.push("80px");
+  parts.push("124px"); // the Connect button
   return parts.join(" ");
 }
 
@@ -87,7 +87,9 @@ export function stageText(stage: PlayStage): string {
   return t(`stage.${stage}` as Key);
 }
 
+const DATE_LOCALE = { ru: "ru-RU", en: "en-GB", uk: "uk-UA", de: "de-DE" } as const;
+
 export function formatDate(iso: string): string {
   const d = Date.parse(iso);
-  return Number.isNaN(d) ? iso : new Date(d).toLocaleDateString(i18n.lang === "ru" ? "ru-RU" : "en-GB");
+  return Number.isNaN(d) ? iso : new Date(d).toLocaleDateString(DATE_LOCALE[i18n.lang]);
 }

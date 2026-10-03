@@ -215,8 +215,10 @@ describe("names", () => {
   });
 
   it("languages by their own names where the runtime knows them", () => {
-    expect(languageName("ru", "en").toLowerCase()).toContain("russian");
-    expect(languageName("not a code!", "en")).toBe("not a code!");
+    expect(languageName("ru")).toBe("Русский");
+    expect(languageName("RU-ru")).toBe("Русский");
+    expect(languageName("de")).toBe("Deutsch");
+    expect(languageName("not a code!")).toBe("not a code!");
   });
 
   it("lists the available values, most common first, one count per server", () => {

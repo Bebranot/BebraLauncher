@@ -3,6 +3,7 @@
 // ticking nothing means "don't care"; "unspecified" matches servers that carry no tag of that kind.
 
 import type { ServerRow } from "./api";
+import { nativeName, type Lang } from "./languages";
 
 /** Value for "the server does not say" in the language, region and roleplay categories. */
 export const UNSPECIFIED = "";
@@ -189,46 +190,46 @@ export function sortServers(
 
 // ---------------------------------------------------------------- names
 
-const REGIONS: Record<string, { ru: string; en: string }> = {
-  af_c: { ru: "Центральная Африка", en: "Central Africa" },
-  af_n: { ru: "Северная Африка", en: "North Africa" },
-  af_s: { ru: "Южная Африка", en: "South Africa" },
-  ata: { ru: "Антарктида", en: "Antarctica" },
-  as_e: { ru: "Восточная Азия", en: "East Asia" },
-  as_n: { ru: "Северная Азия", en: "North Asia" },
-  as_se: { ru: "Юго-Восточная Азия", en: "Southeast Asia" },
-  am_c: { ru: "Центральная Америка", en: "Central America" },
-  eu_e: { ru: "Восточная Европа", en: "Eastern Europe" },
-  eu_w: { ru: "Западная Европа", en: "Western Europe" },
-  grl: { ru: "Гренландия", en: "Greenland" },
-  ind: { ru: "Индия", en: "India" },
-  me: { ru: "Ближний Восток", en: "Middle East" },
-  luna: { ru: "Луна", en: "The Moon" },
-  am_n_c: { ru: "Северная Америка: центр", en: "North America: Central" },
-  am_n_e: { ru: "Северная Америка: восток", en: "North America: East" },
-  am_n_w: { ru: "Северная Америка: запад", en: "North America: West" },
-  oce: { ru: "Океания", en: "Oceania" },
-  am_s_e: { ru: "Южная Америка: восток", en: "South America: East" },
-  am_s_s: { ru: "Южная Америка: юг", en: "South America: South" },
-  am_s_w: { ru: "Южная Америка: запад", en: "South America: West" },
+const REGIONS: Record<string, Record<Lang, string>> = {
+  af_c: { ru: "Центральная Африка", en: "Central Africa", uk: "Центральна Африка", de: "Zentralafrika" },
+  af_n: { ru: "Северная Африка", en: "North Africa", uk: "Північна Африка", de: "Nordafrika" },
+  af_s: { ru: "Южная Африка", en: "South Africa", uk: "Південна Африка", de: "Südafrika" },
+  ata: { ru: "Антарктида", en: "Antarctica", uk: "Антарктида", de: "Antarktis" },
+  as_e: { ru: "Восточная Азия", en: "East Asia", uk: "Східна Азія", de: "Ostasien" },
+  as_n: { ru: "Северная Азия", en: "North Asia", uk: "Північна Азія", de: "Nordasien" },
+  as_se: { ru: "Юго-Восточная Азия", en: "Southeast Asia", uk: "Південно-Східна Азія", de: "Südostasien" },
+  am_c: { ru: "Центральная Америка", en: "Central America", uk: "Центральна Америка", de: "Mittelamerika" },
+  eu_e: { ru: "Восточная Европа", en: "Eastern Europe", uk: "Східна Європа", de: "Osteuropa" },
+  eu_w: { ru: "Западная Европа", en: "Western Europe", uk: "Західна Європа", de: "Westeuropa" },
+  grl: { ru: "Гренландия", en: "Greenland", uk: "Гренландія", de: "Grönland" },
+  ind: { ru: "Индия", en: "India", uk: "Індія", de: "Indien" },
+  me: { ru: "Ближний Восток", en: "Middle East", uk: "Близький Схід", de: "Naher Osten" },
+  luna: { ru: "Луна", en: "The Moon", uk: "Місяць", de: "Der Mond" },
+  am_n_c: { ru: "Северная Америка: центр", en: "North America: Central", uk: "Північна Америка: центр", de: "Nordamerika: Mitte" },
+  am_n_e: { ru: "Северная Америка: восток", en: "North America: East", uk: "Північна Америка: схід", de: "Nordamerika: Osten" },
+  am_n_w: { ru: "Северная Америка: запад", en: "North America: West", uk: "Північна Америка: захід", de: "Nordamerika: Westen" },
+  oce: { ru: "Океания", en: "Oceania", uk: "Океанія", de: "Ozeanien" },
+  am_s_e: { ru: "Южная Америка: восток", en: "South America: East", uk: "Південна Америка: схід", de: "Südamerika: Osten" },
+  am_s_s: { ru: "Южная Америка: юг", en: "South America: South", uk: "Південна Америка: південь", de: "Südamerika: Süden" },
+  am_s_w: { ru: "Южная Америка: запад", en: "South America: West", uk: "Південна Америка: захід", de: "Südamerika: Westen" },
 };
 
 /** The name of a region code in the given language; unknown codes are shown as they are. */
-export function regionName(code: string, lang: "ru" | "en"): string {
+export function regionName(code: string, lang: Lang): string {
   return REGIONS[code]?.[lang] ?? code;
 }
 
-/** The name of a language code in the given interface language; unknown codes as they are. */
-export function languageName(code: string, lang: "ru" | "en"): string {
-  try {
-    const name = new Intl.DisplayNames([lang], { type: "language" }).of(code);
-    if (name && name.toLowerCase() !== code.toLowerCase()) {
-      return name.charAt(0).toUpperCase() + name.slice(1);
-    }
-  } catch {
-    // Not a valid language code: fall through.
-  }
-  return code;
+/** A language by its own name ("Русский"), never as a code; unknown codes as they are. */
+export function languageName(code: string): string {
+  return nativeName(code);
+}
+
+/** What a server tag says to a person: `lang:ru-RU` is "Русский", `region:eu_w` a region name. */
+export function tagLabel(tag: string, lang: Lang): string {
+  const lower = tag.toLowerCase();
+  if (lower.startsWith("lang:")) return nativeName(tag.slice(5));
+  if (lower.startsWith("region:")) return regionName(lower.slice(7), lang);
+  return tag;
 }
 
 /** The distinct values of a tag kind over the servers, in a stable order (most common first). */

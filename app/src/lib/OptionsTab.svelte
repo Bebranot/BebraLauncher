@@ -10,6 +10,7 @@
   } from "./api";
   import { formatBytes } from "./format";
   import { t, type Key } from "./i18n.svelte";
+  import { nativeName, UI_LANGUAGES } from "./languages";
   import Option from "./Option.svelte";
   import { app } from "./store.svelte";
   import {
@@ -304,8 +305,9 @@
         <span>{t("opt.language")}</span>
         <select value={s.language} onchange={(e) => app.updateSettings({ language: e.currentTarget.value })}>
           <option value="auto">{t("opt.langAuto")}</option>
-          <option value="ru">Русский</option>
-          <option value="en">English</option>
+          {#each UI_LANGUAGES as code (code)}
+            <option value={code}>{nativeName(code)}</option>
+          {/each}
         </select>
       </label>
 
@@ -425,7 +427,7 @@
                 <div>
                   <b>{pack.name}</b>
                   <span class="sub small">
-                    {pack.id}{#if pack.problems.length === 0} · {t("pack.files", { count: pack.files })} · {pack.cultures.join(", ")}{/if}
+                    {pack.id}{#if pack.problems.length === 0} · {t("pack.files", { count: pack.files })} · {pack.cultures.map(nativeName).join(", ")}{/if}
                   </span>
                 </div>
                 {#if pack.description}<div class="sub small">{pack.description}</div>{/if}
@@ -583,16 +585,29 @@
   .tab {
     height: 100%;
     overflow-y: auto;
-    padding: 8px 18px 24px;
+    padding: 16px 14px 28px;
     display: flex;
     flex-direction: column;
-    gap: 22px;
+    align-items: center;
+    gap: 14px;
   }
   section {
     display: flex;
     flex-direction: column;
-    gap: 10px;
-    max-width: 760px;
+    gap: 12px;
+    width: 100%;
+    max-width: 720px;
+    padding: 16px 18px 18px;
+    background: var(--tint);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+  }
+  section > h2 {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--sub);
   }
   .field {
     display: flex;
@@ -632,9 +647,10 @@
     display: flex;
     flex-direction: column;
     gap: 8px;
-    padding: 10px 12px;
-    border: 1px solid var(--ctrl-mid);
-    background: var(--popup);
+    padding: 12px 14px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: var(--tint);
   }
   .colors {
     display: grid;
@@ -670,12 +686,13 @@
     display: flex;
     align-items: flex-start;
     gap: 10px;
-    padding: 6px 8px;
-    background: var(--popup);
-    border: 1px solid var(--ctrl-mid);
+    padding: 8px 10px;
+    background: var(--tint);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
   }
   .packs li.bad {
-    border-color: var(--bad);
+    border-color: color-mix(in srgb, var(--bad) 60%, transparent);
   }
   .version {
     cursor: default;
@@ -686,15 +703,15 @@
     word-break: break-all;
   }
   .debug {
-    padding-top: 14px;
-    border-top: 2px solid var(--accent);
+    border-color: color-mix(in srgb, var(--accent) 40%, transparent);
   }
   pre {
     margin: 4px 0 0;
-    padding: 8px;
+    padding: 10px;
     max-width: 100%;
-    background: var(--popup);
-    border: 1px solid var(--ctrl-mid);
+    background: var(--tint);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
     font-size: 12px;
     white-space: pre-wrap;
     word-break: break-all;

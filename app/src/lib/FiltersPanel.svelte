@@ -33,7 +33,7 @@
             onchange={(e) =>
               (app.filters.languages = flip(app.filters.languages, value, e.currentTarget.checked))}
           />
-          {value === UNSPECIFIED ? t("filters.unspecified") : languageName(value, i18n.lang)}
+          {value === UNSPECIFIED ? t("filters.unspecified") : languageName(value)}
         </label>
       {/each}
     </section>
@@ -116,11 +116,21 @@
 
 <style>
   .panel {
-    background: var(--bg);
-    box-shadow: 0 -2px 4px #000;
+    background: var(--tint);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
     overflow: auto;
     height: 100%;
-    padding: 8px 12px 12px;
+    padding: 12px 16px 14px;
+    animation: fade-in 0.14s ease-out;
+  }
+  h3 {
+    margin-bottom: 4px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--sub);
   }
   .grid {
     display: grid;
