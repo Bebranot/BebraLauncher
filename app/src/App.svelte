@@ -2,6 +2,7 @@
   import { onMount, tick } from "svelte";
   import ConnectingOverlay from "./lib/ConnectingOverlay.svelte";
   import DialogHost from "./lib/DialogHost.svelte";
+  import ErpOverlay from "./lib/ErpOverlay.svelte";
   import FavoritesTab from "./lib/FavoritesTab.svelte";
   import Header from "./lib/Header.svelte";
   import NewsTab from "./lib/NewsTab.svelte";
@@ -68,6 +69,7 @@
 
 <ConnectingOverlay />
 <DialogHost />
+<ErpOverlay />
 <Toast />
 
 <style>

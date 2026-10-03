@@ -11,6 +11,7 @@
   import { formatBytes } from "./format";
   import { t, type Key } from "./i18n.svelte";
   import { nativeName, UI_LANGUAGES } from "./languages";
+  import ErpPromo from "./ErpPromo.svelte";
   import Option from "./Option.svelte";
   import { app } from "./store.svelte";
   import {
@@ -335,6 +336,8 @@
       <Option label={t("opt.links")} hint={t("opt.linksHint")} checked={links} onchange={setLinks} />
       <Option label={t("opt.ignoreRedial")} hint={t("opt.ignoreRedialHint")} checked={s.ignore_redial} onchange={(v) => app.updateSettings({ ignore_redial: v })} />
     </section>
+
+    <ErpPromo />
 
     <!-- ------------------------------------------------------------ appearance -->
     <section>
