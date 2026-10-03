@@ -40,6 +40,12 @@
         {#each app.languages as l}<option value={l}>{l}</option>{/each}
       </select>
     {/if}
+    {#if app.regions.length > 0}
+      <select bind:value={app.region} aria-label={t("list.region")}>
+        <option value="">{t("list.anyRegion")}</option>
+        {#each app.regions as r}<option value={r}>{r}</option>{/each}
+      </select>
+    {/if}
     <select
       bind:value={app.sort}
       aria-label={t("list.sort")}

@@ -40,6 +40,20 @@ function isFull(s: ServerRow): boolean {
   return s.soft_max_players > 0 && s.players >= s.soft_max_players;
 }
 
+/** Values of the tags that start with `prefix`, most common first. */
+export function tagValues(servers: ServerRow[], prefix: string): string[] {
+  const counts = new Map<string, number>();
+  for (const s of servers) {
+    for (const t of s.tags) {
+      if (t.startsWith(prefix)) {
+        const value = t.slice(prefix.length);
+        counts.set(value, (counts.get(value) ?? 0) + 1);
+      }
+    }
+  }
+  return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([v]) => v);
+}
+
 /// A server that is not in the hub list (typed in, or named by a redial).
 function adhocRow(address: string): ServerRow {
   return {
@@ -77,6 +91,8 @@ class Store {
   filter = $state<ListFilter>("all");
   /** Language tag value (the part after `lang:`); empty = any. */
   language = $state("");
+  /** Region tag value (the part after `region:`); empty = any. */
+  region = $state("");
 
   selectedAddress = $state<string | null>(null);
   /** The selected server when it is not in the list. */
@@ -93,18 +109,9 @@ class Store {
   readonly history = $derived(new Map((this.settings?.history ?? []).map((h) => [h.address, h])));
 
   /** Languages the servers announce with `lang:xx` tags, most common first. */
-  readonly languages = $derived.by(() => {
-    const counts = new Map<string, number>();
-    for (const s of this.servers) {
-      for (const t of s.tags) {
-        if (t.startsWith("lang:")) {
-          const l = t.slice(5);
-          counts.set(l, (counts.get(l) ?? 0) + 1);
-        }
-      }
-    }
-    return [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([l]) => l);
-  });
+  readonly languages = $derived(tagValues(this.servers, "lang:"));
+  /** Regions the servers announce with `region:xx` tags, most common first. */
+  readonly regions = $derived(tagValues(this.servers, "region:"));
 
   readonly visible = $derived.by(() => {
     const q = this.search.trim().toLowerCase();
@@ -116,6 +123,10 @@ class Store {
     }
     if (this.language) {
       const tag = `lang:${this.language}`;
+      list = list.filter((s) => s.tags.includes(tag));
+    }
+    if (this.region) {
+      const tag = `region:${this.region}`;
       list = list.filter((s) => s.tags.includes(tag));
     }
     if (q) {

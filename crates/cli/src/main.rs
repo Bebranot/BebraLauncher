@@ -13,7 +13,7 @@ use bebra_core::hub::HubClient;
 use bebra_core::paths::DataDirs;
 use bebra_core::server::AuthMode;
 use bebra_core::server::{self, ServerStatus};
-use bebra_core::{http, launch, play, updater, ServerAddr};
+use bebra_core::{http, launch, play, storage, updater, ServerAddr};
 use clap::{Parser, Subcommand};
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -76,6 +76,16 @@ enum Command {
     Logout { account: String },
     /// Show which stored versions are used by a running game client.
     Running {
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
+    },
+    /// Show how much disk space the launcher uses.
+    Storage {
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
+    },
+    /// Remove old game versions, unused engines and modules, and unfinished downloads.
+    Clean {
         #[arg(long)]
         data_dir: Option<PathBuf>,
     },
@@ -270,6 +280,45 @@ async fn main() -> Result<()> {
         Command::Login { username, user_id } => login_command(&client, username, user_id).await?,
         Command::Accounts { check } => accounts_command(&client, check).await?,
         Command::Logout { account } => logout_command(&client, &account).await?,
+        Command::Storage { data_dir } => {
+            let dirs = match data_dir {
+                Some(p) => DataDirs::at(p),
+                None => DataDirs::default_windows()?,
+            };
+            let r = storage::report(&dirs);
+            println!("data folder: {}", dirs.root().display());
+            for (name, bytes) in [
+                ("games (content.db)", r.content_db),
+                ("engines", r.engines),
+                ("modules", r.modules),
+                ("temporary", r.scratch),
+                ("logs", r.logs),
+                ("total", r.total()),
+            ] {
+                println!("{name:>20}  {}", human_size(bytes));
+            }
+        }
+        Command::Clean { data_dir } => {
+            let dirs = match data_dir {
+                Some(p) => DataDirs::at(p),
+                None => DataDirs::default_windows()?,
+            };
+            let db = ContentDb::open(&dirs.content_db())?;
+            let r = storage::clean(&dirs, &db)?;
+            println!(
+                "removed {} old versions, {} engines, {} modules; freed {}",
+                r.cull.versions_removed,
+                r.engines_removed,
+                r.modules_removed,
+                human_size(r.bytes_freed)
+            );
+            if r.cull.versions_in_use > 0 {
+                println!(
+                    "{} old versions kept because the game is running",
+                    r.cull.versions_in_use
+                );
+            }
+        }
         Command::Running { data_dir } => {
             let dirs = match data_dir {
                 Some(p) => DataDirs::at(p),
@@ -529,6 +578,21 @@ async fn pick_account(auth: &AuthClient, selector: Option<&str>) -> Result<Optio
             Ok(Some(chosen))
         }
         Err(e) => Err(e.into()),
+    }
+}
+
+fn human_size(bytes: u64) -> String {
+    const UNITS: [&str; 4] = ["B", "KB", "MB", "GB"];
+    let mut v = bytes as f64;
+    let mut i = 0;
+    while v >= 1024.0 && i < UNITS.len() - 1 {
+        v /= 1024.0;
+        i += 1;
+    }
+    if i == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{v:.1} {}", UNITS[i])
     }
 }
 
