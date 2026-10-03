@@ -4,6 +4,7 @@
   import { t } from "./i18n.svelte";
   import Icon from "./Icon.svelte";
   import Logo from "./Logo.svelte";
+  import TabBar from "./TabBar.svelte";
 
   // The same community links as the official launcher's header.
   const DISCORD = "https://discord.ss14.io/";
@@ -11,46 +12,43 @@
 </script>
 
 <header>
-  <div class="logo"><Logo /></div>
+  <Logo />
+  <TabBar />
   <div class="right">
-    <div class="links">
-      <button class="btn open-both" onclick={() => api.openUrl(DISCORD)}>
-        <span class="with-icon"><Icon name="chat" size={16} />{t("header.discord")}</span>
-      </button>
-      <button class="btn open-l" onclick={() => api.openUrl(WEBSITE)}>
-        <span class="with-icon"><Icon name="web" size={16} />{t("header.website")}</span>
-      </button>
-    </div>
+    <button
+      class="btn ghost icon"
+      title={t("header.discord")}
+      aria-label={t("header.discord")}
+      onclick={() => api.openUrl(DISCORD)}
+    >
+      <Icon name="chat" size={18} />
+    </button>
+    <button
+      class="btn ghost icon"
+      title={t("header.website")}
+      aria-label={t("header.website")}
+      onclick={() => api.openUrl(WEBSITE)}
+    >
+      <Icon name="web" size={18} />
+    </button>
     <AccountDropdown />
   </div>
 </header>
-<div class="gold-line"></div>
 
 <style>
   header {
+    flex: none;
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    padding: 8px 8px 6px 14px;
-    background: var(--popup);
-  }
-  .logo {
-    display: flex;
-    align-items: center;
+    gap: 14px;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--line);
   }
   .right {
     display: flex;
-    flex-direction: column;
-    align-items: flex-end;
-    gap: 3px;
-  }
-  .links {
-    display: flex;
-  }
-  .with-icon {
-    display: inline-flex;
     align-items: center;
-    gap: 6px;
+    gap: 4px;
+    margin-left: auto;
+    min-width: 0;
   }
 </style>

@@ -7,6 +7,7 @@
 
 export const THEME_IDS = [
   "dark",
+  "classic",
   "light",
   "dark_red",
   "dark_purple",
@@ -46,7 +47,29 @@ export interface Tokens {
 type Palette = Omit<Tokens, "scrollSep"> & { scrollSep?: string };
 
 const PALETTES: Record<Exclude<ThemeId, "custom">, Palette> = {
+  // The default: graphite with one calm accent. Surfaces are told apart by tone, not by lines.
   dark: {
+    background: "#15161A",
+    popup: "#1C1D22",
+    foreground: "#E7E8EC",
+    muted: "#6A6C77",
+    controlMid: "#272930",
+    controlHigh: "#343743",
+    accent: "#7C9BFF",
+    sub: "#9B9EAB",
+    stripeEdge: "#2A2C33",
+    buttonHover: "#30333C",
+    tabSelected: "#267C9BFF",
+    tabHover: "#14FFFFFF",
+    separator: "#26FFFFFF",
+    separatorFade: "#00FFFFFF",
+    borderMid: "#34363F",
+    borderHigh: "#4A4D59",
+    altRow: "#18191E",
+    scrollSep: "#25272E",
+  },
+  // The official launcher's own dark theme (gold accent).
+  classic: {
     background: "#25252A",
     popup: "#202025",
     foreground: "#EEEEEE",
@@ -411,7 +434,8 @@ export function applyTheme(options: ThemeOptions, root: HTMLElement = document.d
     "--decor",
     options.decor ? stripePattern(tokens.background, tokens.altRow) : "none",
   );
-  set("--overlay", theme === "light" ? "#00000066" : "#000000AA");
+  set("--overlay", theme === "light" ? "#00000055" : "#000000B3");
+  set("--on-accent", isLight(tokens.accent) ? "#14151A" : "#FFFFFF");
   set("--font", fontFamily(options.font));
   root.dataset.theme = theme;
   root.style.colorScheme = isLight(tokens.background) ? "light" : "dark";

@@ -9,7 +9,8 @@
     serverTitle,
   } from "./format";
   import Icon from "./Icon.svelte";
-  import { t } from "./i18n.svelte";
+  import { tagLabel } from "./filters";
+  import { i18n, t } from "./i18n.svelte";
   import { app } from "./store.svelte";
 
   let {
@@ -51,6 +52,20 @@
     if (expanded) void app.loadDetails(server.address);
   });
 
+  const RP_KEYS = {
+    none: "filters.rpNone",
+    low: "filters.rpLow",
+    med: "filters.rpMed",
+    high: "filters.rpHigh",
+  } as const;
+
+  /** A tag as a person reads it: language by its own name, region and roleplay level translated. */
+  function tagText(tag: string): string {
+    const rp = /^rp:(none|low|med|high)$/i.exec(tag);
+    if (rp) return `${t("filters.rp")}: ${t(RP_KEYS[rp[1].toLowerCase() as keyof typeof RP_KEYS])}`;
+    return tagLabel(tag, i18n.lang);
+  }
+
   async function copyAddress() {
     try {
       await navigator.clipboard.writeText(server.address);
@@ -78,6 +93,7 @@
     {/if}
     {#if columns.ping}
       <div class="cell center ping {pingClass(ping)}">
+        {#if ping != null}<i class="dot"></i>{/if}
         {ping == null ? t("server.noPing") : t("server.ping", { ms: ping })}
       </div>
     {/if}
@@ -85,12 +101,12 @@
       <div class="cell center">{silent ? t("server.offline") : (round ?? "")}</div>
     {/if}
     {#if columns.players}
-      <div class="cell right numeric">{silent ? "" : playersText(server)}</div>
+      <div class="cell center numeric">{silent ? "" : playersText(server)}</div>
     {/if}
     <div class="cell last">
       <!-- svelte-ignore a11y_consider_explicit_label -->
       <button
-        class="btn"
+        class="btn soft"
         disabled={app.busy}
         onclick={(e) => {
           e.stopPropagation();
@@ -132,14 +148,14 @@
 
       {#if server.tags.length > 0}
         <div class="tags">
-          {#each server.tags as tag}<span class="tag">{tag}</span>{/each}
+          {#each server.tags as tag}<span class="tag">{tagText(tag)}</span>{/each}
         </div>
       {/if}
 
       <div class="actions">
         <div class="links">
           {#each ready?.links ?? [] as link (link.url)}
-            <button class="btn" onclick={() => api.openUrl(link.url)} title={link.url}>
+            <button class="btn ghost" onclick={() => api.openUrl(link.url)} title={link.url}>
               <span class="with-icon"><Icon name="external" size={16} />{link.name}</span>
             </button>
           {/each}
@@ -169,37 +185,48 @@
 <style>
   .entry {
     flex: none;
+    margin: 0 10px 0 6px;
+    border-radius: var(--radius);
+    border-bottom: 1px solid var(--line);
+    transition: background 0.12s;
+  }
+  .entry:has(.body) {
+    background: var(--tint);
+    border-bottom-color: transparent;
   }
   .head {
     display: grid;
     align-items: stretch;
-    min-height: 42px;
+    min-height: 46px;
+    padding: 0 0 0 8px;
     cursor: pointer;
+    border-radius: var(--radius);
   }
   .head:hover {
-    background: color-mix(in srgb, var(--ctrl-mid) 35%, transparent);
+    background: var(--tint);
   }
   .cell {
     display: flex;
     align-items: center;
     padding: 0 10px;
     min-width: 0;
-    border-right: 2px solid var(--sep);
   }
   .cell.last {
-    border-right: 0;
     justify-content: center;
   }
   .cell.center {
     justify-content: center;
     text-align: center;
+    gap: 6px;
   }
   .cell.right {
     justify-content: flex-end;
   }
   .numeric {
-    font-family: "Cascadia Mono", Consolas, monospace;
     font-variant-numeric: tabular-nums;
+  }
+  .cell.sub {
+    font-size: 13px;
   }
   .name {
     gap: 6px;
@@ -208,13 +235,14 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    font-weight: 500;
   }
   .chev {
     flex: none;
     display: grid;
     transform: rotate(-90deg);
-    transition: transform 0.12s;
-    color: var(--sub);
+    transition: transform 0.14s;
+    color: var(--muted);
   }
   .chev.open {
     transform: none;
@@ -223,6 +251,17 @@
     flex: none;
     color: var(--accent);
     display: grid;
+  }
+  .ping {
+    white-space: nowrap;
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+  }
+  .dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: currentColor;
   }
   .ping.good {
     color: var(--good);
@@ -237,11 +276,11 @@
     color: var(--sub);
   }
   .body {
-    padding: 8px 12px 12px 40px;
+    padding: 4px 16px 14px 44px;
     display: flex;
     flex-direction: column;
-    gap: 8px;
-    border-top: 1px solid var(--scroll-sep);
+    gap: 10px;
+    animation: fade-in 0.14s ease-out;
   }
   .desc {
     margin: 0;
@@ -262,13 +301,13 @@
   .tags {
     display: flex;
     flex-wrap: wrap;
-    gap: 4px;
+    gap: 6px;
   }
   .tag {
     font-size: 12px;
-    padding: 0 8px;
-    background: var(--popup);
-    border: 1px solid var(--ctrl-mid);
+    padding: 1px 9px;
+    background: var(--tint-hover);
+    border-radius: 999px;
     color: var(--sub);
   }
   .actions {

@@ -11,7 +11,7 @@
   ];
 </script>
 
-<div class="tabs" role="tablist">
+<div class="nav" role="tablist">
   {#each TABS as [id, label]}
     <button
       role="tab"
@@ -22,40 +22,46 @@
       {t(label)}
     </button>
   {/each}
-  <div class="grow"></div>
-  {#if app.info}
-    <div class="version sub">{t("header.version", { version: app.info.version })}</div>
-  {/if}
 </div>
 
 <style>
-  .tabs {
+  .nav {
     display: flex;
-    align-items: stretch;
-    background: var(--popup);
-    border-top: 1px solid var(--scroll-sep);
+    align-items: center;
+    gap: 2px;
+    margin-left: 8px;
+    min-width: 0;
   }
   button {
     appearance: none;
+    position: relative;
     border: 0;
+    border-radius: var(--radius-sm);
     background: none;
-    padding: 8px 20px;
+    padding: 6px 11px;
     cursor: pointer;
-    color: var(--fg);
+    color: var(--sub);
+    white-space: nowrap;
+    transition:
+      background 0.12s,
+      color 0.12s;
   }
   button:hover {
-    background: var(--tab-hover);
+    background: var(--tint);
+    color: var(--fg);
   }
-  button.selected,
-  button.selected:hover {
-    background: var(--tab-selected);
+  button.selected {
+    color: var(--fg);
+    background: var(--tint-hover);
   }
-  .grow {
-    flex: 1;
-  }
-  .version {
-    align-self: center;
-    padding: 0 12px;
-    font-size: 13px;
+  button.selected::after {
+    content: "";
+    position: absolute;
+    left: 11px;
+    right: 11px;
+    bottom: -11px;
+    height: 2px;
+    border-radius: 2px;
+    background: var(--accent);
   }
 </style>

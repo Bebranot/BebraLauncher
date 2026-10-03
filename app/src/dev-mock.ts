@@ -63,8 +63,8 @@ const DEFAULT_SETTINGS: Settings = {
   compat_mode: false,
   minimize_on_play: true,
   theme: "dark",
-  theme_gradient: true,
-  theme_decor: true,
+  theme_gradient: false,
+  theme_decor: false,
   custom_theme: {
     background: "#25252A",
     accent: "#ADA24B",

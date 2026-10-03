@@ -10,7 +10,7 @@
     <h2>{t("fav.title")}</h2>
     <div class="buttons">
       <button
-        class="btn icon open-r"
+        class="btn ghost icon"
         title={t("fav.refresh")}
         aria-label={t("fav.refresh")}
         disabled={app.serversLoading}
@@ -19,7 +19,7 @@
         <Icon name="refresh" />
       </button>
       <button
-        class="btn icon open-l"
+        class="btn ghost icon"
         title={t("fav.add")}
         aria-label={t("fav.add")}
         onclick={() => (app.dialog = { kind: "addfav" })}
@@ -28,8 +28,6 @@
       </button>
     </div>
   </div>
-  <div class="rule"></div>
-
   {#if app.favoriteRows.length > 0}
     <ServerTable rows={app.favoriteRows} sortable={false} raise>
       <div class="more">
@@ -43,7 +41,6 @@
     </div>
   {/if}
 
-  <div class="rule"></div>
   <div class="bar">
     <button class="btn" onclick={() => (app.dialog = { kind: "direct" })}>
       {t("fav.direct")}
@@ -63,10 +60,11 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 4px 4px 2px 14px;
+    padding: 12px 14px 8px 18px;
   }
   .buttons {
     display: flex;
+    gap: 2px;
   }
   .more {
     display: flex;
@@ -89,7 +87,7 @@
   .bar {
     flex: none;
     display: flex;
-    padding: 4px 4px 0;
-    min-height: 36px;
+    padding: 10px 14px;
+    border-top: 1px solid var(--line);
   }
 </style>

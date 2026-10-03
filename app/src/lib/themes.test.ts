@@ -66,8 +66,8 @@ describe("themes", () => {
     }
   });
 
-  it("the default theme is the official launcher's dark one", () => {
-    const t = tokensFor("dark", DEFAULT_CUSTOM);
+  it("the classic theme is the official launcher's dark one", () => {
+    const t = tokensFor("classic", DEFAULT_CUSTOM);
     expect(t.background).toBe("#25252A");
     expect(t.popup).toBe("#202025");
     expect(t.accent).toBe("#ADA24B");
@@ -104,7 +104,7 @@ describe("page background", () => {
   const dark = tokensFor("dark", DEFAULT_CUSTOM);
 
   it("is flat without the gradient", () => {
-    expect(backgroundFill("dark", dark, DEFAULT_CUSTOM, false)).toBe("#25252A");
+    expect(backgroundFill("dark", dark, DEFAULT_CUSTOM, false)).toBe("#15161A");
   });
 
   it("is a three-stop gradient with it", () => {

@@ -90,7 +90,7 @@ describe("table columns", () => {
   it("always has the name and the connect button", () => {
     const none = { round_time: false, players: false, map: false, mode: false, ping: false };
     expect(gridTemplate(none).split(" ").length).toBe(3); // minmax(0, 1fr) is two tokens, plus the button
-    expect(gridTemplate(none)).toMatch(/^minmax\(0, 1fr\) 132px$/);
+    expect(gridTemplate(none)).toMatch(/^minmax\(0, 1fr\) 124px$/);
   });
 
   it("adds a column for each switch", () => {

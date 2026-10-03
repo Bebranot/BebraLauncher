@@ -8,7 +8,6 @@
   import OptionsTab from "./lib/OptionsTab.svelte";
   import RecentTab from "./lib/RecentTab.svelte";
   import ServersTab from "./lib/ServersTab.svelte";
-  import TabBar from "./lib/TabBar.svelte";
   import Toast from "./lib/Toast.svelte";
   import { app } from "./lib/store.svelte";
 
@@ -49,19 +48,22 @@
 <div class="shell">
   <Header />
   <main>
-    {#if app.tab === "favorites"}
-      <FavoritesTab />
-    {:else if app.tab === "servers"}
-      <ServersTab bind:searchInput />
-    {:else if app.tab === "recent"}
-      <RecentTab />
-    {:else if app.tab === "news"}
-      <NewsTab />
-    {:else}
-      <OptionsTab />
-    {/if}
+    {#key app.tab}
+      <div class="page">
+        {#if app.tab === "favorites"}
+          <FavoritesTab />
+        {:else if app.tab === "servers"}
+          <ServersTab bind:searchInput />
+        {:else if app.tab === "recent"}
+          <RecentTab />
+        {:else if app.tab === "news"}
+          <NewsTab />
+        {:else}
+          <OptionsTab />
+        {/if}
+      </div>
+    {/key}
   </main>
-  <TabBar />
 </div>
 
 <ConnectingOverlay />
@@ -77,6 +79,9 @@
   main {
     flex: 1;
     min-height: 0;
-    padding-top: 4px;
+  }
+  .page {
+    height: 100%;
+    animation: fade-in 0.16s ease-out;
   }
 </style>

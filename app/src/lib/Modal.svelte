@@ -33,6 +33,8 @@
     display: grid;
     place-items: center;
     background: var(--overlay);
+    backdrop-filter: blur(2px);
+    animation: backdrop-in 0.15s ease-out;
   }
   .box {
     width: min(480px, calc(100vw - 32px));
@@ -40,29 +42,35 @@
     display: flex;
     flex-direction: column;
     background: var(--popup);
-    border: 1px solid var(--ctrl-mid);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    box-shadow: var(--shadow);
+    animation: pop-in 0.16s ease-out;
+    overflow: hidden;
   }
   header {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 10px 16px;
-    border-bottom: 1px solid var(--scroll-sep);
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--line);
   }
   .close {
     appearance: none;
     background: none;
     border: 0;
-    padding: 2px;
+    padding: 5px;
+    border-radius: var(--radius-sm);
     cursor: pointer;
     color: var(--sub);
     display: grid;
   }
   .close:hover {
     color: var(--fg);
+    background: var(--tint-hover);
   }
   .body {
-    padding: 16px;
+    padding: 18px;
     overflow: auto;
   }
 </style>

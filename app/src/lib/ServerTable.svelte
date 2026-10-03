@@ -31,7 +31,7 @@
 
 {#snippet head(key: SortKey, label: string, center: boolean)}
   <button
-    class="cell hbtn sub"
+    class="cell hbtn"
     class:center
     disabled={!sortable}
     onclick={() => sortBy(key)}
@@ -50,7 +50,6 @@
     {#if columns.players}{@render head("players", t("col.players"), true)}{/if}
     <div class="cell last"></div>
   </div>
-  <div class="rule"></div>
 
   <div class="scroll">
     {#each rows as server (server.address)}
@@ -66,22 +65,24 @@
     flex-direction: column;
     min-height: 0;
     flex: 1;
-    background: var(--decor), var(--bg-fill);
+    background: var(--decor);
   }
   .header {
     display: grid;
-    padding-right: 14px; /* the width of the scrollbar below */
+    padding: 0 10px 0 14px; /* the right side is the width of the scrollbar below */
+    border-bottom: 1px solid var(--line);
   }
   .cell {
-    padding: 4px 10px;
+    padding: 8px 10px;
     min-width: 0;
-    border-right: 2px solid var(--sep);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-  .cell.last {
-    border-right: 0;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--sub);
   }
   .cell.center {
     text-align: center;
@@ -89,12 +90,15 @@
   .hbtn {
     appearance: none;
     background: none;
-    border-top: 0;
-    border-left: 0;
-    border-bottom: 0;
+    border: 0;
     font: inherit;
+    letter-spacing: inherit;
+    text-transform: inherit;
     text-align: left;
     cursor: pointer;
+  }
+  .hbtn.center {
+    text-align: center;
   }
   .hbtn:disabled {
     cursor: default;
@@ -104,15 +108,14 @@
   }
   .arrow {
     margin-left: 4px;
-    font-size: 10px;
+    font-size: 9px;
+    color: var(--accent);
   }
   .scroll {
     flex: 1;
     min-height: 0;
     overflow-x: hidden;
     overflow-y: scroll;
-  }
-  .scroll :global(.entry:nth-child(even)) {
-    background: var(--alt-row);
+    padding: 0 0 8px;
   }
 </style>

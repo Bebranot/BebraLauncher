@@ -43,7 +43,7 @@
   .tab {
     height: 100%;
     overflow-y: auto;
-    padding: 12px 18px;
+    padding: 12px 18px 20px;
   }
   ul {
     list-style: none;
@@ -51,12 +51,28 @@
     padding: 0;
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 6px;
   }
   li {
     display: flex;
     gap: 14px;
     align-items: baseline;
+    justify-content: space-between;
+    padding: 10px 14px;
+    border-radius: var(--radius);
+    background: var(--tint);
+    transition: background 0.12s;
+  }
+  li:hover {
+    background: var(--tint-hover);
+  }
+  li .link {
+    color: var(--fg);
+    font-weight: 500;
+  }
+  li .link:hover {
+    color: var(--accent);
+    text-decoration: none;
   }
   .date {
     font-size: 13px;

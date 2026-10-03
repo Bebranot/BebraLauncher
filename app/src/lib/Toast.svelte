@@ -24,17 +24,18 @@
   .toast {
     position: fixed;
     left: 10px;
-    bottom: 46px;
+    bottom: 14px;
     z-index: 25;
     max-width: min(560px, calc(100vw - 20px));
     display: flex;
     align-items: center;
     gap: 10px;
-    padding: 8px 12px;
+    padding: 9px 14px;
     background: var(--popup);
-    border: 1px solid var(--ctrl-mid);
-    border-left: 3px solid var(--accent);
-    box-shadow: 0 4px 14px #000a;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    box-shadow: var(--shadow);
+    animation: pop-in 0.18s ease-out;
   }
   .x {
     appearance: none;

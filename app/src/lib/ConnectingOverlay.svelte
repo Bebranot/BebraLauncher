@@ -28,7 +28,7 @@
   <div class="backdrop" role="alertdialog" aria-modal="true" aria-label={t("conn.title")}>
     <div class="box">
       {#if preparing}
-        <h2>{t("conn.title")}</h2>
+        <h2><span class="spinner"></span>{t("conn.title")}</h2>
 
         {#if app.redial}
           <div class="redial">
@@ -89,19 +89,27 @@
     display: grid;
     place-items: center;
     background: var(--overlay);
+    backdrop-filter: blur(2px);
+    animation: backdrop-in 0.15s ease-out;
   }
   .box {
     width: min(460px, calc(100vw - 32px));
     background: var(--popup);
-    border: 1px solid var(--ctrl-mid);
-    padding: 18px 22px;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    box-shadow: var(--shadow);
+    animation: pop-in 0.16s ease-out;
+    padding: 22px 24px;
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 10px;
     user-select: text;
   }
   h2 {
-    text-align: center;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
   }
   .status {
     margin: 6px 0;
@@ -129,9 +137,11 @@
     justify-content: center;
   }
   .redial {
-    padding: 8px 10px;
-    border: 1px solid var(--warn);
-    font-size: 14px;
+    padding: 8px 12px;
+    border: 1px solid color-mix(in srgb, var(--warn) 50%, transparent);
+    background: color-mix(in srgb, var(--warn) 10%, transparent);
+    border-radius: var(--radius-sm);
+    font-size: 13px;
   }
   .reason {
     margin-top: 4px;
@@ -142,8 +152,9 @@
     margin: 0;
     max-height: 170px;
     overflow: auto;
-    padding: 8px;
-    background: var(--bg);
+    padding: 10px;
+    background: var(--tint);
+    border-radius: var(--radius-sm);
     font-size: 12px;
     white-space: pre-wrap;
     word-break: break-all;

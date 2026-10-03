@@ -46,7 +46,7 @@
 <svelte:window onclick={onWindowClick} onkeydown={(e) => e.key === "Escape" && (open = false)} />
 
 <div class="drop" bind:this={root}>
-  <button class="btn open-both who" onclick={() => (open = !open)} aria-expanded={open}>
+  <button class="btn who" onclick={() => (open = !open)} aria-expanded={open}>
     <span class="name">{label}</span>
     <Icon name="chevron" size={18} />
   </button>
@@ -91,30 +91,33 @@
     align-items: center;
     justify-content: space-between;
     gap: 8px;
-    min-width: 200px;
-    padding: 5px 10px;
+    min-width: 150px;
+    max-width: 220px;
+    padding: 0 8px 0 12px;
   }
   .name {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    max-width: 240px;
+    min-width: 0;
   }
   .popup {
     position: absolute;
     right: 0;
-    top: calc(100% + 2px);
+    top: calc(100% + 6px);
     z-index: 20;
     min-width: 100%;
     width: max-content;
     max-width: 320px;
     background: var(--popup);
-    border: 1px solid var(--ctrl-mid);
+    border: 1px solid var(--line);
+    border-radius: 10px;
     padding: 4px;
     display: flex;
     flex-direction: column;
     gap: 2px;
-    box-shadow: 0 4px 14px #000a;
+    box-shadow: var(--shadow);
+    animation: pop-in 0.14s ease-out;
   }
   .small {
     font-size: 12px;
@@ -125,7 +128,8 @@
     background: none;
     border: 0;
     text-align: left;
-    padding: 5px 8px;
+    padding: 7px 10px;
+    border-radius: var(--radius-sm);
     cursor: pointer;
     display: flex;
     gap: 10px;
@@ -133,10 +137,11 @@
     width: 100%;
   }
   .pick:hover {
-    background: var(--btn-hover);
+    background: var(--tint-hover);
   }
   .pick.on {
-    background: var(--tab-selected);
+    background: var(--accent-soft);
+    color: var(--accent);
   }
   .rule {
     margin: 3px 0;

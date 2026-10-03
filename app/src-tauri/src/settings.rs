@@ -142,8 +142,8 @@ impl Default for Settings {
             compat_mode: false,
             minimize_on_play: true,
             theme: "dark".to_string(),
-            theme_gradient: true,
-            theme_decor: true,
+            theme_gradient: false,
+            theme_decor: false,
             custom_theme: CustomTheme::default(),
             font: String::new(),
             columns: Columns::default(),
@@ -463,7 +463,7 @@ mod tests {
         let json = r#"{"guest_name":"X","theme":"ocean","favorites":["a"]}"#;
         let s: Settings = serde_json::from_str(json).unwrap();
         assert_eq!(s.guest_name, "X");
-        assert!(s.theme_gradient && s.columns.players && !s.columns.ping);
+        assert!(!s.theme_gradient && s.columns.players && !s.columns.ping);
         assert_eq!(s.favorites, ["a"]);
     }
 

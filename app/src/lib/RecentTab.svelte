@@ -6,8 +6,6 @@
 
 <div class="tab">
   <div class="top"><h2>{t("recent.title")}</h2></div>
-  <div class="rule"></div>
-
   {#if app.recentRows.length > 0}
     <ServerTable rows={app.recentRows} sortable={false} />
   {:else}
@@ -24,8 +22,7 @@
   }
   .top {
     flex: none;
-    padding: 4px 14px 2px;
-    min-height: 40px;
+    padding: 12px 18px 8px;
     display: flex;
     align-items: center;
   }
