@@ -1,0 +1,21 @@
+[package]
+name = "bebra-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "BebraLauncher desktop app (Tauri + Svelte)"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+bebra-core = { path = "../../crates/core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = [] }
+time = { version = "0.3", features = ["formatting", "serde-well-known"] }
+tokio = { version = "1", features = ["rt", "sync", "macros", "time"] }
+uuid = { version = "1", features = ["serde"] }
+
+[dev-dependencies]
+uuid = { version = "1", features = ["v4"] }
