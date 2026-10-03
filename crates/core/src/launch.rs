@@ -81,6 +81,8 @@ pub struct LaunchSpec {
     /// Our own executable. The client starts it with `--commands …` to ask for a reconnect
     /// (`SS14_LAUNCHER_PATH`). `None` = the client cannot redial.
     pub launcher_path: Option<PathBuf>,
+    /// Overlay zip of text packs (`SS14_LOADER_OVERLAY_ZIP`); see [`crate::packs`].
+    pub overlay_zip: Option<PathBuf>,
 }
 
 #[derive(Clone)]
@@ -175,6 +177,9 @@ pub fn build_command(spec: &LaunchSpec) -> LaunchCommand {
         env.push(("ROBUST_AUTH_USERID".into(), a.user_id.clone()));
         env.push(("ROBUST_AUTH_PUBKEY".into(), a.server_public_key.clone()));
         env.push(("ROBUST_AUTH_SERVER".into(), a.auth_server_url.clone()));
+    }
+    if let Some(zip) = &spec.overlay_zip {
+        env.push(("SS14_LOADER_OVERLAY_ZIP".into(), zip.display().to_string()));
     }
     if let Some(path) = &spec.launcher_path {
         env.push(("SS14_LAUNCHER_PATH".into(), path.display().to_string()));
@@ -328,6 +333,7 @@ mod tests {
             }),
             compat_mode: false,
             launcher_path: None,
+            overlay_zip: None,
         }
     }
 
@@ -404,6 +410,26 @@ mod tests {
             Some(r"C:ppebra-app.exe")
         );
         assert!(!cmd.env_remove.contains(&"SS14_LAUNCHER_PATH".to_string()));
+    }
+
+    #[test]
+    fn the_overlay_is_passed_only_when_given() {
+        let cmd = build_command(&spec());
+        assert_eq!(env_of(&cmd, "SS14_LOADER_OVERLAY_ZIP"), None);
+        assert!(cmd
+            .env_remove
+            .contains(&"SS14_LOADER_OVERLAY_ZIP".to_string()));
+
+        let mut s = spec();
+        s.overlay_zip = Some(PathBuf::from(r"C:\data\overlays\overlay-1.zip"));
+        let cmd = build_command(&s);
+        assert_eq!(
+            env_of(&cmd, "SS14_LOADER_OVERLAY_ZIP").as_deref(),
+            Some(r"C:\data\overlays\overlay-1.zip")
+        );
+        assert!(!cmd
+            .env_remove
+            .contains(&"SS14_LOADER_OVERLAY_ZIP".to_string()));
     }
 
     #[test]

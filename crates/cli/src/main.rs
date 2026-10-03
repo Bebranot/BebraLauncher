@@ -375,6 +375,7 @@ async fn main() -> Result<()> {
                 no_connect,
                 loader_exe,
                 launcher_path: None,
+                overlay_zip: None,
             };
             let printer = ProgressPrinter::new("files");
             let engine_printer = ProgressPrinter::new("engine");

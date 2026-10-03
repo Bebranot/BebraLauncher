@@ -16,6 +16,20 @@ pub struct Settings {
     pub minimize_on_play: bool,
     /// Id of the colour theme; the UI knows the list and falls back to the default.
     pub theme: String,
+    /// Gradient background (instead of a flat colour).
+    pub theme_gradient: bool,
+    /// Decorative striped pattern behind the lists.
+    pub theme_decor: bool,
+    /// Colours of the `custom` theme.
+    pub custom_theme: CustomTheme,
+    /// Font family for the interface; empty = the built-in one. Must be installed in Windows.
+    pub font: String,
+    /// Which columns the server list shows.
+    pub columns: Columns,
+    /// Text packs to use (file names in the packs folder), the first one wins on conflicts.
+    pub enabled_packs: Vec<String>,
+    /// Do not follow the game's requests to reconnect (redial).
+    pub ignore_redial: bool,
     /// `auto` (follow Windows), `ru` or `en`.
     pub language: String,
     /// The account chosen last (user id); preselected next time.
@@ -25,6 +39,79 @@ pub struct Settings {
     pub favorites: Vec<String>,
     /// Servers played recently, newest first.
     pub history: Vec<HistoryEntry>,
+}
+
+/// Colours of the user's own theme, as `#RRGGBB`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CustomTheme {
+    pub background: String,
+    pub accent: String,
+    pub foreground: String,
+    pub popup: String,
+    pub gradient_start: String,
+    pub gradient_end: String,
+}
+
+impl Default for CustomTheme {
+    fn default() -> Self {
+        Self {
+            background: "#25252A".into(),
+            accent: "#ADA24B".into(),
+            foreground: "#EEEEEE".into(),
+            popup: "#202025".into(),
+            gradient_start: "#2A2A31".into(),
+            gradient_end: "#2F3A36".into(),
+        }
+    }
+}
+
+impl CustomTheme {
+    fn sanitized(self) -> Self {
+        let d = Self::default();
+        let fix = |value: String, fallback: String| {
+            if is_hex_color(&value) {
+                value.to_uppercase()
+            } else {
+                fallback
+            }
+        };
+        Self {
+            background: fix(self.background, d.background),
+            accent: fix(self.accent, d.accent),
+            foreground: fix(self.foreground, d.foreground),
+            popup: fix(self.popup, d.popup),
+            gradient_start: fix(self.gradient_start, d.gradient_start),
+            gradient_end: fix(self.gradient_end, d.gradient_end),
+        }
+    }
+}
+
+fn is_hex_color(s: &str) -> bool {
+    s.len() == 7 && s.starts_with('#') && s[1..].chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// Columns of the server list besides the name and the Connect button.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Columns {
+    pub round_time: bool,
+    pub players: bool,
+    pub map: bool,
+    pub mode: bool,
+    pub ping: bool,
+}
+
+impl Default for Columns {
+    fn default() -> Self {
+        Self {
+            round_time: true,
+            players: true,
+            map: false,
+            mode: false,
+            ping: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -51,6 +138,13 @@ impl Default for Settings {
             compat_mode: false,
             minimize_on_play: true,
             theme: "dark".to_string(),
+            theme_gradient: true,
+            theme_decor: true,
+            custom_theme: CustomTheme::default(),
+            font: String::new(),
+            columns: Columns::default(),
+            enabled_packs: Vec::new(),
+            ignore_redial: false,
             language: "auto".to_string(),
             last_account: None,
             favorites: Vec::new(),
@@ -143,7 +237,37 @@ impl Settings {
         } else {
             name
         };
+
+        self.custom_theme = self.custom_theme.sanitized();
+
+        // A font name ends up in a CSS declaration: allow only what a family name needs.
+        self.font = self
+            .font
+            .chars()
+            .filter(|c| c.is_alphanumeric() || matches!(c, ' ' | '-' | '_' | '.'))
+            .collect::<String>()
+            .trim()
+            .chars()
+            .take(64)
+            .collect();
+
+        // Pack ids are plain file names, each at most once.
+        let mut seen = std::collections::HashSet::new();
+        self.enabled_packs.retain(|id| {
+            !id.is_empty()
+                && id.len() <= 200
+                && !id.contains(['/', '\\'])
+                && seen.insert(id.clone())
+        });
         self
+    }
+
+    /// Moves a favourite to the top of the list.
+    pub fn raise_favorite(&mut self, address: &str) {
+        if let Some(i) = self.favorites.iter().position(|a| a == address) {
+            let item = self.favorites.remove(i);
+            self.favorites.insert(0, item);
+        }
     }
 }
 
@@ -248,6 +372,71 @@ mod tests {
         );
         assert_eq!(b.account.as_deref(), Some(""), "guest is a choice too");
         assert_eq!(s.history.len(), 2);
+    }
+
+    #[test]
+    fn colours_and_fonts_are_cleaned() {
+        let s = Settings {
+            font: "Comic Sans MS; } body { display:none".into(),
+            custom_theme: CustomTheme {
+                background: "#abcdef".into(),
+                accent: "red".into(),
+                foreground: "#12345".into(),
+                popup: "url(javascript:1)".into(),
+                gradient_start: "#00FF00".into(),
+                gradient_end: "".into(),
+            },
+            ..Settings::default()
+        }
+        .sanitized();
+        assert_eq!(s.font, "Comic Sans MS  body  displaynone");
+        assert_eq!(s.custom_theme.background, "#ABCDEF");
+        assert_eq!(s.custom_theme.accent, CustomTheme::default().accent);
+        assert_eq!(s.custom_theme.foreground, CustomTheme::default().foreground);
+        assert_eq!(s.custom_theme.popup, CustomTheme::default().popup);
+        assert_eq!(s.custom_theme.gradient_start, "#00FF00");
+        assert_eq!(
+            s.custom_theme.gradient_end,
+            CustomTheme::default().gradient_end
+        );
+    }
+
+    #[test]
+    fn pack_ids_are_plain_unique_names() {
+        let s = Settings {
+            enabled_packs: vec![
+                "a.zip".into(),
+                "../evil.zip".into(),
+                "dir/x.zip".into(),
+                "a.zip".into(),
+                "".into(),
+                "b.zip".into(),
+            ],
+            ..Settings::default()
+        }
+        .sanitized();
+        assert_eq!(s.enabled_packs, ["a.zip", "b.zip"]);
+    }
+
+    #[test]
+    fn raising_a_favorite_moves_it_to_the_top() {
+        let mut s = Settings::default();
+        for a in ["a", "b", "c"] {
+            s.toggle_favorite(a);
+        }
+        s.raise_favorite("c");
+        s.raise_favorite("missing");
+        assert_eq!(s.favorites, ["c", "a", "b"]);
+    }
+
+    #[test]
+    fn old_settings_files_still_load() {
+        // A file from before these options existed.
+        let json = r#"{"guest_name":"X","theme":"ocean","favorites":["a"]}"#;
+        let s: Settings = serde_json::from_str(json).unwrap();
+        assert_eq!(s.guest_name, "X");
+        assert!(s.theme_gradient && s.columns.players && !s.columns.ping);
+        assert_eq!(s.favorites, ["a"]);
     }
 
     #[test]

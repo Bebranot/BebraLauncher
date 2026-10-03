@@ -4,6 +4,7 @@
 mod applog;
 mod commands;
 mod game;
+mod news;
 mod redial;
 mod settings;
 mod system;
@@ -23,6 +24,8 @@ pub struct AppState {
     pub dirs: DataDirs,
     pub settings: Mutex<Settings>,
     pub game: Arc<GameState>,
+    /// The news feed of the last successful read, to not ask for it on every visit of the tab.
+    pub news: Mutex<Option<(std::time::Instant, Vec<news::NewsItem>)>>,
 }
 
 fn main() {
@@ -37,6 +40,7 @@ fn main() {
         settings: Mutex::new(Settings::load(dirs.root())),
         dirs,
         game: Arc::default(),
+        news: Mutex::new(None),
     };
 
     tauri::Builder::default()
@@ -83,6 +87,11 @@ fn main() {
             commands::play,
             commands::cancel_play,
             commands::open_logs_folder,
+            commands::open_packs_folder,
+            commands::list_packs,
+            commands::news,
+            commands::ping_servers,
+            commands::raise_favorite,
         ])
         .run(tauri::generate_context!())
         .expect("error while running the app");

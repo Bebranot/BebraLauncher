@@ -8,6 +8,7 @@ use bebra_core::auth::{AuthClient, Identity};
 use bebra_core::content_db::ContentDb;
 use bebra_core::hub::{HubClient, HubServerEntry};
 use bebra_core::launch;
+use bebra_core::packs;
 use bebra_core::server::{self, AuthMode};
 use bebra_core::storage;
 use bebra_core::ServerAddr;
@@ -18,6 +19,7 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::game::{self, PlayParams};
+use crate::news::{self, NewsItem};
 use crate::redial::{self, Action};
 use crate::settings::Settings;
 use crate::AppState;
@@ -365,14 +367,13 @@ pub fn get_settings(state: State<'_, AppState>) -> Settings {
 #[tauri::command]
 pub fn set_settings(state: State<'_, AppState>, settings: Settings) -> CmdResult<Settings> {
     let mut current = state.settings.lock().unwrap();
-    // The form only edits these five; favourites and history have their own commands.
+    // The UI edits everything except what the launcher keeps itself: favourites (own
+    // commands), history and the last used account (written when a game starts).
     let merged = Settings {
-        guest_name: settings.guest_name,
-        compat_mode: settings.compat_mode,
-        minimize_on_play: settings.minimize_on_play,
-        theme: settings.theme,
-        language: settings.language,
-        ..current.clone()
+        favorites: current.favorites.clone(),
+        history: current.history.clone(),
+        last_account: current.last_account.clone(),
+        ..settings
     }
     .sanitized();
     merged.save(state.dirs.root()).map_err(err)?;
@@ -385,6 +386,15 @@ pub fn set_settings(state: State<'_, AppState>, settings: Settings) -> CmdResult
 pub fn toggle_favorite(state: State<'_, AppState>, address: String) -> CmdResult<Vec<String>> {
     let mut s = state.settings.lock().unwrap();
     s.toggle_favorite(&address);
+    s.save(state.dirs.root()).map_err(err)?;
+    Ok(s.favorites.clone())
+}
+
+/// Moves a favourite server to the top of the list. Returns the new list of favourites.
+#[tauri::command]
+pub fn raise_favorite(state: State<'_, AppState>, address: String) -> CmdResult<Vec<String>> {
+    let mut s = state.settings.lock().unwrap();
+    s.raise_favorite(&address);
     s.save(state.dirs.root()).map_err(err)?;
     Ok(s.favorites.clone())
 }
@@ -427,6 +437,7 @@ pub fn start_play(
             guest_name: settings.guest_name,
             compat_mode: settings.compat_mode,
             minimize_on_play: settings.minimize_on_play,
+            enabled_packs: settings.enabled_packs,
             history_key: address.to_string(),
             server_name: name,
         },
@@ -456,6 +467,11 @@ pub fn handle_launcher_args(app: &AppHandle, args: &[String]) {
                 let _ = app.emit("open-link", address);
             }
             Action::Connect { address, reason } => {
+                let state = app.state::<AppState>();
+                if state.settings.lock().unwrap().ignore_redial {
+                    crate::applog::line(&format!("redial to {address} ignored (setting)"));
+                    continue;
+                }
                 let app = app.clone();
                 // The old game may still be closing: wait for it on a thread of its own.
                 let spawned = std::thread::Builder::new()
@@ -517,9 +533,7 @@ pub fn cancel_play(state: State<'_, AppState>) {
     state.game.cancel();
 }
 
-#[tauri::command]
-pub fn open_logs_folder(state: State<'_, AppState>) -> CmdResult<()> {
-    let dir = state.dirs.logs();
+fn open_folder(dir: std::path::PathBuf) -> CmdResult<()> {
     std::fs::create_dir_all(&dir).map_err(err)?;
     // explorer.exe exits with 1 even when it works, so the exit code means nothing.
     std::process::Command::new("explorer")
@@ -527,4 +541,116 @@ pub fn open_logs_folder(state: State<'_, AppState>) -> CmdResult<()> {
         .spawn()
         .map(drop)
         .map_err(err)
+}
+
+#[tauri::command]
+pub fn open_logs_folder(state: State<'_, AppState>) -> CmdResult<()> {
+    open_folder(state.dirs.logs())
+}
+
+#[tauri::command]
+pub fn open_packs_folder(state: State<'_, AppState>) -> CmdResult<()> {
+    open_folder(state.dirs.packs())
+}
+
+/// A text pack found in the packs folder.
+#[derive(Serialize)]
+pub struct PackRow {
+    id: String,
+    name: String,
+    description: String,
+    files: usize,
+    bytes: u64,
+    cultures: Vec<String>,
+    /// Why the pack cannot be used; empty if it can.
+    problems: Vec<String>,
+    enabled: bool,
+}
+
+#[tauri::command]
+pub fn list_packs(state: State<'_, AppState>) -> Vec<PackRow> {
+    let enabled = state.settings.lock().unwrap().enabled_packs.clone();
+    packs::scan(&state.dirs)
+        .into_iter()
+        .map(|p| PackRow {
+            enabled: enabled.contains(&p.id),
+            id: p.id,
+            name: p.name,
+            description: p.description,
+            files: p.files,
+            bytes: p.bytes,
+            cultures: p.cultures,
+            problems: p.problems,
+        })
+        .collect()
+}
+
+/// How long the news feed is kept before it is read again.
+const NEWS_TTL: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+#[tauri::command]
+pub async fn news(state: State<'_, AppState>) -> CmdResult<Vec<NewsItem>> {
+    if let Some((at, items)) = state.news.lock().unwrap().as_ref() {
+        if at.elapsed() < NEWS_TTL {
+            return Ok(items.clone());
+        }
+    }
+    let resp = state
+        .client
+        .get(news::FEED_URL)
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await
+        .map_err(err)?;
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {}", resp.status().as_u16()));
+    }
+    let text = resp.text().await.map_err(err)?;
+    let items = news::parse_feed(&text);
+    *state.news.lock().unwrap() = Some((std::time::Instant::now(), items.clone()));
+    Ok(items)
+}
+
+#[derive(Serialize)]
+pub struct PingRow {
+    address: String,
+    /// Round trip of a status request in milliseconds; `None` if the server did not answer.
+    ms: Option<u32>,
+}
+
+/// Most servers measured in one call, and most requests in flight at once.
+const PING_MAX_SERVERS: usize = 200;
+const PING_PARALLEL: usize = 12;
+
+/// Times a `/status` request to each server. This is what the list's ping column shows.
+#[tauri::command]
+pub async fn ping_servers(
+    state: State<'_, AppState>,
+    addresses: Vec<String>,
+) -> CmdResult<Vec<PingRow>> {
+    let gate = std::sync::Arc::new(tokio::sync::Semaphore::new(PING_PARALLEL));
+    let mut tasks = tokio::task::JoinSet::new();
+    for address in addresses.into_iter().take(PING_MAX_SERVERS) {
+        let Ok(addr) = ServerAddr::parse(&address) else {
+            continue;
+        };
+        let client = state.client.clone();
+        let gate = gate.clone();
+        tasks.spawn(async move {
+            let _slot = gate.acquire().await;
+            let started = std::time::Instant::now();
+            let ms = server::fetch_status(&client, &addr)
+                .await
+                .ok()
+                .map(|_| started.elapsed().as_millis().min(u128::from(u32::MAX)) as u32);
+            PingRow { address, ms }
+        });
+    }
+    let mut rows = Vec::new();
+    while let Some(done) = tasks.join_next().await {
+        if let Ok(row) = done {
+            rows.push(row);
+        }
+    }
+    Ok(rows)
 }

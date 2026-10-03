@@ -110,6 +110,8 @@ pub struct PlayParams {
     pub history_key: String,
     /// The server's name, for the history.
     pub server_name: Option<String>,
+    /// Text packs to mount over the game's files.
+    pub enabled_packs: Vec<String>,
 }
 
 pub fn start(app: AppHandle, game: Arc<GameState>, params: PlayParams) -> Result<(), String> {
@@ -199,6 +201,23 @@ async fn prepare(app: &AppHandle, params: &PlayParams) -> Result<play::PreparedG
 
     let loader_exe =
         launch::find_loader().map_err(|e| Failure::new("loader_missing", e.to_string()))?;
+
+    // Text packs are optional: a problem with them must not keep the player from playing.
+    let overlay_zip = match bebra_core::packs::build_overlay(&params.dirs, &params.enabled_packs) {
+        Ok(Some(overlay)) => {
+            crate::applog::line(&format!(
+                "text packs: {} ({} files)",
+                overlay.used.join(", "),
+                overlay.files
+            ));
+            Some(overlay.path)
+        }
+        Ok(None) => None,
+        Err(e) => {
+            crate::applog::line(&format!("text packs skipped: {e}"));
+            None
+        }
+    };
     let req = PlayRequest {
         addr: params.addr.clone(),
         via_hub: false,
@@ -208,6 +227,7 @@ async fn prepare(app: &AppHandle, params: &PlayParams) -> Result<play::PreparedG
         no_connect: false,
         loader_exe,
         launcher_path: std::env::current_exe().ok(),
+        overlay_zip,
     };
 
     // Progress callbacks come once per file; only tell the UI when the percentage moves.

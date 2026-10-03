@@ -85,6 +85,8 @@ pub struct PlayRequest {
     pub loader_exe: PathBuf,
     /// Let the game ask this launcher for a reconnect (see `LaunchSpec::launcher_path`).
     pub launcher_path: Option<PathBuf>,
+    /// Overlay zip of text packs to mount over the game's files.
+    pub overlay_zip: Option<PathBuf>,
 }
 
 pub struct PreparedGame {
@@ -187,6 +189,7 @@ pub async fn prepare(
         }),
         compat_mode: req.compat_mode,
         launcher_path: req.launcher_path.clone(),
+        overlay_zip: req.overlay_zip.clone(),
     };
 
     Ok(PreparedGame {

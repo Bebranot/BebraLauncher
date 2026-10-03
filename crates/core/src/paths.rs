@@ -48,12 +48,22 @@ impl DataDirs {
         self.root.join("tmp")
     }
 
+    /// Text packs (`.zip` files the player puts here).
+    pub fn packs(&self) -> PathBuf {
+        self.root.join("packs")
+    }
+
+    /// The merged overlay of the enabled packs, as handed to the Loader.
+    pub fn overlays(&self) -> PathBuf {
+        self.root.join("overlays")
+    }
+
     pub fn logs(&self) -> PathBuf {
         self.root.join("logs")
     }
 
     pub fn ensure(&self) -> Result<()> {
-        for dir in [self.engines(), self.modules(), self.logs()] {
+        for dir in [self.engines(), self.modules(), self.logs(), self.packs()] {
             std::fs::create_dir_all(dir)?;
         }
         Ok(())
