@@ -21,6 +21,7 @@ pub mod paths;
 pub mod play;
 pub mod process;
 pub mod secret;
+pub mod self_update;
 pub mod server;
 pub mod signature;
 pub mod storage;

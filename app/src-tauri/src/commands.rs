@@ -22,6 +22,7 @@ use uuid::Uuid;
 use crate::game::{self, PlayParams};
 use crate::news::{self, NewsItem};
 use crate::redial::{self, Action};
+use crate::selfupdate;
 use crate::settings::Settings;
 use crate::AppState;
 
@@ -895,4 +896,50 @@ pub async fn ping_servers(
         }
     }
     Ok(rows)
+}
+
+// ---------------------------------------------------------------- updating the launcher
+
+/// Where the update stands: nothing found, found, downloading, ready to install.
+#[tauri::command]
+pub fn update_status(app: AppHandle) -> selfupdate::Status {
+    selfupdate::status(&app)
+}
+
+/// Asks GitHub for a newer version (and downloads it at once when updates are automatic).
+#[tauri::command]
+pub async fn check_update(app: AppHandle) -> selfupdate::Status {
+    selfupdate::check(&app).await
+}
+
+/// Downloads the version found by the last check; progress comes as `update` events.
+#[tauri::command]
+pub fn download_update(app: AppHandle) -> selfupdate::Status {
+    selfupdate::download(app.clone());
+    selfupdate::status(&app)
+}
+
+/// Installs the downloaded version and closes the launcher; with `restart` it opens again.
+#[tauri::command]
+pub fn install_update(app: AppHandle, restart: bool) -> CmdResult<()> {
+    selfupdate::install_now(&app, restart)
+}
+
+/// Is a GitHub access token saved? The token itself never reaches the UI.
+#[tauri::command]
+pub fn update_token_state() -> bool {
+    selfupdate::token_present()
+}
+
+/// Saves the access token for a private repository; an empty text removes it.
+#[tauri::command]
+pub fn set_update_token(token: String) -> CmdResult<bool> {
+    selfupdate::set_token(&token)?;
+    Ok(selfupdate::token_present())
+}
+
+/// The whole changelog, as written in CHANGELOG.md.
+#[tauri::command]
+pub fn changelog() -> &'static str {
+    crate::changelog::TEXT
 }

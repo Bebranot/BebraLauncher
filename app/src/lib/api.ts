@@ -105,6 +105,9 @@ export interface Settings {
   verbose_log: boolean;
   proxy: string;
   language: string;
+  update_repo: string;
+  update_check: boolean;
+  update_auto: boolean;
   last_account: string | null;
   favorites: string[];
   history: HistoryEntry[];
@@ -157,6 +160,29 @@ export interface DiagRow {
   ok: boolean;
   ms: number | null;
   detail: string;
+}
+
+export type UpdatePhase = "idle" | "checking" | "downloading" | "ready";
+
+/** A launcher release found on GitHub. `notes` is the changelog section of that version. */
+export interface UpdateRelease {
+  version: string;
+  notes: string;
+  published: string | null;
+  page_url: string;
+  size: number;
+}
+
+export interface UpdateStatus {
+  phase: UpdatePhase;
+  /** This launcher, as `a.b.cdd`. */
+  current: string;
+  latest: UpdateRelease | null;
+  done: number;
+  total: number;
+  error: string | null;
+  /** Installing is possible right now (downloaded, a release build, no game running). */
+  can_install: boolean;
 }
 
 export type PlayStage = "account" | "info" | "files" | "engine" | "starting";
@@ -213,6 +239,15 @@ export const api = {
   setLinksRegistered: (enabled: boolean) => invoke<boolean>("set_links_registered", { enabled }),
   storageInfo: () => invoke<StorageRow>("storage_info"),
   cleanStorage: () => invoke<CleanRow>("clean_storage"),
+  updateStatus: () => invoke<UpdateStatus>("update_status"),
+  checkUpdate: () => invoke<UpdateStatus>("check_update"),
+  downloadUpdate: () => invoke<UpdateStatus>("download_update"),
+  installUpdate: (restart: boolean) => invoke<void>("install_update", { restart }),
+  updateTokenState: () => invoke<boolean>("update_token_state"),
+  setUpdateToken: (token: string) => invoke<boolean>("set_update_token", { token }),
+  changelog: () => invoke<string>("changelog"),
+  onUpdate: (handler: (s: UpdateStatus) => void): Promise<UnlistenFn> =>
+    listen<UpdateStatus>("update", (e) => handler(e.payload)),
   onPlay: (handler: (e: PlayEvent) => void): Promise<UnlistenFn> =>
     listen<PlayEvent>("play", (e) => handler(e.payload)),
   onRedial: (handler: (e: RedialEvent) => void): Promise<UnlistenFn> =>

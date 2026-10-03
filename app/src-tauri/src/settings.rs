@@ -34,8 +34,14 @@ pub struct Settings {
     pub verbose_log: bool,
     /// Proxy for the launcher's own requests (`http://`, `https://`, `socks5://`); empty = none.
     pub proxy: String,
-    /// `auto` (follow Windows), `ru` or `en`.
+    /// `auto` (follow Windows) or the code of an interface language (`ru`, `en`, `uk`, `de`).
     pub language: String,
+    /// The GitHub repository whose releases update the launcher (`owner/name`).
+    pub update_repo: String,
+    /// Look for a new launcher version at start and every few hours.
+    pub update_check: bool,
+    /// Download a new version by itself and install it when the launcher is closed.
+    pub update_auto: bool,
     /// The account chosen last (user id); preselected next time.
     /// An empty string means the player chose to play as a guest; `None`: never chosen.
     pub last_account: Option<String>,
@@ -152,6 +158,9 @@ impl Default for Settings {
             verbose_log: false,
             proxy: String::new(),
             language: "auto".to_string(),
+            update_repo: bebra_core::self_update::DEFAULT_REPO.to_string(),
+            update_check: true,
+            update_auto: true,
             last_account: None,
             favorites: Vec::new(),
             history: Vec::new(),
@@ -261,6 +270,12 @@ impl Settings {
         self.proxy = self.proxy.trim().to_string();
         if !bebra_core::http::is_valid_proxy(&self.proxy) {
             self.proxy.clear();
+        }
+
+        // The repository ends up in a URL: it must look like `owner/name`.
+        self.update_repo = self.update_repo.trim().to_string();
+        if !bebra_core::self_update::valid_repo(&self.update_repo) {
+            self.update_repo = bebra_core::self_update::DEFAULT_REPO.to_string();
         }
 
         // Pack ids are plain file names, each at most once.

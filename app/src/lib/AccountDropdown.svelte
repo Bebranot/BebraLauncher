@@ -91,7 +91,7 @@
     align-items: center;
     justify-content: space-between;
     gap: 8px;
-    min-width: 150px;
+    min-width: 110px;
     max-width: 220px;
     padding: 0 8px 0 12px;
   }

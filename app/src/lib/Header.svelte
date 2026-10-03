@@ -15,6 +15,7 @@
   <Logo />
   <TabBar />
   <div class="right">
+    <div class="links">
     <button
       class="btn ghost icon"
       title={t("header.discord")}
@@ -31,6 +32,7 @@
     >
       <Icon name="web" size={18} />
     </button>
+    </div>
     <AccountDropdown />
   </div>
 </header>
@@ -40,9 +42,20 @@
     flex: none;
     display: flex;
     align-items: center;
-    gap: 14px;
-    padding: 10px 14px;
+    gap: 10px;
+    padding: 10px 12px;
     border-bottom: 1px solid var(--line);
+  }
+  /* The narrowest window: the community links give way to the tabs. */
+  @media (max-width: 940px) {
+    .links {
+      display: none;
+    }
+  }
+  .links {
+    display: flex;
+    align-items: center;
+    gap: 4px;
   }
   .right {
     display: flex;

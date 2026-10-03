@@ -8,6 +8,7 @@ import {
   type HistoryEntry,
   type NewsItem,
   type PlayEvent,
+  type UpdateStatus,
   type PlayStage,
   type RedialEvent,
   type ServerDetails,
@@ -29,8 +30,8 @@ import {
 import { i18n } from "./i18n.svelte";
 import { DEFAULT_CUSTOM, applyTheme } from "./themes";
 
-export type Tab = "favorites" | "servers" | "recent" | "news" | "options";
-const TABS: Tab[] = ["favorites", "servers", "recent", "news", "options"];
+export type Tab = "favorites" | "servers" | "recent" | "news" | "updates" | "options";
+const TABS: Tab[] = ["favorites", "servers", "recent", "news", "updates", "options"];
 
 export type Dialog =
   | { kind: "direct" }
@@ -142,6 +143,10 @@ class Store {
   preview = $state<string | null>(null);
 
   news = $state<NewsState>({ state: "idle" });
+  /** The launcher's own update, as the backend last said. */
+  update = $state<UpdateStatus | null>(null);
+  /** When the user last asked for a check (ms), to show it. */
+  updateCheckedAt = $state<number | null>(null);
 
   /** Current time in milliseconds, updated every second (for round timers). */
   now = $state(Date.now());
@@ -208,6 +213,8 @@ class Store {
     await api.onPlay((e) => this.onPlayEvent(e));
     await api.onRedial((e) => this.onRedial(e));
     await api.onOpenLink((address) => this.onOpenLink(address));
+    await api.onUpdate((s) => (this.update = s));
+    void api.updateStatus().then((s) => (this.update ??= s)).catch(() => {});
 
     await Promise.all([this.loadInfo(), this.loadSettings(), this.loadAccounts()]);
     this.pickDefaultAccount();
@@ -404,6 +411,37 @@ class Store {
       this.details[address] = await api.serverInfo(address);
     } catch {
       this.details[address] = "failed";
+    }
+  }
+
+  // ------------------------------------------------------------ launcher updates
+
+  /** A newer version of the launcher is known (the tab gets a dot). */
+  readonly updateAvailable = $derived(this.update?.latest != null);
+
+  async checkUpdate() {
+    if (this.update?.phase === "checking" || this.update?.phase === "downloading") return;
+    try {
+      this.update = await api.checkUpdate();
+    } catch (e) {
+      this.say(errorText(e));
+    }
+    this.updateCheckedAt = Date.now();
+  }
+
+  async downloadUpdate() {
+    try {
+      this.update = await api.downloadUpdate();
+    } catch (e) {
+      this.say(errorText(e));
+    }
+  }
+
+  async installUpdate(restart: boolean) {
+    try {
+      await api.installUpdate(restart);
+    } catch (e) {
+      this.say(errorText(e));
     }
   }
 

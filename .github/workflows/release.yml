@@ -1,10 +1,9 @@
 name: Release installer
 
-# Run by hand (Actions -> Release installer -> Run workflow), or by pushing a tag like v0.1.0.
+# Run by hand (Actions -> Release installer -> Run workflow): builds an UNSIGNED installer as an
+# artifact, for trying. Real releases (signed, with the changelog text) come from scripts/release.ps1.
 on:
   workflow_dispatch:
-  push:
-    tags: ["v*"]
 
 jobs:
   installer:

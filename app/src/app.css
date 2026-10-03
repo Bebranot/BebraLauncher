@@ -416,3 +416,16 @@ progress:indeterminate {
   background: var(--accent);
   color: var(--on-accent);
 }
+
+/* A card: one group of related things on a page. */
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  max-width: 720px;
+  padding: 16px 18px 18px;
+  background: var(--tint);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}

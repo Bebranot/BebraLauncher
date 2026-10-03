@@ -234,6 +234,25 @@ impl TokenStore for CredentialStore {
     }
 }
 
+// ---- single secrets (not accounts) ----
+
+/// Saves one secret text (an access token, say) in the Windows Credential Manager.
+pub fn store_secret(target: &str, value: &str) -> Result<()> {
+    cred::write(target, "BebraLauncher", value.as_bytes())
+}
+
+/// Reads a secret saved with [`store_secret`]; `None` if there is none.
+pub fn read_secret(target: &str) -> Result<Option<String>> {
+    Ok(cred::list(target)?
+        .into_iter()
+        .find(|(name, _)| name == target)
+        .and_then(|(_, blob)| String::from_utf8(blob).ok()))
+}
+
+pub fn delete_secret(target: &str) -> Result<()> {
+    cred::delete(target)
+}
+
 // ---- using accounts ----
 
 /// How trustworthy a saved token looks, judged by its expiry time alone.

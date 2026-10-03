@@ -35,9 +35,14 @@ CLAUDE.local.md
 AGENTS.md
 NOTES.md
 .mcp.json
-# all markdown is considered AI-written notes, except README
+# all markdown is considered AI-written notes, except these (the changelog is shown in the app)
 *.md
 !README.md
+!CHANGELOG.md
+!docs/CHANGELOG_RULES.md
+
+# signing keys never go to the repository
+*.key
 
 # --- .NET build output (loader) ---
 bin/

@@ -43,6 +43,19 @@ pub fn parse_pem(pem: &str) -> Result<VerifyingKey> {
     VerifyingKey::from_bytes(&raw).map_err(|e| bad(&e.to_string()))
 }
 
+/// A public key as a PEM `PUBLIC KEY` block (the other direction of [`parse_pem`]).
+pub fn to_pem(key: &VerifyingKey) -> String {
+    let mut der = SPKI_PREFIX.to_vec();
+    der.extend(key.as_bytes());
+    format!(
+        "-----BEGIN PUBLIC KEY-----
+{}
+-----END PUBLIC KEY-----
+",
+        STANDARD.encode(der)
+    )
+}
+
 /// Checks `sig_hex` (hex, 64 bytes) over the whole of `data`.
 pub fn verify(key: &VerifyingKey, data: &[u8], sig_hex: &str) -> Result<()> {
     let bytes =

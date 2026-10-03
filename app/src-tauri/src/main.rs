@@ -2,10 +2,12 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod applog;
+mod changelog;
 mod commands;
 mod game;
 mod news;
 mod redial;
+mod selfupdate;
 mod settings;
 mod system;
 
@@ -26,6 +28,8 @@ pub struct AppState {
     pub game: Arc<GameState>,
     /// The news feed of the last successful read, to not ask for it on every visit of the tab.
     pub news: Mutex<Option<(std::time::Instant, Vec<news::NewsItem>)>>,
+    /// The launcher's own update: what was found, downloaded, started.
+    pub update: selfupdate::UpdateState,
 }
 
 fn main() {
@@ -47,7 +51,10 @@ fn main() {
         dirs,
         game: Arc::default(),
         news: Mutex::new(None),
+        update: selfupdate::UpdateState::default(),
     };
+    // Installers of versions that are already installed are of no use.
+    bebra_core::self_update::clean_installed(&state.dirs.root().join("updates"));
 
     tauri::Builder::default()
         // Must be the first plugin. A second start (or the game's `--commands …` redial) is
@@ -69,6 +76,7 @@ fn main() {
             if !args.is_empty() {
                 commands::handle_launcher_args(app.handle(), &args);
             }
+            selfupdate::start_background_checks(app.handle().clone());
             Ok(())
         })
         .manage(state)
@@ -105,7 +113,20 @@ fn main() {
             commands::content_versions,
             commands::reset_settings,
             commands::open_data_folder,
+            commands::update_status,
+            commands::check_update,
+            commands::download_update,
+            commands::install_update,
+            commands::update_token_state,
+            commands::set_update_token,
+            commands::changelog,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running the app");
+        .build(tauri::generate_context!())
+        .expect("error while building the app")
+        .run(|app, event| {
+            // A downloaded update is installed as the launcher closes.
+            if let tauri::RunEvent::Exit = event {
+                selfupdate::install_on_exit(app);
+            }
+        });
 }

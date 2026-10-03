@@ -65,6 +65,9 @@ const DEFAULT_SETTINGS: Settings = {
   theme: "dark",
   theme_gradient: false,
   theme_decor: false,
+  update_repo: "Bebranot/vabecide-musor",
+  update_check: true,
+  update_auto: true,
   custom_theme: {
     background: "#25252A",
     accent: "#ADA24B",
@@ -152,6 +155,57 @@ async function fakePlay() {
   await ev({ kind: "running", pid: 1234, plays_as: "serjo13" });
 }
 
+let tokenSet = false;
+let found = false;
+const updateStatus = (phase = "idle", done = 0) => ({
+  phase,
+  current: "0.2.000",
+  latest: found
+    ? {
+        version: "0.2.001",
+        notes: "### Исправлено\n- Пример исправления из релиза\n- Ещё одно с `кодом`",
+        published: "2026-10-05T10:00:00Z",
+        page_url: "https://github.com/example/example/releases/tag/v0.2.001",
+        size: 36_000_000,
+      }
+    : null,
+  done,
+  total: 36_000_000,
+  error: null,
+  can_install: phase === "ready",
+});
+
+/** A check that finds a new version, downloads it and gets ready (the real flow, faster). */
+async function fakeUpdate() {
+  await emit("update", updateStatus("checking"));
+  await sleep(700);
+  found = true;
+  await emit("update", updateStatus("idle"));
+  await sleep(500);
+  for (let done = 0; done <= 36_000_000; done += 3_600_000) {
+    await emit("update", updateStatus("downloading", done));
+    await sleep(200);
+  }
+  await emit("update", updateStatus("ready", 36_000_000));
+}
+
+const CHANGELOG = `# Журнал изменений
+
+## [0.2.000] — 2026-10-04
+
+### Добавлено
+- Обновление лаунчера прямо в нём
+- Журнал изменений
+
+### Изменено
+- Новый дизайн
+
+## [0.1.000] — 2026-10-03
+
+### Добавлено
+- Первая версия
+`;
+
 const pingFor = (address: string) => 20 + ((address.length * 37) % 260);
 
 export function installMock() {
@@ -160,7 +214,7 @@ export function installMock() {
       const a = (args ?? {}) as Record<string, unknown>;
       switch (cmd) {
         case "app_info":
-          return { version: "0.1.0", data_dir: "C:\\Users\\you\\AppData\\Local\\BebraLauncher", loader_problem: null };
+          return { version: "0.2.0", data_dir: "C:\\Users\\you\\AppData\\Local\\BebraLauncher", loader_problem: null };
         case "list_servers":
           return servers;
         case "cached_servers":
@@ -269,6 +323,22 @@ export function installMock() {
             });
           })();
           return null;
+        case "update_status":
+          return updateStatus();
+        case "check_update":
+          void fakeUpdate();
+          return { ...updateStatus(), phase: "checking" };
+        case "download_update":
+          return updateStatus();
+        case "install_update":
+          return null;
+        case "update_token_state":
+          return tokenSet;
+        case "set_update_token":
+          tokenSet = String(a.token ?? "").trim() !== "";
+          return tokenSet;
+        case "changelog":
+          return CHANGELOG;
         case "login":
           return { status: "denied", code: "invalid_credentials", errors: [] };
         case "logout":

@@ -9,6 +9,7 @@
   import OptionsTab from "./lib/OptionsTab.svelte";
   import RecentTab from "./lib/RecentTab.svelte";
   import ServersTab from "./lib/ServersTab.svelte";
+  import UpdatesTab from "./lib/UpdatesTab.svelte";
   import Toast from "./lib/Toast.svelte";
   import { app } from "./lib/store.svelte";
 
@@ -59,6 +60,8 @@
           <RecentTab />
         {:else if app.tab === "news"}
           <NewsTab />
+        {:else if app.tab === "updates"}
+          <UpdatesTab />
         {:else}
           <OptionsTab />
         {/if}

@@ -13,7 +13,7 @@ use bebra_core::hub::HubClient;
 use bebra_core::paths::DataDirs;
 use bebra_core::server::AuthMode;
 use bebra_core::server::{self, ServerStatus};
-use bebra_core::{http, launch, play, storage, updater, ServerAddr};
+use bebra_core::{http, launch, play, self_update, storage, updater, ServerAddr};
 use clap::{Parser, Subcommand};
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -78,6 +78,23 @@ enum Command {
     Running {
         #[arg(long)]
         data_dir: Option<PathBuf>,
+    },
+    /// Make the key pair that signs launcher releases. The private key goes to `out`
+    /// (keep it secret and backed up, never in the repository); the public one is printed.
+    UpdateKeygen { out: PathBuf },
+    /// Sign a launcher installer for a release: writes `<file>.sig` next to it.
+    UpdateSign {
+        file: PathBuf,
+        /// The version of the release, as `a.b.cdd` or `a.b.c`.
+        version: String,
+        /// The private key file made by `update-keygen`.
+        #[arg(long)]
+        key: PathBuf,
+    },
+    /// Look up the newest launcher release on GitHub (a private repository needs GITHUB_TOKEN).
+    UpdateCheck {
+        #[arg(long)]
+        repo: Option<String>,
     },
     /// Show how much disk space the launcher uses.
     Storage {
@@ -280,6 +297,62 @@ async fn main() -> Result<()> {
         Command::Login { username, user_id } => login_command(&client, username, user_id).await?,
         Command::Accounts { check } => accounts_command(&client, check).await?,
         Command::Logout { account } => logout_command(&client, &account).await?,
+        Command::UpdateKeygen { out } => {
+            anyhow::ensure!(
+                !out.exists(),
+                "{} already exists: not overwriting a key",
+                out.display()
+            );
+            let mut seed = [0u8; 32];
+            getrandom::fill(&mut seed).map_err(|e| anyhow::anyhow!("no random numbers: {e}"))?;
+            if let Some(dir) = out.parent() {
+                std::fs::create_dir_all(dir)?;
+            }
+            std::fs::write(&out, format!("{}\n", hex::encode_upper(seed)))?;
+            let key = ed25519_dalek::SigningKey::from_bytes(&seed);
+            eprintln!(
+                "private key saved to {} (keep it secret, back it up)",
+                out.display()
+            );
+            println!("{}", bebra_core::signature::to_pem(&key.verifying_key()));
+        }
+        Command::UpdateSign { file, version, key } => {
+            let version = self_update::Version::parse(&version)
+                .context("the version must look like 0.2.005 or 0.2.5")?;
+            let signing = self_update::signing_key_from_hex(&std::fs::read_to_string(&key)?)?;
+            let sha = self_update::sha256_file(&file)?;
+            let sig = self_update::sign_update(&signing, &version, &sha);
+            // Refuse to publish what the built-in key would not accept.
+            self_update::verify_update(&self_update::update_key()?, &version, &sha, &sig)
+                .context("this key is not the one built into the launcher")?;
+            let out = PathBuf::from(format!("{}.sig", file.display()));
+            std::fs::write(&out, format!("{sig}\n"))?;
+            println!(
+                "signed {} as {version}\nsha256 {sha}\nwrote {}",
+                file.display(),
+                out.display()
+            );
+        }
+        Command::UpdateCheck { repo } => {
+            let repo = repo.unwrap_or_else(|| self_update::DEFAULT_REPO.to_string());
+            let token = std::env::var("GITHUB_TOKEN")
+                .ok()
+                .map(bebra_core::secret::Token::new);
+            println!("this launcher: {}", self_update::Version::current());
+            match self_update::latest(&client, &repo, token.as_ref()).await? {
+                Some(r) => println!(
+                    "latest on {repo}: {} ({})\n{}",
+                    r.version,
+                    if r.version > self_update::Version::current() {
+                        "newer"
+                    } else {
+                        "not newer"
+                    },
+                    r.setup.name
+                ),
+                None => println!("{repo}: no release with a signed installer yet"),
+            }
+        }
         Command::Storage { data_dir } => {
             let dirs = match data_dir {
                 Some(p) => DataDirs::at(p),
