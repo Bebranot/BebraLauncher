@@ -42,4 +42,4 @@ NOTES.md
 # --- .NET build output (loader) ---
 bin/
 obj/
-loader/out/
+loader/out*/
