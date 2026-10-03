@@ -43,6 +43,11 @@ impl DataDirs {
         self.root.join("modules")
     }
 
+    /// Temporary files (zip downloads while they are unpacked).
+    pub fn scratch(&self) -> PathBuf {
+        self.root.join("tmp")
+    }
+
     pub fn logs(&self) -> PathBuf {
         self.root.join("logs")
     }

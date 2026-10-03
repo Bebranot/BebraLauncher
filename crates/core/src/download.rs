@@ -4,15 +4,18 @@
 use std::io;
 use std::time::Duration;
 
+use std::path::Path;
+
 use async_compression::tokio::bufread::ZstdDecoder;
-use futures_util::TryStreamExt;
+use futures_util::{StreamExt, TryStreamExt};
 use reqwest::header::{ACCEPT_ENCODING, CONTENT_ENCODING, CONTENT_TYPE};
 use reqwest::{Client, Method, Response};
-use tokio::io::{AsyncRead, AsyncReadExt, BufReader};
+use sha2::{Digest, Sha256};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio_util::io::StreamReader;
 
 use crate::content_db::ContentDb;
-use crate::hash::{blake2b256, to_hex};
+use crate::hash::{blake2b256, to_hex, Hash256};
 use crate::manifest::Manifest;
 use crate::{Error, Result};
 
@@ -63,6 +66,39 @@ fn check_status(resp: &Response) -> Result<()> {
             url: resp.url().to_string(),
         })
     }
+}
+
+/// Downloads `url` into `dest` (created or overwritten) and returns the SHA-256 of what arrived.
+/// The caller decides whether that hash is acceptable and deletes `dest` if it is not.
+pub async fn download_to_file(
+    client: &Client,
+    url: &str,
+    dest: &Path,
+    progress: Option<ProgressFn<'_>>,
+) -> Result<Hash256> {
+    let resp = client.get(url).send().await?;
+    check_status(&resp)?;
+    let total = resp.content_length().unwrap_or(0);
+
+    let mut file = tokio::fs::File::create(dest).await?;
+    let mut hasher = Sha256::new();
+    let mut done = 0u64;
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        hasher.update(&chunk);
+        file.write_all(&chunk).await?;
+        done += chunk.len() as u64;
+        if let Some(p) = progress {
+            p(Progress {
+                done,
+                total,
+                unit: ProgressUnit::Bytes,
+            });
+        }
+    }
+    file.flush().await?;
+    Ok(hasher.finalize().into())
 }
 
 /// Downloads the content manifest and checks it against the hash from `/info`.

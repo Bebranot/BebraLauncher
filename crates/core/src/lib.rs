@@ -13,9 +13,11 @@ pub mod hub;
 pub mod launch;
 pub mod manifest;
 pub mod paths;
+pub mod process;
 pub mod server;
 pub mod signature;
 pub mod updater;
+pub mod zipmode;
 
 #[cfg(test)]
 mod test_util;

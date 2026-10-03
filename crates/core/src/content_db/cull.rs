@@ -1,0 +1,301 @@
+//! Keeping the content database from growing forever (docs/protocol.md, section 5.4).
+
+use std::collections::HashMap;
+
+use rusqlite::params;
+
+use super::ContentDb;
+use crate::Result;
+
+#[derive(Debug, Clone, Copy)]
+pub struct CullPolicy {
+    /// Versions kept in total.
+    pub max_versions: usize,
+    /// Versions kept per fork id.
+    pub max_versions_per_fork: usize,
+    /// Interrupted downloads older than this are dropped.
+    pub interrupted_keep_hours: u32,
+}
+
+impl Default for CullPolicy {
+    /// The official launcher's defaults.
+    fn default() -> Self {
+        Self {
+            max_versions: 15,
+            max_versions_per_fork: 3,
+            interrupted_keep_hours: 7 * 24,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CullReport {
+    pub versions_removed: usize,
+    /// Old versions that would have been removed but a running client uses them.
+    pub versions_in_use: usize,
+    pub interrupted_removed: usize,
+    pub blobs_removed: usize,
+}
+
+impl ContentDb {
+    /// Version ids used by clients that are still running. `is_alive(pid, main_module)` decides
+    /// whether a `RunningClient` row still describes a live process; rows of dead ones are deleted.
+    /// (The Loader writes these rows itself when the client starts and removes them on exit.)
+    pub fn running_client_versions(
+        &self,
+        is_alive: impl Fn(u32, &str) -> bool,
+    ) -> Result<Vec<i64>> {
+        let rows: Vec<(i64, String, i64)> = self
+            .conn
+            .prepare("SELECT ProcessId, MainModule, UsedVersion FROM RunningClient")?
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .collect::<std::result::Result<_, _>>()?;
+
+        let mut used = Vec::new();
+        for (pid, module, version) in rows {
+            if u32::try_from(pid).is_ok_and(|p| is_alive(p, &module)) {
+                used.push(version);
+            } else {
+                self.conn
+                    .execute("DELETE FROM RunningClient WHERE ProcessId = ?1", [pid])?;
+            }
+        }
+        Ok(used)
+    }
+
+    /// Removes old versions, old interrupted downloads and blobs nobody refers to any more.
+    ///
+    /// The newest versions are kept, at most `max_versions` in total and `max_versions_per_fork` per
+    /// fork. A version in `in_use` is never removed. Runs in one transaction.
+    pub fn cull(&self, policy: CullPolicy, in_use: &[i64]) -> Result<CullReport> {
+        self.transaction(|db| {
+            let mut report = CullReport::default();
+
+            let versions: Vec<(i64, Option<String>)> = db
+                .conn
+                .prepare("SELECT Id, ForkId FROM ContentVersion ORDER BY LastUsed DESC, Id DESC")?
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect::<std::result::Result<_, _>>()?;
+
+            let mut per_fork: HashMap<Option<String>, usize> = HashMap::new();
+            let mut total = 0;
+            for (id, fork) in versions {
+                let count = per_fork.entry(fork).or_insert(0);
+                if *count < policy.max_versions_per_fork && total < policy.max_versions {
+                    *count += 1;
+                    total += 1;
+                } else if in_use.contains(&id) {
+                    report.versions_in_use += 1;
+                } else {
+                    db.conn
+                        .execute("DELETE FROM ContentVersion WHERE Id = ?1", [id])?;
+                    report.versions_removed += 1;
+                }
+            }
+
+            report.interrupted_removed = db.conn.execute(
+                "DELETE FROM InterruptedDownload WHERE Added < datetime('now', ?1)",
+                params![format!("-{} hours", policy.interrupted_keep_hours)],
+            )?;
+
+            if report.versions_removed > 0 || report.interrupted_removed > 0 {
+                report.blobs_removed = db.conn.execute(
+                    "DELETE FROM Content
+                     WHERE Id NOT IN (SELECT ContentId FROM ContentManifest)
+                       AND Id NOT IN (SELECT ContentId FROM InterruptedDownloadContent)",
+                    [],
+                )?;
+            }
+            Ok(report)
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hash::blake2b256;
+
+    /// A version with one unique file. `age` orders LastUsed: bigger is older.
+    fn version(db: &ContentDb, fork: &str, name: &str, age: i64) -> i64 {
+        let v = db.create_version(fork, name).unwrap();
+        let data = format!("file of {fork}/{name}");
+        let (cid, _) = db
+            .store_blob(&blake2b256(data.as_bytes()), data.as_bytes())
+            .unwrap();
+        db.add_manifest_entry(v, "file.txt", cid).unwrap();
+        db.connection()
+            .execute(
+                "UPDATE ContentVersion SET LastUsed = datetime('2026-01-01', ?1) WHERE Id = ?2",
+                params![format!("-{age} days"), v],
+            )
+            .unwrap();
+        v
+    }
+
+    fn ids(db: &ContentDb) -> Vec<i64> {
+        db.connection()
+            .prepare("SELECT Id FROM ContentVersion ORDER BY Id")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<std::result::Result<_, _>>()
+            .unwrap()
+    }
+
+    fn blob_count(db: &ContentDb) -> i64 {
+        db.connection()
+            .query_row("SELECT COUNT(*) FROM Content", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    fn policy(total: usize, per_fork: usize) -> CullPolicy {
+        CullPolicy {
+            max_versions: total,
+            max_versions_per_fork: per_fork,
+            interrupted_keep_hours: 24,
+        }
+    }
+
+    #[test]
+    fn keeps_the_newest_per_fork() {
+        let db = ContentDb::open_in_memory().unwrap();
+        let a: Vec<i64> = (0..5)
+            .map(|i| version(&db, "a", &format!("v{i}"), i))
+            .collect(); // v0 newest
+        let b = version(&db, "b", "v0", 10);
+
+        let report = db.cull(policy(15, 3), &[]).unwrap();
+        assert_eq!(report.versions_removed, 2);
+        assert_eq!(ids(&db), [a[0], a[1], a[2], b]);
+        assert_eq!(
+            report.blobs_removed, 2,
+            "the removed versions' files go too"
+        );
+        assert_eq!(blob_count(&db), 4);
+    }
+
+    #[test]
+    fn total_limit_removes_the_oldest_overall() {
+        let db = ContentDb::open_in_memory().unwrap();
+        let v1 = version(&db, "a", "1", 1);
+        let v2 = version(&db, "b", "2", 2);
+        let v3 = version(&db, "c", "3", 3);
+        let v4 = version(&db, "d", "4", 4);
+        let report = db.cull(policy(2, 3), &[]).unwrap();
+        assert_eq!(report.versions_removed, 2);
+        assert_eq!(ids(&db), [v1, v2]);
+        let _ = (v3, v4);
+    }
+
+    #[test]
+    fn versions_in_use_survive() {
+        let db = ContentDb::open_in_memory().unwrap();
+        let newest = version(&db, "a", "new", 0);
+        let old = version(&db, "a", "old", 5);
+        let report = db.cull(policy(15, 1), &[old]).unwrap();
+        assert_eq!(report.versions_removed, 0);
+        assert_eq!(report.versions_in_use, 1);
+        assert_eq!(ids(&db), [newest, old]);
+        assert_eq!(blob_count(&db), 2);
+    }
+
+    #[test]
+    fn shared_files_stay_while_any_version_uses_them() {
+        let db = ContentDb::open_in_memory().unwrap();
+        let (cid, _) = db.store_blob(&blake2b256(b"shared"), b"shared").unwrap();
+        let keep = db.create_version("a", "keep").unwrap();
+        let drop = db.create_version("a", "drop").unwrap();
+        for v in [keep, drop] {
+            db.add_manifest_entry(v, "shared.txt", cid).unwrap();
+        }
+        db.connection()
+            .execute(
+                "UPDATE ContentVersion SET LastUsed = datetime('2020-01-01') WHERE Id = ?1",
+                [drop],
+            )
+            .unwrap();
+
+        db.cull(policy(15, 1), &[]).unwrap();
+        assert_eq!(ids(&db), [keep]);
+        assert_eq!(db.read_blob(cid).unwrap(), b"shared");
+    }
+
+    #[test]
+    fn interrupted_downloads_expire_but_fresh_ones_keep_their_blobs() {
+        let db = ContentDb::open_in_memory().unwrap();
+        let (fresh_blob, _) = db.store_blob(&blake2b256(b"fresh"), b"fresh").unwrap();
+        let (old_blob, _) = db.store_blob(&blake2b256(b"old"), b"old").unwrap();
+        let (orphan, _) = db.store_blob(&blake2b256(b"orphan"), b"orphan").unwrap();
+
+        let fresh = db.begin_interrupted_download().unwrap();
+        db.link_interrupted_blob(fresh, fresh_blob).unwrap();
+        let old = db.begin_interrupted_download().unwrap();
+        db.link_interrupted_blob(old, old_blob).unwrap();
+        db.connection()
+            .execute(
+                "UPDATE InterruptedDownload SET Added = datetime('now', '-3 days') WHERE Id = ?1",
+                [old],
+            )
+            .unwrap();
+
+        let report = db.cull(policy(15, 3), &[]).unwrap();
+        assert_eq!(report.interrupted_removed, 1);
+        assert_eq!(
+            report.blobs_removed, 2,
+            "old interrupted blob and the unreferenced one"
+        );
+        assert!(db.read_blob(fresh_blob).is_ok());
+        assert!(db.read_blob(old_blob).is_err());
+        assert!(db.read_blob(orphan).is_err());
+    }
+
+    #[test]
+    fn nothing_to_do_removes_nothing() {
+        let db = ContentDb::open_in_memory().unwrap();
+        version(&db, "a", "1", 1);
+        // An unreferenced blob is only collected when something else was removed (like the official code).
+        db.store_blob(&blake2b256(b"loose"), b"loose").unwrap();
+        let report = db.cull(CullPolicy::default(), &[]).unwrap();
+        assert_eq!(report, CullReport::default());
+        assert_eq!(blob_count(&db), 2);
+    }
+
+    #[test]
+    fn running_clients_are_detected_and_dead_rows_removed() {
+        let db = ContentDb::open_in_memory().unwrap();
+        let v1 = version(&db, "a", "1", 1);
+        let v2 = version(&db, "a", "2", 2);
+        let c = db.connection();
+        c.execute(
+            "INSERT INTO RunningClient VALUES (100, 'C:\\loader.exe', ?1)",
+            [v1],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO RunningClient VALUES (200, 'C:\\loader.exe', ?1)",
+            [v2],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO RunningClient VALUES (300, 'C:\\other.exe', ?1)",
+            [v2],
+        )
+        .unwrap();
+
+        // Only pid 100 is alive, and pid 300 was reused by another program.
+        let used = db
+            .running_client_versions(|pid, module| pid == 100 && module == "C:\\loader.exe")
+            .unwrap();
+        assert_eq!(used, [v1]);
+        let left: i64 = c
+            .query_row("SELECT COUNT(*) FROM RunningClient", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(left, 1);
+
+        // A version a live client uses can't be deleted from under it: the foreign key says so too.
+        assert!(c
+            .execute("DELETE FROM ContentVersion WHERE Id = ?1", [v1])
+            .is_err());
+    }
+}

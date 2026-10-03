@@ -3,6 +3,8 @@
 //! The schema is the one the official launcher uses, because `SS14.Loader` reads this file directly.
 //! Do not change tables or their meaning without checking the Loader.
 
+pub mod cull;
+
 use std::collections::HashSet;
 use std::path::Path;
 
@@ -353,6 +355,48 @@ impl ContentDb {
             insert.execute(params![version_id, entry.path, content_id])?;
         }
         Ok(())
+    }
+
+    /// Adds one file to a version. The blob must already be stored.
+    pub fn add_manifest_entry(&self, version_id: i64, path: &str, content_id: i64) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO ContentManifest(VersionId, Path, ContentId) VALUES (?1, ?2, ?3)",
+            params![version_id, path, content_id],
+        )?;
+        Ok(())
+    }
+
+    /// A new version with the same files as `from` but another name and engine version, for when
+    /// the server reports different fork/version/engine for content we already have (docs section 2).
+    /// Copies manifest rows, not blobs. The `Robust` dependency gets `engine_version`; other modules
+    /// are copied as they are, so callers must not use this when the engine changes and modules exist.
+    pub fn duplicate_version(
+        &self,
+        from: i64,
+        fork_id: &str,
+        fork_version: &str,
+        engine_version: &str,
+    ) -> Result<i64> {
+        self.conn.execute(
+            "INSERT INTO ContentVersion(Hash, ForkId, ForkVersion, LastUsed, ZipHash)
+             SELECT Hash, ?2, ?3, datetime('now'), ZipHash FROM ContentVersion WHERE Id = ?1",
+            params![from, fork_id, fork_version],
+        )?;
+        let new_id = self.conn.last_insert_rowid();
+        self.conn.execute(
+            "INSERT INTO ContentManifest(VersionId, Path, ContentId)
+             SELECT ?2, Path, ContentId FROM ContentManifest WHERE VersionId = ?1",
+            [from, new_id],
+        )?;
+        for (module, version) in self.engine_dependencies(from)? {
+            let version = if module == "Robust" {
+                engine_version.to_string()
+            } else {
+                version
+            };
+            self.add_engine_dependency(new_id, &module, &version)?;
+        }
+        Ok(new_id)
     }
 
     /// The files of a version, sorted by path (bytewise on UTF-8).

@@ -51,6 +51,11 @@ enum Command {
         #[arg(long)]
         via_hub: bool,
     },
+    /// Show which stored versions are used by a running game client.
+    Running {
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
+    },
     /// Install (if needed) and start the game for a server.
     Launch {
         address: String,
@@ -173,11 +178,17 @@ async fn main() -> Result<()> {
 
             let db = ContentDb::open(&dirs.content_db())?;
             let printer = ProgressPrinter::new("files");
-            let content =
-                updater::install_content(&client, &db, &build, Some(&|p| printer.show(p)))
-                    .await
-                    .context("failed to install game files")?;
+            let content = updater::install_content(
+                &client,
+                &db,
+                &build,
+                &dirs.scratch(),
+                Some(&|p| printer.show(p)),
+            )
+            .await
+            .context("failed to install game files")?;
             printer.finish();
+            print_cleanup(&db)?;
             println!(
                 "game files: version #{} - {} files, {} downloaded{}",
                 content.version_id,
@@ -212,6 +223,24 @@ async fn main() -> Result<()> {
                     "already installed"
                 }
             );
+        }
+        Command::Running { data_dir } => {
+            let dirs = match data_dir {
+                Some(p) => DataDirs::at(p),
+                None => DataDirs::default_windows()?,
+            };
+            let db = ContentDb::open(&dirs.content_db())?;
+            let used = db.running_client_versions(bebra_core::process::is_process_running_from)?;
+            if used.is_empty() {
+                println!("no game client is running");
+            }
+            for id in used {
+                let v = db.get_version(id)?;
+                println!(
+                    "version #{id} ({}) is in use",
+                    v.and_then(|v| v.fork_version).unwrap_or_default()
+                );
+            }
         }
         Command::Launch {
             address,
@@ -258,11 +287,17 @@ async fn main() -> Result<()> {
 
             let db = ContentDb::open(&dirs.content_db())?;
             let printer = ProgressPrinter::new("files");
-            let content =
-                updater::install_content(&client, &db, &build, Some(&|p| printer.show(p)))
-                    .await
-                    .context("failed to install game files")?;
+            let content = updater::install_content(
+                &client,
+                &db,
+                &build,
+                &dirs.scratch(),
+                Some(&|p| printer.show(p)),
+            )
+            .await
+            .context("failed to install game files")?;
             printer.finish();
+            print_cleanup(&db)?;
             let printer = ProgressPrinter::new("engine");
             let installed = engine::install_engine(
                 &client,
@@ -321,6 +356,17 @@ async fn main() -> Result<()> {
                 anyhow::bail!("the client did not exit cleanly");
             }
         }
+    }
+    Ok(())
+}
+
+fn print_cleanup(db: &ContentDb) -> Result<()> {
+    let r = updater::cleanup(db).context("cleanup of old versions failed")?;
+    if r.versions_removed > 0 || r.interrupted_removed > 0 || r.versions_in_use > 0 {
+        println!(
+            "cleanup: removed {} old versions, {} unfinished downloads, {} unused files; {} old versions kept because the game is running",
+            r.versions_removed, r.interrupted_removed, r.blobs_removed, r.versions_in_use
+        );
     }
     Ok(())
 }

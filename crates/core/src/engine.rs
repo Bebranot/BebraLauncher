@@ -5,13 +5,11 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use ed25519_dalek::VerifyingKey;
-use futures_util::StreamExt;
 use reqwest::Client;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use tokio::io::AsyncWriteExt;
 
-use crate::download::{Progress, ProgressFn, ProgressUnit};
+use crate::download::{download_to_file, ProgressFn};
 use crate::hash::{parse_hash_hex, to_hex};
 use crate::http::UrlFallbackSet;
 use crate::paths::DataDirs;
@@ -243,36 +241,7 @@ async fn download_and_check(
     part: &Path,
     progress: Option<ProgressFn<'_>>,
 ) -> Result<()> {
-    let resp = client.get(&build.url).send().await?;
-    if !resp.status().is_success() {
-        return Err(Error::HttpStatus {
-            status: resp.status().as_u16(),
-            url: build.url.clone(),
-        });
-    }
-    let total = resp.content_length().unwrap_or(0);
-
-    let mut file = tokio::fs::File::create(part).await?;
-    let mut hasher = Sha256::new();
-    let mut done = 0u64;
-    let mut stream = resp.bytes_stream();
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk?;
-        hasher.update(&chunk);
-        file.write_all(&chunk).await?;
-        done += chunk.len() as u64;
-        if let Some(p) = progress {
-            p(Progress {
-                done,
-                total,
-                unit: ProgressUnit::Bytes,
-            });
-        }
-    }
-    file.flush().await?;
-    drop(file);
-
-    let actual: [u8; 32] = hasher.finalize().into();
+    let actual = download_to_file(client, &build.url, part, progress).await?;
     if &actual != want_sha {
         return Err(Error::HashMismatch {
             expected: to_hex(want_sha),
