@@ -4,9 +4,15 @@ use std::path::Path;
 
 use reqwest::Client;
 
+use ed25519_dalek::VerifyingKey;
+
 use crate::content_db::cull::{CullPolicy, CullReport};
 use crate::content_db::ContentDb;
 use crate::download::{self, ProgressFn};
+use crate::engine::{self, InstalledEngine};
+use crate::http::UrlFallbackSet;
+use crate::modules::{self, InstalledModule, ModuleIndex, ResourceManifest};
+use crate::paths::DataDirs;
 use crate::server::BuildInfo;
 use crate::{Error, Result};
 
@@ -99,6 +105,114 @@ pub async fn install_content(
             crate::zipmode::install_zip(client, db, build, scratch_dir, progress).await
         }
     }
+}
+
+/// Where engines and modules come from and which key signs them.
+#[derive(Clone)]
+pub struct Sources {
+    pub builds: UrlFallbackSet,
+    pub key: VerifyingKey,
+}
+
+impl Sources {
+    /// The Wizards' Den builds CDN and signing key.
+    pub fn official() -> Result<Self> {
+        Ok(Self {
+            builds: UrlFallbackSet::new(engine::BUILDS_URLS),
+            key: crate::signature::official_key()?,
+        })
+    }
+}
+
+/// Everything needed to start the game for one installed version.
+#[derive(Debug, Clone)]
+pub struct PreparedLaunch {
+    pub version_id: i64,
+    pub engine: InstalledEngine,
+    pub modules: Vec<InstalledModule>,
+    /// From `manifest.yml`; the official launcher passes this to Steam builds only.
+    pub multi_window: bool,
+}
+
+/// Makes the engine and the engine modules of an installed version ready to run (docs section 6).
+///
+/// Module versions are worked out from the build's `manifest.yml` and the engine version, and saved
+/// as dependencies of the version. Safe to call again for a version that is already prepared:
+/// then it only checks that everything is still on disk.
+pub async fn prepare_launch(
+    client: &Client,
+    db: &ContentDb,
+    dirs: &DataDirs,
+    sources: &Sources,
+    version_id: i64,
+    progress: Option<ProgressFn<'_>>,
+) -> Result<PreparedLaunch> {
+    let engine_requested = robust_version(db, version_id)?.ok_or_else(|| {
+        Error::Other(format!(
+            "version {version_id} has no engine version recorded"
+        ))
+    })?;
+
+    let resource = match db.read_file(version_id, "manifest.yml")? {
+        Some(yaml) => ResourceManifest::parse(&yaml)?,
+        None => ResourceManifest::default(),
+    };
+
+    // The module index is only fetched when some module is involved.
+    let mut index: Option<ModuleIndex> = None;
+    let have: Vec<String> = db
+        .engine_dependencies(version_id)?
+        .into_iter()
+        .map(|(m, _)| m)
+        .collect();
+    for module in resource.modules.iter().filter(|m| !have.contains(m)) {
+        if index.is_none() {
+            index = Some(ModuleIndex::fetch(client, &sources.builds).await?);
+        }
+        let version = index
+            .as_ref()
+            .expect("fetched above")
+            .version_for_engine(module, &engine_requested)?;
+        db.add_engine_dependency(version_id, module, &version)?;
+    }
+
+    let engine = engine::install_engine(
+        client,
+        &sources.builds,
+        dirs,
+        &engine_requested,
+        &sources.key,
+        progress,
+    )
+    .await?;
+
+    let mut modules = Vec::new();
+    for (name, version) in db.engine_dependencies(version_id)? {
+        if name == "Robust" {
+            continue;
+        }
+        if index.is_none() {
+            index = Some(ModuleIndex::fetch(client, &sources.builds).await?);
+        }
+        let installed = modules::install_module(
+            client,
+            index.as_ref().expect("fetched above"),
+            dirs,
+            &name,
+            &version,
+            &sources.key,
+            progress,
+        )
+        .await?;
+        modules.push(installed);
+    }
+
+    Ok(PreparedLaunch {
+        version_id,
+        engine,
+        modules,
+        multi_window: resource.multi_window,
+    })
 }
 
 /// Housekeeping after an install: drops old versions (the official limits: 15 in total, 3 per
@@ -603,5 +717,216 @@ mod e2e_tests {
             .engine_dependencies(third.version_id)
             .unwrap()
             .contains(&("Robust.Client.WebView".to_string(), "0.1.0".to_string())));
+    }
+}
+
+#[cfg(test)]
+mod prepare_tests {
+    use std::sync::{Arc, Mutex};
+
+    use super::*;
+    use crate::hash::{sha256, to_hex};
+    use crate::http::build_client;
+    use crate::signature::tests::{sign_hex, test_key};
+    use crate::test_util::{serve_with_base, Req};
+    use crate::zipmode::tests::make_zip;
+
+    struct Cdn {
+        base: String,
+        seen: Arc<Mutex<Vec<Req>>>,
+        build: BuildInfo,
+        dirs: DataDirs,
+        sources: Sources,
+        _tmp: tempfile::TempDir,
+    }
+
+    impl Cdn {
+        fn count(&self, path: &str) -> usize {
+            self.seen
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|r| r.path == path)
+                .count()
+        }
+    }
+
+    /// One server playing the game server's download, the engine index and the module index.
+    /// `engine_versions`: what the engine index knows; the build asks for "100.0.0".
+    async fn cdn(manifest_yml: &str) -> Cdn {
+        let key = test_key();
+        let engine_zip = b"PK engine".repeat(40);
+        let module_zip = make_zip(&[("webview.exe", b"MZ"), ("data/x.bin", &[1u8; 500])]);
+        let client_zip = make_zip(&[
+            ("manifest.yml", manifest_yml.as_bytes()),
+            ("a.txt", b"alpha"),
+        ]);
+
+        let (base, seen) = serve_with_base({
+            let (engine_zip, module_zip, client_zip) = (engine_zip.clone(), module_zip.clone(), client_zip.clone());
+            let key = key.clone();
+            move |base| {
+                let engine_index = format!(
+                    r#"{{"100.0.0": {{"platforms": {{"win-x64": {{"url": "{base}engine.zip", "sha256": "{}", "sig": "{}"}}}}}}}}"#,
+                    to_hex(&sha256(&engine_zip)),
+                    sign_hex(&key, &engine_zip)
+                );
+                let module_index = format!(
+                    r#"{{"modules": {{"Robust.Client.WebView": {{"versions": {{
+                        "0.5.0": {{"platforms": {{"win-x64": {{"url": "{base}old.zip", "sha256": "{}", "sig": "AA"}}}}}},
+                        "50.0.0": {{"platforms": {{"win-x64": {{"url": "{base}module.zip", "sha256": "{}", "sig": "{}"}}}}}},
+                        "200.0.0": {{"platforms": {{"win-x64": {{"url": "{base}future.zip", "sha256": "{}", "sig": "AA"}}}}}}
+                    }}}}}}}}"#,
+                    "00".repeat(32),
+                    to_hex(&sha256(&module_zip)),
+                    sign_hex(&key, &module_zip),
+                    "00".repeat(32)
+                );
+                move |req: &Req| match req.path.as_str() {
+                    "/manifest.json" => (200, vec![], engine_index.clone().into_bytes()),
+                    "/modules.json" => (200, vec![], module_index.clone().into_bytes()),
+                    "/engine.zip" => (200, vec![], engine_zip.clone()),
+                    "/module.zip" => (200, vec![], module_zip.clone()),
+                    "/client.zip" => (200, vec![], client_zip.clone()),
+                    _ => (404, vec![], vec![]),
+                }
+            }
+        })
+        .await;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let build = BuildInfo {
+            download_url: Some(format!("{base}client.zip")),
+            hash: Some(to_hex(&sha256(&client_zip))),
+            fork_id: "f".into(),
+            version: "1".into(),
+            engine_version: "100.0.0".into(),
+            ..Default::default()
+        };
+        Cdn {
+            sources: Sources {
+                builds: UrlFallbackSet::new([base.clone()]),
+                key: key.verifying_key(),
+            },
+            base,
+            seen,
+            build,
+            dirs: DataDirs::at(tmp.path()),
+            _tmp: tmp,
+        }
+    }
+
+    async fn install_and_prepare(c: &Cdn, db: &ContentDb) -> PreparedLaunch {
+        let client = build_client().unwrap();
+        let content = install_content(&client, db, &c.build, &c.dirs.scratch(), None)
+            .await
+            .unwrap();
+        prepare_launch(&client, db, &c.dirs, &c.sources, content.version_id, None)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn build_without_modules_only_needs_the_engine() {
+        let c = cdn("defaultWindowTitle: Test\n").await;
+        let db = ContentDb::open_in_memory().unwrap();
+        let p = install_and_prepare(&c, &db).await;
+
+        assert_eq!(p.engine.version, "100.0.0");
+        assert!(p.engine.zip_path.is_file());
+        assert!(p.modules.is_empty());
+        assert!(!p.multi_window);
+        assert_eq!(
+            c.count("/modules.json"),
+            0,
+            "the module index is not needed"
+        );
+        assert_eq!(c.count("/module.zip"), 0);
+    }
+
+    #[tokio::test]
+    async fn modules_from_manifest_yml_are_resolved_saved_and_installed() {
+        let c = cdn("modules:\n  - Robust.Client.WebView\nmultiWindow: true\n").await;
+        let db = ContentDb::open_in_memory().unwrap();
+        let p = install_and_prepare(&c, &db).await;
+
+        // Engine 100.0.0: the newest module not newer than that is 50.0.0 (not 0.5.0, not 200.0.0).
+        assert_eq!(p.modules.len(), 1);
+        assert_eq!(p.modules[0].name, "Robust.Client.WebView");
+        assert_eq!(p.modules[0].version, "50.0.0");
+        assert!(p.modules[0].dir.join("webview.exe").is_file());
+        assert!(p.multi_window);
+        assert_eq!(
+            db.engine_dependencies(p.version_id).unwrap(),
+            [
+                ("Robust".to_string(), "100.0.0".to_string()),
+                ("Robust.Client.WebView".to_string(), "50.0.0".to_string())
+            ]
+        );
+        assert_eq!(c.count("/module.zip"), 1);
+        assert_eq!(c.count("/old.zip") + c.count("/future.zip"), 0);
+    }
+
+    #[tokio::test]
+    async fn preparing_again_downloads_nothing() {
+        let c = cdn("modules:\n  - Robust.Client.WebView\n").await;
+        let db = ContentDb::open_in_memory().unwrap();
+        let first = install_and_prepare(&c, &db).await;
+        let again = prepare_launch(
+            &build_client().unwrap(),
+            &db,
+            &c.dirs,
+            &c.sources,
+            first.version_id,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert!(!again.engine.downloaded);
+        assert!(!again.modules[0].downloaded);
+        assert_eq!(c.count("/engine.zip"), 1);
+        assert_eq!(c.count("/module.zip"), 1);
+        assert_eq!(
+            db.engine_dependencies(first.version_id).unwrap().len(),
+            2,
+            "dependencies are not added twice"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_deleted_module_is_fetched_again() {
+        let c = cdn("modules:\n  - Robust.Client.WebView\n").await;
+        let db = ContentDb::open_in_memory().unwrap();
+        let first = install_and_prepare(&c, &db).await;
+        std::fs::remove_dir_all(&first.modules[0].dir).unwrap();
+
+        let again = prepare_launch(
+            &build_client().unwrap(),
+            &db,
+            &c.dirs,
+            &c.sources,
+            first.version_id,
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(again.modules[0].downloaded);
+        assert!(again.modules[0].dir.join("webview.exe").is_file());
+    }
+
+    #[tokio::test]
+    async fn unknown_module_is_an_error() {
+        let c = cdn("modules:\n  - Robust.Client.Nonsense\n").await;
+        let db = ContentDb::open_in_memory().unwrap();
+        let client = build_client().unwrap();
+        let content = install_content(&client, &db, &c.build, &c.dirs.scratch(), None)
+            .await
+            .unwrap();
+        let err = prepare_launch(&client, &db, &c.dirs, &c.sources, content.version_id, None)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("Nonsense"), "{err}");
+        let _ = &c.base;
     }
 }

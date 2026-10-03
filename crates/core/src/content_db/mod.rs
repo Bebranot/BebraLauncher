@@ -399,6 +399,19 @@ impl ContentDb {
         Ok(new_id)
     }
 
+    /// The contents of one file of a version, if the version has it.
+    pub fn read_file(&self, version_id: i64, path: &str) -> Result<Option<Vec<u8>>> {
+        let id: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT ContentId FROM ContentManifest WHERE VersionId = ?1 AND Path = ?2",
+                params![version_id, path],
+                |r| r.get(0),
+            )
+            .optional()?;
+        id.map(|id| self.read_blob(id)).transpose()
+    }
+
     /// The files of a version, sorted by path (bytewise on UTF-8).
     pub fn manifest_entries(&self, version_id: i64) -> Result<Vec<ManifestEntry>> {
         let mut stmt = self.conn.prepare(

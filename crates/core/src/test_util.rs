@@ -21,8 +21,20 @@ pub(crate) type Reply = (u16, Vec<(&'static str, String)>, Vec<u8>);
 pub(crate) async fn serve(
     handler: impl Fn(&Req) -> Reply + Send + Sync + 'static,
 ) -> (String, Arc<Mutex<Vec<Req>>>) {
+    serve_with_base(|_| handler).await
+}
+
+/// Like [`serve`], but the handler is built from the server's own base URL, for replies that
+/// must point back at the server (indexes with download links).
+pub(crate) async fn serve_with_base<H>(
+    make: impl FnOnce(String) -> H,
+) -> (String, Arc<Mutex<Vec<Req>>>)
+where
+    H: Fn(&Req) -> Reply + Send + Sync + 'static,
+{
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}/", listener.local_addr().unwrap());
+    let handler = make(base.clone());
     let seen = Arc::new(Mutex::new(Vec::new()));
     let handler = Arc::new(handler);
     let log = seen.clone();

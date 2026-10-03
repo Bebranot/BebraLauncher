@@ -12,6 +12,7 @@ pub mod http;
 pub mod hub;
 pub mod launch;
 pub mod manifest;
+pub mod modules;
 pub mod paths;
 pub mod process;
 pub mod server;

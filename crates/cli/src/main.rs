@@ -4,12 +4,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use anyhow::{Context, Result};
 use bebra_core::content_db::ContentDb;
 use bebra_core::download::{Progress, ProgressUnit};
-use bebra_core::http::UrlFallbackSet;
 use bebra_core::hub::HubClient;
 use bebra_core::paths::DataDirs;
 use bebra_core::server::AuthMode;
 use bebra_core::server::{self, ServerStatus};
-use bebra_core::{engine, http, launch, signature, updater, ServerAddr};
+use bebra_core::{http, launch, updater, ServerAddr};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -202,27 +201,41 @@ async fn main() -> Result<()> {
             );
 
             let printer = ProgressPrinter::new("engine");
-            let installed = engine::install_engine(
+            let prepared = updater::prepare_launch(
                 &client,
-                &UrlFallbackSet::new(engine::BUILDS_URLS),
+                &db,
                 &dirs,
-                &build.engine_version,
-                &signature::official_key()?,
+                &updater::Sources::official()?,
+                content.version_id,
                 Some(&|p| printer.show(p)),
             )
             .await
             .context("failed to install the engine")?;
             printer.finish();
+            let engine = &prepared.engine;
             println!(
                 "engine {}: {} ({})",
-                installed.version,
-                installed.zip_path.display(),
-                if installed.downloaded {
+                engine.version,
+                engine.zip_path.display(),
+                if engine.downloaded {
                     "downloaded, signature ok"
                 } else {
                     "already installed"
                 }
             );
+            for m in &prepared.modules {
+                println!(
+                    "module {} {}: {} ({})",
+                    m.name,
+                    m.version,
+                    m.dir.display(),
+                    if m.downloaded {
+                        "downloaded, signature ok"
+                    } else {
+                        "already installed"
+                    }
+                );
+            }
         }
         Command::Running { data_dir } => {
             let dirs = match data_dir {
@@ -299,12 +312,12 @@ async fn main() -> Result<()> {
             printer.finish();
             print_cleanup(&db)?;
             let printer = ProgressPrinter::new("engine");
-            let installed = engine::install_engine(
+            let prepared = updater::prepare_launch(
                 &client,
-                &UrlFallbackSet::new(engine::BUILDS_URLS),
+                &db,
                 &dirs,
-                &build.engine_version,
-                &signature::official_key()?,
+                &updater::Sources::official()?,
+                content.version_id,
                 Some(&|p| printer.show(p)),
             )
             .await
@@ -314,11 +327,15 @@ async fn main() -> Result<()> {
             let spec = launch::LaunchSpec {
                 loader_exe,
                 dotnet_root: None,
-                engine: installed,
+                engine: prepared.engine,
                 signing_key_file: launch::ensure_signing_key_file(&dirs)?,
                 content_db: dirs.content_db(),
                 content_version_id: content.version_id,
-                modules: vec![],
+                modules: prepared
+                    .modules
+                    .into_iter()
+                    .map(|m| (m.name, m.dir))
+                    .collect(),
                 username,
                 auth: None,
                 build,
