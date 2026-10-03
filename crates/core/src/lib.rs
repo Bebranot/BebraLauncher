@@ -16,6 +16,7 @@ pub mod launch;
 pub mod manifest;
 pub mod modules;
 pub mod paths;
+pub mod play;
 pub mod process;
 pub mod secret;
 pub mod server;

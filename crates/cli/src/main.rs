@@ -6,13 +6,14 @@ use bebra_core::accounts::{
     self, AccountStatus, CredentialStore, Freshness, LoginResult, StoredAccount, TokenStore,
 };
 use bebra_core::auth::{AuthClient, DenyCode, Identity};
+use bebra_core::content_db::cull::CullReport;
 use bebra_core::content_db::ContentDb;
 use bebra_core::download::{Progress, ProgressUnit};
 use bebra_core::hub::HubClient;
 use bebra_core::paths::DataDirs;
 use bebra_core::server::AuthMode;
 use bebra_core::server::{self, ServerStatus};
-use bebra_core::{http, launch, updater, ServerAddr};
+use bebra_core::{http, launch, play, updater, ServerAddr};
 use clap::{Parser, Subcommand};
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -216,7 +217,7 @@ async fn main() -> Result<()> {
             .await
             .context("failed to install game files")?;
             printer.finish();
-            print_cleanup(&db)?;
+            print_cleanup_report(&updater::cleanup(&db).context("cleanup of old versions failed")?);
             println!(
                 "game files: version #{} - {} files, {} downloaded{}",
                 content.version_id,
@@ -310,94 +311,44 @@ async fn main() -> Result<()> {
                 None => launch::find_loader()?,
             };
 
-            let info = if via_hub {
-                HubClient::official(client.clone())
-                    .server_info(addr.as_str())
-                    .await?
-            } else {
-                server::fetch_info(&client, &addr)
-                    .await
-                    .with_context(|| format!("{} did not answer /info", addr.info_url()))?
-            };
-            let mut build = info
-                .build
-                .clone()
-                .context("the server gave no build information")?;
-            if via_hub {
-                build.apply_self_hosting(&addr);
-            }
             let auth_client = AuthClient::official(client.clone());
-            let player = if no_connect || guest {
+            let account = if no_connect || guest {
                 None
             } else {
                 pick_account(&auth_client, account.as_deref()).await?
             };
-            match &player {
-                Some(a) => println!("playing as {}", a.username),
-                None => println!("playing as a guest ({username})"),
-            }
-
-            let db = ContentDb::open(&dirs.content_db())?;
-            let printer = ProgressPrinter::new("files");
-            let content = updater::install_content(
-                &client,
-                &db,
-                &build,
-                &dirs.scratch(),
-                Some(&|p| printer.show(p)),
-            )
-            .await
-            .context("failed to install game files")?;
-            printer.finish();
-            print_cleanup(&db)?;
-            let printer = ProgressPrinter::new("engine");
-            let prepared = updater::prepare_launch(
-                &client,
-                &db,
-                &dirs,
-                &updater::Sources::official()?,
-                content.version_id,
-                Some(&|p| printer.show(p)),
-            )
-            .await
-            .context("failed to install the engine")?;
-            printer.finish();
-
-            let spec = launch::LaunchSpec {
-                loader_exe,
-                dotnet_root: None,
-                engine: prepared.engine,
-                signing_key_file: launch::ensure_signing_key_file(&dirs)?,
-                content_db: dirs.content_db(),
-                content_version_id: content.version_id,
-                modules: prepared
-                    .modules
-                    .into_iter()
-                    .map(|m| (m.name, m.dir))
-                    .collect(),
-                username: player.as_ref().map_or(username, |a| a.username.clone()),
-                // Only servers that use accounts get the token.
-                auth: player
-                    .filter(|_| info.auth.mode != AuthMode::Disabled)
-                    .map(|a| launch::AuthEnv {
-                        token: a.token.expose().to_string(),
-                        user_id: a.user_id.to_string(),
-                        server_public_key: info.auth.public_key.clone(),
-                        auth_server_url: auth_client.most_successful_url().to_string(),
-                    }),
-                build,
-                connect: (!no_connect).then(|| launch::ConnectTarget {
-                    connect_url: info.connect_url(&addr),
-                    server_address: addr.normalized(),
-                }),
+            let req = play::PlayRequest {
+                addr,
+                via_hub,
+                account,
+                guest_name: username,
                 compat_mode: compat,
+                no_connect,
+                loader_exe,
             };
-            if !no_connect && spec.auth.is_none() && info.auth.mode == AuthMode::Required {
-                eprintln!(
-                    "note: this server requires an account; playing as a guest will be refused"
-                );
+            let printer = ProgressPrinter::new("files");
+            let engine_printer = ProgressPrinter::new("engine");
+            let game = play::prepare(&client, &dirs, &req, &|stage, p| match (stage, p) {
+                (play::Stage::Info, _) => {}
+                (play::Stage::Files, Some(p)) => printer.show(p),
+                (play::Stage::Engine, Some(p)) => engine_printer.show(p),
+                _ => {}
+            })
+            .await?;
+            printer.finish();
+            engine_printer.finish();
+            print_cleanup_report(&game.cleanup);
+            if game.sends_account {
+                println!("playing as {}", game.plays_as);
+            } else {
+                println!("playing as a guest ({})", game.plays_as);
+                if !no_connect && game.info.auth.mode == AuthMode::Required {
+                    eprintln!(
+                        "note: this server requires an account; playing as a guest will be refused"
+                    );
+                }
             }
-            let cmd = launch::build_command(&spec);
+            let cmd = game.command;
             println!("{}", cmd.describe());
             if dry_run {
                 return Ok(());
@@ -580,15 +531,13 @@ async fn pick_account(auth: &AuthClient, selector: Option<&str>) -> Result<Optio
     }
 }
 
-fn print_cleanup(db: &ContentDb) -> Result<()> {
-    let r = updater::cleanup(db).context("cleanup of old versions failed")?;
+fn print_cleanup_report(r: &CullReport) {
     if r.versions_removed > 0 || r.interrupted_removed > 0 || r.versions_in_use > 0 {
         println!(
             "cleanup: removed {} old versions, {} unfinished downloads, {} unused files; {} old versions kept because the game is running",
             r.versions_removed, r.interrupted_removed, r.blobs_removed, r.versions_in_use
         );
     }
-    Ok(())
 }
 
 /// Prints a progress line, but only when the percentage changes.
