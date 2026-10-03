@@ -78,6 +78,9 @@ pub struct LaunchSpec {
     pub connect: Option<ConnectTarget>,
     /// Run the client in the GLES2 fallback renderer.
     pub compat_mode: bool,
+    /// Our own executable. The client starts it with `--commands …` to ask for a reconnect
+    /// (`SS14_LAUNCHER_PATH`). `None` = the client cannot redial.
+    pub launcher_path: Option<PathBuf>,
 }
 
 #[derive(Clone)]
@@ -172,6 +175,9 @@ pub fn build_command(spec: &LaunchSpec) -> LaunchCommand {
         env.push(("ROBUST_AUTH_USERID".into(), a.user_id.clone()));
         env.push(("ROBUST_AUTH_PUBKEY".into(), a.server_public_key.clone()));
         env.push(("ROBUST_AUTH_SERVER".into(), a.auth_server_url.clone()));
+    }
+    if let Some(path) = &spec.launcher_path {
+        env.push(("SS14_LAUNCHER_PATH".into(), path.display().to_string()));
     }
     env.push((
         "SS14_LOADER_CONTENT_DB".into(),
@@ -321,6 +327,7 @@ mod tests {
                 server_address: "ss14://host:1212/".into(),
             }),
             compat_mode: false,
+            launcher_path: None,
         }
     }
 
@@ -381,6 +388,22 @@ mod tests {
             .iter()
             .any(|a| a == "--launcher" || a == "--connect-address" || a == "--ss14-address"));
         assert!(args.contains(&"launch.launcher=true".to_string()));
+    }
+
+    #[test]
+    fn launcher_path_is_passed_for_redial_only_when_given() {
+        let cmd = build_command(&spec());
+        assert_eq!(env_of(&cmd, "SS14_LAUNCHER_PATH"), None);
+        assert!(cmd.env_remove.contains(&"SS14_LAUNCHER_PATH".to_string()));
+
+        let mut s = spec();
+        s.launcher_path = Some(PathBuf::from(r"C:ppebra-app.exe"));
+        let cmd = build_command(&s);
+        assert_eq!(
+            env_of(&cmd, "SS14_LAUNCHER_PATH").as_deref(),
+            Some(r"C:ppebra-app.exe")
+        );
+        assert!(!cmd.env_remove.contains(&"SS14_LAUNCHER_PATH".to_string()));
     }
 
     #[test]

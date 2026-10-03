@@ -22,6 +22,9 @@ use uuid::Uuid;
 
 pub const EVENT: &str = "play";
 
+/// Returned by [`start`] while another game is being prepared or run.
+pub const BUSY: &str = "Игра уже запускается или запущена";
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PlayEvent {
@@ -60,7 +63,7 @@ impl GameState {
     fn begin(&self) -> Result<Arc<Notify>, String> {
         let mut active = self.active.lock().unwrap();
         if active.is_some() {
-            return Err("Игра уже запускается или запущена".into());
+            return Err(BUSY.into());
         }
         let cancel = Arc::new(Notify::new());
         *active = Some(cancel.clone());
@@ -162,6 +165,7 @@ async fn prepare(app: &AppHandle, params: &PlayParams) -> Result<play::PreparedG
         compat_mode: params.compat_mode,
         no_connect: false,
         loader_exe,
+        launcher_path: std::env::current_exe().ok(),
     };
 
     // Progress callbacks come once per file; only tell the UI when the percentage moves.
@@ -223,6 +227,11 @@ async fn resolve_account(client: &Client, id: Uuid) -> Result<StoredAccount, Str
         Err(_) if accounts::freshness(saved.expire_time, now) != Freshness::Expired => Ok(saved),
         Err(e) => Err(e.to_string()),
     }
+}
+
+/// Brings the launcher window back if it was minimized.
+pub fn restore_window(app: &AppHandle) {
+    set_minimized(app, false);
 }
 
 /// Minimizes or restores the launcher window. Failures don't matter: it is only a convenience.

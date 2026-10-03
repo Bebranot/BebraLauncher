@@ -3,6 +3,7 @@
 
 mod commands;
 mod game;
+mod redial;
 mod settings;
 
 use std::sync::{Arc, Mutex};
@@ -31,6 +32,19 @@ fn main() {
     };
 
     tauri::Builder::default()
+        // Must be the first plugin. A second start (or the game's `--commands …` redial) is
+        // handed to the running launcher and exits.
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            commands::handle_launcher_args(app, argv.get(1..).unwrap_or_default());
+        }))
+        .setup(|app| {
+            // Started with commands (the launcher was not running when the game asked to redial).
+            let args: Vec<String> = std::env::args().skip(1).collect();
+            if !args.is_empty() {
+                commands::handle_launcher_args(app.handle(), &args);
+            }
+            Ok(())
+        })
         .manage(state)
         .invoke_handler(tauri::generate_handler![
             commands::app_info,

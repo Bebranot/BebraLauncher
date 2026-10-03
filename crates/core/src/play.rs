@@ -45,6 +45,8 @@ pub struct PlayRequest {
     /// Start the client's main menu instead of connecting.
     pub no_connect: bool,
     pub loader_exe: PathBuf,
+    /// Let the game ask this launcher for a reconnect (see `LaunchSpec::launcher_path`).
+    pub launcher_path: Option<PathBuf>,
 }
 
 pub struct PreparedGame {
@@ -146,6 +148,7 @@ pub async fn prepare(
             server_address: req.addr.normalized(),
         }),
         compat_mode: req.compat_mode,
+        launcher_path: req.launcher_path.clone(),
     };
 
     Ok(PreparedGame {

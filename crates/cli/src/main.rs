@@ -325,6 +325,7 @@ async fn main() -> Result<()> {
                 compat_mode: compat,
                 no_connect,
                 loader_exe,
+                launcher_path: None,
             };
             let printer = ProgressPrinter::new("files");
             let engine_printer = ProgressPrinter::new("engine");

@@ -9,12 +9,13 @@ use bebra_core::hub::{HubClient, HubServerEntry};
 use bebra_core::launch;
 use bebra_core::ServerAddr;
 use serde::Serialize;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::game::{self, PlayParams};
+use crate::redial::{self, Action};
 use crate::settings::Settings;
 use crate::AppState;
 
@@ -257,24 +258,25 @@ pub fn play(
     name: Option<String>,
     account: Option<String>,
 ) -> CmdResult<()> {
-    let addr = ServerAddr::parse(&address).map_err(err)?;
     let account = account
         .map(|a| a.parse::<Uuid>().map_err(|_| "Неверный id аккаунта"))
         .transpose()?;
+    start_play(&app, &state, &address, name, account)
+}
 
-    let settings = {
-        let mut s = state.settings.lock().unwrap();
-        s.last_account = account.map(|a| a.to_string());
-        let now = OffsetDateTime::now_utc()
-            .format(&Rfc3339)
-            .unwrap_or_default();
-        s.remember_played(&address, name, now);
-        let _ = s.save(state.dirs.root());
-        s.clone()
-    };
+/// Starts the game and, if it did start, remembers the server and the account.
+pub fn start_play(
+    app: &AppHandle,
+    state: &AppState,
+    address: &str,
+    name: Option<String>,
+    account: Option<Uuid>,
+) -> CmdResult<()> {
+    let addr = ServerAddr::parse(address).map_err(err)?;
+    let settings = state.settings.lock().unwrap().clone();
 
     game::start(
-        app,
+        app.clone(),
         state.game.clone(),
         PlayParams {
             client: state.client.clone(),
@@ -285,7 +287,91 @@ pub fn play(
             compat_mode: settings.compat_mode,
             minimize_on_play: settings.minimize_on_play,
         },
-    )
+    )?;
+
+    let mut s = state.settings.lock().unwrap();
+    s.last_account = account.map(|a| a.to_string());
+    let now = OffsetDateTime::now_utc()
+        .format(&Rfc3339)
+        .unwrap_or_default();
+    s.remember_played(address, name, now);
+    let _ = s.save(state.dirs.root());
+    Ok(())
+}
+
+/// What the UI is told when the game asks for a reconnect.
+#[derive(Serialize, Clone)]
+struct RedialEvent {
+    address: String,
+    /// Text from the server: untrusted, show it as plain text only.
+    reason: Option<String>,
+}
+
+/// How long a reconnect request waits for the old game to finish closing.
+const REDIAL_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// Handles the command line of a launcher process: our own start, a second start (forwarded by
+/// the single-instance plugin) or the game asking for a reconnect (`--commands …`).
+pub fn handle_launcher_args(app: &AppHandle, args: &[String]) {
+    for action in redial::actions(args) {
+        match action {
+            Action::Activate => game::restore_window(app),
+            Action::Connect { address, reason } => {
+                let app = app.clone();
+                // The old game may still be closing: wait for it on a thread of its own.
+                let spawned = std::thread::Builder::new()
+                    .name("redial".into())
+                    .spawn(move || {
+                        redial_connect(&app, address, reason);
+                    });
+                let _ = spawned;
+            }
+        }
+    }
+}
+
+fn redial_connect(app: &AppHandle, address: String, reason: Option<String>) {
+    let state = app.state::<AppState>();
+    if let Err(e) = ServerAddr::parse(&address) {
+        let _ = app.emit(
+            game::EVENT,
+            game::PlayEvent::Failed {
+                message: e.to_string(),
+            },
+        );
+        return;
+    }
+    // Same account as the last game; no account means a guest.
+    let account = state
+        .settings
+        .lock()
+        .unwrap()
+        .last_account
+        .as_deref()
+        .and_then(|a| a.parse::<Uuid>().ok());
+
+    game::restore_window(app);
+    let _ = app.emit(
+        "redial",
+        RedialEvent {
+            address: address.clone(),
+            reason,
+        },
+    );
+
+    let deadline = std::time::Instant::now() + REDIAL_WAIT;
+    loop {
+        match start_play(app, &state, &address, None, account) {
+            Err(e) if e == game::BUSY && std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            }
+            Err(e) => {
+                let _ = app.emit(game::EVENT, game::PlayEvent::Failed { message: e });
+                return;
+            }
+            Ok(()) => return,
+        }
+    }
 }
 
 #[tauri::command]
