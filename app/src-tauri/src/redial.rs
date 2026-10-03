@@ -29,6 +29,8 @@ pub enum Action {
         /// Why the game asks for it (shown to the player as plain text).
         reason: Option<String>,
     },
+    /// A link was opened (`ss14://…`): show the server, but let the player decide.
+    Open { address: String },
 }
 
 fn decode_hex_utf8(s: &str) -> Option<String> {
@@ -63,13 +65,15 @@ pub fn parse(arg: &str) -> Command {
 /// Turns the command line given to a launcher process into actions.
 ///
 /// - `--commands <command>…`: the commands, in order
-/// - a single `ss14://` or `ss14s://` address: connect to it
+/// - a single `ss14://` or `ss14s://` address (a clicked link): open that server, no connecting
 /// - anything else (a plain second start): just bring the window forward
 pub fn actions(args: &[String]) -> Vec<Action> {
     let commands: Vec<Command> = match args {
         [flag, rest @ ..] if flag == "--commands" => rest.iter().map(|a| parse(a)).collect(),
         [addr] if addr.starts_with("ss14://") || addr.starts_with("ss14s://") => {
-            vec![Command::Connect(addr.clone())]
+            return vec![Action::Open {
+                address: addr.clone(),
+            }];
         }
         _ => vec![Command::Ping],
     };
@@ -178,9 +182,8 @@ mod tests {
     fn address_argument_and_plain_start() {
         assert_eq!(
             actions(&args(&["ss14://host:1212"])),
-            [Action::Connect {
-                address: "ss14://host:1212".into(),
-                reason: None
+            [Action::Open {
+                address: "ss14://host:1212".into()
             }]
         );
         assert_eq!(actions(&args(&[])), [Action::Activate]);

@@ -119,12 +119,17 @@ export const api = {
   openUrl: (url: string) => invoke<void>("open_url", { url }),
   getAutostart: () => invoke<boolean>("get_autostart"),
   setAutostart: (enabled: boolean) => invoke<boolean>("set_autostart", { enabled }),
+  getLinksRegistered: () => invoke<boolean>("get_links_registered"),
+  setLinksRegistered: (enabled: boolean) => invoke<boolean>("set_links_registered", { enabled }),
   storageInfo: () => invoke<StorageRow>("storage_info"),
   cleanStorage: () => invoke<CleanRow>("clean_storage"),
   onPlay: (handler: (e: PlayEvent) => void): Promise<UnlistenFn> =>
     listen<PlayEvent>("play", (e) => handler(e.payload)),
   onRedial: (handler: (e: RedialEvent) => void): Promise<UnlistenFn> =>
     listen<RedialEvent>("redial", (e) => handler(e.payload)),
+  /** An `ss14://` link was opened; the payload is the address. */
+  onOpenLink: (handler: (address: string) => void): Promise<UnlistenFn> =>
+    listen<string>("open-link", (e) => handler(e.payload)),
 };
 
 /** Errors from commands arrive as plain strings. */

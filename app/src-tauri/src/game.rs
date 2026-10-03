@@ -113,6 +113,15 @@ pub struct PlayParams {
 pub fn start(app: AppHandle, game: Arc<GameState>, params: PlayParams) -> Result<(), String> {
     // Claim the slot before the thread starts so a second click is refused right away.
     let cancel = game.begin()?;
+    crate::applog::line(&format!(
+        "play {} (account: {})",
+        params.addr.as_str(),
+        if params.account.is_some() {
+            "yes"
+        } else {
+            "guest"
+        }
+    ));
     let release = Release(game.clone());
 
     let spawned = std::thread::Builder::new()
@@ -169,10 +178,9 @@ impl Failure {
 
 impl PlayEvent {
     pub fn failed(code: &'static str, message: impl Into<String>) -> Self {
-        Self::Failed {
-            code,
-            message: message.into(),
-        }
+        let message = message.into();
+        crate::applog::line(&format!("play failed [{code}]: {message}"));
+        Self::Failed { code, message }
     }
 }
 
@@ -305,6 +313,7 @@ fn run_game(
             return;
         }
     };
+    crate::applog::line(&format!("game started, pid {}", child.id()));
     emit(PlayEvent::Running {
         pid: child.id(),
         plays_as: game.plays_as,
@@ -316,6 +325,10 @@ fn run_game(
     let started = std::time::Instant::now();
     let code = child.wait().ok().and_then(|s| s.code());
     record_play_time(app, &params.history_key, started.elapsed().as_secs());
+    crate::applog::line(&format!(
+        "game exited, code {code:?}, after {} s",
+        started.elapsed().as_secs()
+    ));
     let log_tail = if code == Some(0) {
         Vec::new()
     } else {

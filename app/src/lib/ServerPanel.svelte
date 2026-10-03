@@ -123,6 +123,10 @@
     </div>
 
     <div class="play">
+      {#if app.fromLink}
+        <div class="redial">{t("play.fromLink")}</div>
+      {/if}
+
       {#if app.redial}
         <div class="redial">
           <b>{t("play.redial")}</b>

@@ -64,6 +64,7 @@ const ru = {
   "play.openLogs": "Открыть папку логов",
   "play.redial": "Игра просит переподключиться",
   "play.redialReason": "Сообщение сервера: {reason}",
+  "play.fromLink": "Сервер открыт по ссылке. Проверьте адрес и нажмите «Играть».",
   "fail.info_unreachable":
     "Сервер не отвечает. Проверьте адрес и подключение к интернету.",
   "fail.invalid_address": "Неверный адрес сервера.",
@@ -126,6 +127,8 @@ const ru = {
   "set.minimizeHint": "После закрытия игры окно вернётся.",
   "set.autostart": "Запускать вместе с Windows",
   "set.autostartHint": "Лаунчер стартует свёрнутым.",
+  "set.links": "Открывать ссылки ss14:// здесь",
+  "set.linksHint": "Ссылки на серверы с сайтов и из Discord откроются в лаунчере. Играть начнёте только вы сами.",
   "set.storage": "Хранилище",
   "set.storageTotal": "Занято: {size}",
   "set.storageDetails": "игры {content}, движки {engines}, модули {modules}, прочее {other}",
@@ -214,6 +217,7 @@ const en: Record<Key, string> = {
   "play.openLogs": "Open the logs folder",
   "play.redial": "The game asks to reconnect",
   "play.redialReason": "Message from the server: {reason}",
+  "play.fromLink": "The server was opened from a link. Check the address and press Play.",
   "fail.info_unreachable":
     "The server does not answer. Check the address and your internet connection.",
   "fail.invalid_address": "The server address is not valid.",
@@ -275,6 +279,8 @@ const en: Record<Key, string> = {
   "set.minimizeHint": "The window comes back when the game closes.",
   "set.autostart": "Start with Windows",
   "set.autostartHint": "The launcher starts minimized.",
+  "set.links": "Open ss14:// links here",
+  "set.linksHint": "Server links from websites and Discord open in the launcher. The game starts only when you press Play.",
   "set.storage": "Storage",
   "set.storageTotal": "Used: {size}",
   "set.storageDetails": "games {content}, engines {engines}, modules {modules}, other {other}",

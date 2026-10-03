@@ -15,6 +15,7 @@
   let theme = $state(app.settings?.theme ?? "dark");
   let language = $state(app.settings?.language ?? "auto");
   let autostart = $state(false);
+  let links = $state(false);
   let error = $state<string | null>(null);
 
   let storage = $state<StorageRow | null>(null);
@@ -23,6 +24,7 @@
 
   onMount(() => {
     void api.getAutostart().then((v) => (autostart = v)).catch(() => {});
+    void api.getLinksRegistered().then((v) => (links = v)).catch(() => {});
     void refreshStorage();
   });
 
@@ -58,6 +60,9 @@
       // Autostart lives in Windows, not in our settings file.
       if (autostart !== (await api.getAutostart())) {
         autostart = await api.setAutostart(autostart);
+      }
+      if (links !== (await api.getLinksRegistered())) {
+        links = await api.setLinksRegistered(links);
       }
       await app.saveSettings({
         ...app.settings,
@@ -120,6 +125,14 @@
       <span>
         {t("set.autostart")}
         <small class="dim">{t("set.autostartHint")}</small>
+      </span>
+    </label>
+
+    <label class="check">
+      <input type="checkbox" bind:checked={links} />
+      <span>
+        {t("set.links")}
+        <small class="dim">{t("set.linksHint")}</small>
       </span>
     </label>
 

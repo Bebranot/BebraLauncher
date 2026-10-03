@@ -15,7 +15,7 @@ serde_json = "1"
 tauri = { version = "2", features = [] }
 tauri-plugin-single-instance = "2"
 tauri-plugin-window-state = "2"
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Registry"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Registry"] }
 time = { version = "0.3", features = ["formatting", "serde-well-known"] }
 tokio = { version = "1", features = ["rt", "sync", "macros", "time"] }
 uuid = { version = "1", features = ["serde"] }

@@ -117,6 +117,10 @@ export function installMock() {
         case "open_url":
           console.log("open_url", a.url);
           return null;
+        case "get_links_registered":
+          return false;
+        case "set_links_registered":
+          return a.enabled;
         case "get_autostart":
           return false;
         case "set_autostart":

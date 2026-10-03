@@ -169,6 +169,18 @@ pub fn set_autostart(enabled: bool) -> CmdResult<bool> {
     Ok(crate::system::autostart_enabled())
 }
 
+/// Is this launcher the one that opens `ss14://` links?
+#[tauri::command]
+pub fn get_links_registered() -> bool {
+    crate::system::links_registered()
+}
+
+#[tauri::command]
+pub fn set_links_registered(enabled: bool) -> CmdResult<bool> {
+    crate::system::set_links_registered(enabled)?;
+    Ok(crate::system::links_registered())
+}
+
 #[derive(Serialize)]
 pub struct StorageRow {
     content: u64,
@@ -299,10 +311,14 @@ pub async fn login(
         .await
         .map_err(err)?
     {
-        LoginResult::Success(account) => Ok(LoginOutcome::Ok {
-            account: AccountRow::new(&account, OffsetDateTime::now_utc()),
-        }),
+        LoginResult::Success(account) => {
+            crate::applog::line(&format!("login ok: {}", account.username));
+            Ok(LoginOutcome::Ok {
+                account: AccountRow::new(&account, OffsetDateTime::now_utc()),
+            })
+        }
         LoginResult::Denied { errors, code } => {
+            crate::applog::line(&format!("login denied: {code:?}"));
             use bebra_core::auth::DenyCode::*;
             Ok(LoginOutcome::Denied {
                 code: match code {
@@ -442,6 +458,11 @@ pub fn handle_launcher_args(app: &AppHandle, args: &[String]) {
     for action in redial::actions(args) {
         match action {
             Action::Activate => game::restore_window(app),
+            Action::Open { address } => {
+                crate::applog::line(&format!("link opened: {address}"));
+                game::restore_window(app);
+                let _ = app.emit("open-link", address);
+            }
             Action::Connect { address, reason } => {
                 let app = app.clone();
                 // The old game may still be closing: wait for it on a thread of its own.
@@ -474,6 +495,7 @@ fn redial_connect(app: &AppHandle, address: String, reason: Option<String>) {
         .as_deref()
         .and_then(|a| a.parse::<Uuid>().ok());
 
+    crate::applog::line(&format!("redial to {address}"));
     game::restore_window(app);
     let _ = app.emit(
         "redial",

@@ -86,6 +86,8 @@ class Store {
   play = $state<PlayState>({ phase: "idle" });
   /** Shown above the Play button: the game asked to reconnect. */
   redial = $state<{ reason: string | null } | null>(null);
+  /** The selected server was opened from a link: the player has not agreed to connect yet. */
+  fromLink = $state(false);
 
   readonly favorites = $derived(new Set(this.settings?.favorites ?? []));
   readonly history = $derived(new Map((this.settings?.history ?? []).map((h) => [h.address, h])));
@@ -152,6 +154,7 @@ class Store {
     // Listen first, so nothing the backend sends at startup (a redial) is missed.
     await api.onPlay((e) => this.onPlayEvent(e));
     await api.onRedial((e) => this.onRedial(e));
+    await api.onOpenLink((address) => this.onOpenLink(address));
 
     await Promise.all([this.loadInfo(), this.loadSettings(), this.loadAccounts()]);
     this.pickDefaultAccount();
@@ -268,6 +271,7 @@ class Store {
     const server = this.selected;
     if (!server || this.busy) return;
     this.redial = null;
+    this.fromLink = false;
     this.play = { phase: "preparing", stage: "account", done: 0, total: 0, unit: "items" };
     try {
       await api.play(server.address, server.name, this.selectedAccount);
@@ -286,7 +290,18 @@ class Store {
     if (!this.busy) this.play = { phase: "idle" };
   }
 
+  /** A clicked ss14:// link: show the server and wait for the player to press Play. */
+  private onOpenLink(address: string) {
+    if (this.busy) return;
+    const typed = address.trim();
+    if (!this.servers.some((s) => s.address === typed)) this.adhoc = adhocRow(typed);
+    this.select(typed);
+    this.redial = null;
+    this.fromLink = true;
+  }
+
   private onRedial(e: RedialEvent) {
+    this.fromLink = false;
     if (!this.servers.some((s) => s.address === e.address)) this.adhoc = adhocRow(e.address);
     this.select(e.address);
     this.redial = { reason: e.reason };

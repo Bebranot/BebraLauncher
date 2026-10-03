@@ -1,6 +1,7 @@
 // No console window in release builds on Windows.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod applog;
 mod commands;
 mod game;
 mod redial;
@@ -26,6 +27,11 @@ pub struct AppState {
 
 fn main() {
     let dirs = DataDirs::default_windows().expect("no local app data folder");
+    applog::init(dirs.logs());
+    applog::line(&format!(
+        "start BebraLauncher {}",
+        env!("CARGO_PKG_VERSION")
+    ));
     let state = AppState {
         client: http::build_client().expect("failed to set up the http client"),
         settings: Mutex::new(Settings::load(dirs.root())),
@@ -70,6 +76,8 @@ fn main() {
             commands::open_url,
             commands::get_autostart,
             commands::set_autostart,
+            commands::get_links_registered,
+            commands::set_links_registered,
             commands::storage_info,
             commands::clean_storage,
             commands::play,
