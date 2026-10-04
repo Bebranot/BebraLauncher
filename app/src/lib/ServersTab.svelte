@@ -12,40 +12,6 @@
 </script>
 
 <div class="tab">
-  <div class="bar">
-    <div class="searchbox">
-      <span class="lens"><Icon name="search" size={16} /></span>
-      <input
-        type="text"
-        class="search"
-        placeholder={t("servers.search")}
-        bind:value={app.search}
-        bind:this={searchInput}
-      />
-    </div>
-    <button
-      class="btn"
-      class:on={app.filtersOpen}
-      onclick={() => (app.filtersOpen = !app.filtersOpen)}
-    >
-      <Icon name="filter" size={16} />
-      {t("servers.filters", { shown: app.visible.length, total: app.servers.length })}
-    </button>
-    <button
-      class="btn icon"
-      title={t("servers.refresh")}
-      aria-label={t("servers.refresh")}
-      disabled={app.serversLoading}
-      onclick={() => app.refreshServers()}
-    >
-      {#if app.serversLoading}<span class="spinner small"></span>{:else}<Icon name="refresh" size={18} />{/if}
-    </button>
-  </div>
-
-  {#if app.filtersOpen}
-    <div class="filters"><FiltersPanel /></div>
-  {/if}
-
   {#if app.serversError}
     <div class="note error">{t("servers.error", { error: app.serversError })}</div>
   {:else if app.serversFromCache}
@@ -75,6 +41,40 @@
       </p>
     {/if}
   </ServerTable>
+
+  {#if app.filtersOpen}
+    <div class="filters"><FiltersPanel /></div>
+  {/if}
+
+  <div class="bar">
+    <div class="searchbox">
+      <span class="lens"><Icon name="search" size={16} /></span>
+      <input
+        type="text"
+        class="search"
+        placeholder={t("servers.search")}
+        bind:value={app.search}
+        bind:this={searchInput}
+      />
+    </div>
+    <button
+      class="btn open-r"
+      class:on={app.filtersOpen}
+      onclick={() => (app.filtersOpen = !app.filtersOpen)}
+    >
+      <Icon name="filter" size={16} />
+      {t("servers.filters", { shown: app.visible.length, total: app.servers.length })}
+    </button>
+    <button
+      class="btn icon open-l"
+      title={t("servers.refresh")}
+      aria-label={t("servers.refresh")}
+      disabled={app.serversLoading}
+      onclick={() => app.refreshServers()}
+    >
+      {#if app.serversLoading}<span class="spinner small"></span>{:else}<Icon name="refresh" size={18} />{/if}
+    </button>
+  </div>
 </div>
 
 <style>
@@ -84,12 +84,16 @@
     min-height: 0;
     height: 100%;
   }
+  /* Like in the official launcher, the search, the filters and the refresh sit under the list. */
   .bar {
     flex: none;
     display: flex;
     align-items: center;
-    gap: 6px;
-    padding: 10px 14px;
+    padding: 8px 14px;
+    border-top: 1px solid var(--line);
+  }
+  .searchbox {
+    margin-right: 8px;
   }
   .searchbox {
     position: relative;
@@ -140,6 +144,6 @@
   .filters {
     flex: none;
     height: min(240px, 42vh);
-    margin: 0 14px 8px;
+    margin: 8px 14px 0;
   }
 </style>

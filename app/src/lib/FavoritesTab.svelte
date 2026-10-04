@@ -10,7 +10,7 @@
     <h2>{t("fav.title")}</h2>
     <div class="buttons">
       <button
-        class="btn ghost icon"
+        class="btn icon open-r"
         title={t("fav.refresh")}
         aria-label={t("fav.refresh")}
         disabled={app.serversLoading}
@@ -19,7 +19,7 @@
         <Icon name="refresh" />
       </button>
       <button
-        class="btn ghost icon"
+        class="btn icon open-l"
         title={t("fav.add")}
         aria-label={t("fav.add")}
         onclick={() => (app.dialog = { kind: "addfav" })}
@@ -64,7 +64,6 @@
   }
   .buttons {
     display: flex;
-    gap: 2px;
   }
   .more {
     display: flex;

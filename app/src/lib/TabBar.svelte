@@ -12,6 +12,7 @@
   ];
 </script>
 
+<!-- At the bottom of the window, like in the official launcher. -->
 <div class="nav" role="tablist">
   {#each TABS as [id, label]}
     <button
@@ -28,19 +29,22 @@
 
 <style>
   .nav {
+    flex: none;
     display: flex;
-    align-items: center;
-    gap: 0;
-    margin-left: 4px;
-    min-width: 0;
+    align-items: stretch;
+    gap: 2px;
+    padding: 0 8px;
+    border-top: 1px solid var(--line);
+    overflow-x: auto;
+    scrollbar-width: none;
   }
   button {
     appearance: none;
     position: relative;
     border: 0;
-    border-radius: var(--radius-sm);
+    border-radius: 0;
     background: none;
-    padding: 6px 8px;
+    padding: 11px 14px;
     cursor: pointer;
     color: var(--sub);
     white-space: nowrap;
@@ -51,8 +55,8 @@
   .dot {
     /* Over the corner of the label: it must not widen the tab. */
     position: absolute;
-    top: 5px;
-    right: 1px;
+    top: 8px;
+    right: 5px;
     width: 7px;
     height: 7px;
     border-radius: 50%;
@@ -69,11 +73,10 @@
   button.selected::after {
     content: "";
     position: absolute;
-    left: 8px;
-    right: 8px;
-    bottom: -11px;
+    left: 0;
+    right: 0;
+    top: -1px;
     height: 2px;
-    border-radius: 2px;
     background: var(--accent);
   }
 </style>

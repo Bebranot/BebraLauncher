@@ -5,6 +5,7 @@
   import ErpOverlay from "./lib/ErpOverlay.svelte";
   import FavoritesTab from "./lib/FavoritesTab.svelte";
   import Header from "./lib/Header.svelte";
+  import TabBar from "./lib/TabBar.svelte";
   import NewsTab from "./lib/NewsTab.svelte";
   import OptionsTab from "./lib/OptionsTab.svelte";
   import RecentTab from "./lib/RecentTab.svelte";
@@ -71,6 +72,7 @@
       </div>
     {/key}
   </main>
+  <TabBar />
 </div>
 
 <ConnectingOverlay />

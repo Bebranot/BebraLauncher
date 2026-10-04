@@ -14,6 +14,15 @@ export const THEME_IDS = [
   "midnight_blue",
   "emerald_dusk",
   "copper_night",
+  "nord",
+  "dracula",
+  "rose",
+  "amber",
+  "lagoon",
+  "forest",
+  "mono",
+  "sand",
+  "sky",
   "custom",
 ] as const;
 
@@ -46,7 +55,25 @@ export interface Tokens {
 
 type Palette = Omit<Tokens, "scrollSep"> & { scrollSep?: string };
 
-const PALETTES: Record<Exclude<ThemeId, "custom">, Palette> = {
+/**
+ * Themes given by four colours, the rest is worked out the same way as for the user's own theme.
+ * The light ones keep the popup colour a little darker than the page so buttons stay visible.
+ */
+const DERIVED = {
+  nord: { background: "#2E3440", popup: "#3B4252", foreground: "#ECEFF4", accent: "#88C0D0" },
+  dracula: { background: "#282A36", popup: "#21222C", foreground: "#F8F8F2", accent: "#BD93F9" },
+  rose: { background: "#231A20", popup: "#2C1F28", foreground: "#F7E9EF", accent: "#F28DB2" },
+  amber: { background: "#1D1B15", popup: "#26231A", foreground: "#F4EFE0", accent: "#F2B83B" },
+  lagoon: { background: "#0F1F22", popup: "#15292D", foreground: "#E3F6F5", accent: "#3CCFCF" },
+  forest: { background: "#172016", popup: "#1E2B1D", foreground: "#E8F2E4", accent: "#8BC34A" },
+  mono: { background: "#111111", popup: "#1B1B1B", foreground: "#EDEDED", accent: "#FFFFFF" },
+  sand: { background: "#F7F1E5", popup: "#E9DEC6", foreground: "#2B2418", accent: "#9A6410" },
+  sky: { background: "#EEF4FB", popup: "#D9E6F5", foreground: "#17222F", accent: "#2F6FD0" },
+} as const;
+
+type PaletteId = Exclude<ThemeId, "custom" | keyof typeof DERIVED>;
+
+const PALETTES: Record<PaletteId, Palette> = {
   // The default: graphite with one calm accent. Surfaces are told apart by tone, not by lines.
   dark: {
     background: "#15161A",
@@ -345,7 +372,11 @@ export function isThemeId(id: string): id is ThemeId {
 /** The colours of a theme. Unknown ids give the default dark theme. */
 export function tokensFor(theme: string, custom: CustomColors): Tokens {
   if (theme === "custom") return deriveCustom(custom);
-  const palette = PALETTES[theme as Exclude<ThemeId, "custom">] ?? PALETTES.dark;
+  if (theme in DERIVED) {
+    const c = DERIVED[theme as keyof typeof DERIVED];
+    return deriveCustom({ ...DEFAULT_CUSTOM, ...c });
+  }
+  const palette = PALETTES[theme as PaletteId] ?? PALETTES.dark;
   return fromPalette(palette);
 }
 
@@ -361,10 +392,10 @@ export function backgroundFill(
   const popup = parseColor(tokens.popup) as Rgba;
   const controlHigh = parseColor(tokens.controlHigh) as Rgba;
   const isCustom = theme === "custom";
-  const isLight = theme === "light";
+  const lightPage = isLight(tokens.background);
 
-  let start = isLight ? mix(background, WHITE, 0.35) : mix(background, popup, 0.18);
-  let end = isLight ? mix(background, controlHigh, 0.14) : mix(background, controlHigh, 0.28);
+  let start = lightPage ? mix(background, WHITE, 0.35) : mix(background, popup, 0.18);
+  let end = lightPage ? mix(background, controlHigh, 0.14) : mix(background, controlHigh, 0.28);
   if (isCustom) {
     start = opaque(color(custom.gradient_start, DEFAULT_CUSTOM.gradient_start));
     end = opaque(color(custom.gradient_end, DEFAULT_CUSTOM.gradient_end));
@@ -434,7 +465,7 @@ export function applyTheme(options: ThemeOptions, root: HTMLElement = document.d
     "--decor",
     options.decor ? stripePattern(tokens.background, tokens.altRow) : "none",
   );
-  set("--overlay", theme === "light" ? "#00000055" : "#000000B3");
+  set("--overlay", isLight(tokens.background) ? "#00000055" : "#000000B3");
   set("--on-accent", isLight(tokens.accent) ? "#14151A" : "#FFFFFF");
   set("--font", fontFamily(options.font));
   root.dataset.theme = theme;
