@@ -84,6 +84,7 @@ fn main() {
             commands::app_info,
             commands::list_servers,
             commands::list_accounts,
+            commands::select_account,
             commands::login,
             commands::logout,
             commands::get_settings,

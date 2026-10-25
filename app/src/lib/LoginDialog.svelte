@@ -36,7 +36,7 @@
       });
       if (out.status === "ok") {
         await app.loadAccounts();
-        app.selectedAccount = out.account.user_id;
+        app.selectAccount(out.account.user_id);
         onclose();
         return;
       }

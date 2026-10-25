@@ -368,6 +368,18 @@ pub async fn logout(state: State<'_, AppState>, user_id: String) -> CmdResult<bo
 }
 
 #[tauri::command]
+pub fn select_account(state: State<'_, AppState>, account: Option<String>) -> CmdResult<()> {
+    let acc_str = account.unwrap_or_default();
+    if !acc_str.is_empty() {
+        acc_str.parse::<Uuid>().map_err(|_| "Неверный id аккаунта")?;
+    }
+    let mut settings = state.settings.lock().unwrap();
+    settings.last_account = Some(acc_str);
+    settings.save(state.dirs.root()).map_err(err)?;
+    Ok(())
+}
+
+#[tauri::command]
 pub fn get_settings(state: State<'_, AppState>) -> Settings {
     state.settings.lock().unwrap().clone()
 }

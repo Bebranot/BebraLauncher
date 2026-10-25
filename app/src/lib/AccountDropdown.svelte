@@ -16,7 +16,7 @@
   );
 
   function choose(userId: string | null) {
-    app.selectedAccount = userId;
+    app.selectAccount(userId);
     open = false;
   }
 

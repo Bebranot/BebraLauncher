@@ -240,6 +240,9 @@ export function installMock() {
             { title: "Патч 1.2: новые карты и исправления", link: "https://spacestation14.com/post/a/", date: "Fri, 03 Oct 2026 10:00:00 +0000" },
             { title: "Space Station 14 в Steam: итоги месяца", link: "https://spacestation14.com/post/b/", date: "Mon, 28 Sep 2026 09:00:00 +0000" },
           ];
+        case "select_account":
+          settings.last_account = a.account ? String(a.account) : "";
+          return null;
         case "list_accounts":
           return accounts;
         case "get_settings":

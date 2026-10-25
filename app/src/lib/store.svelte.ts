@@ -310,8 +310,16 @@ class Store {
   async loadAccounts() {
     this.accounts = await api.listAccounts().catch(() => []);
     if (this.selectedAccount && !this.accounts.some((a) => a.user_id === this.selectedAccount)) {
-      this.selectedAccount = null;
+      this.selectAccount(null);
     }
+  }
+
+  selectAccount(userId: string | null) {
+    this.selectedAccount = userId;
+    if (this.settings) {
+      this.settings.last_account = userId ?? "";
+    }
+    void api.selectAccount(userId).catch(() => {});
   }
 
   private pickDefaultAccount() {
@@ -464,13 +472,6 @@ class Store {
   async connect(server: ServerRow) {
     if (this.busy) return;
 
-    // The account used on this server last time, if it still exists.
-    const used = this.history.get(server.address)?.account;
-    if (used !== undefined && used !== null) {
-      if (used === "") this.selectedAccount = null;
-      else if (this.accounts.some((a) => a.user_id === used)) this.selectedAccount = used;
-    }
-
     // Problems we already know about are said at once, in the same box as the others.
     const account = this.selectedAccountRow;
     const details = this.details[server.address];
@@ -530,6 +531,9 @@ class Store {
     try {
       const told = await api.logout(userId);
       await this.loadAccounts();
+      if (this.selectedAccount === userId) {
+        this.selectAccount(this.accounts[0]?.user_id ?? null);
+      }
       if (!told) return "offline";
     } catch (e) {
       this.say(errorText(e));

@@ -214,6 +214,7 @@ export const api = {
   login: (args: { username?: string; userId?: string; password: string; tfaCode?: string }) =>
     invoke<LoginOutcome>("login", args),
   logout: (userId: string) => invoke<boolean>("logout", { userId }),
+  selectAccount: (account: string | null) => invoke<void>("select_account", { account }),
   getSettings: () => invoke<Settings>("get_settings"),
   setSettings: (settings: Settings) => invoke<Settings>("set_settings", { settings }),
   toggleFavorite: (address: string) => invoke<string[]>("toggle_favorite", { address }),
