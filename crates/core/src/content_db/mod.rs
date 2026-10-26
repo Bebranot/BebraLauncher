@@ -81,6 +81,10 @@ impl ContentDb {
         }
         let conn = Connection::open(path)?;
         conn.query_row("PRAGMA journal_mode=WAL", [], |r| r.get::<_, String>(0))?;
+        conn.pragma_update(None, "synchronous", "NORMAL")?;
+        conn.pragma_update(None, "cache_size", -64000)?;
+        conn.pragma_update(None, "temp_store", "MEMORY")?;
+        conn.pragma_update(None, "mmap_size", 268435456i64)?;
         Self::init(conn)
     }
 
@@ -200,7 +204,9 @@ impl ContentDb {
     /// Indices of manifest entries whose blob we don't have yet. A blob that appears under several
     /// paths is listed once (at its first index).
     pub fn missing_entries(&self, manifest: &Manifest) -> Result<Vec<usize>> {
-        let mut stmt = self.conn.prepare("SELECT 1 FROM Content WHERE Hash = ?1")?;
+        let mut stmt = self
+            .conn
+            .prepare_cached("SELECT 1 FROM Content WHERE Hash = ?1")?;
         let mut queued: HashSet<Hash256> = HashSet::new();
         let mut missing = Vec::new();
         for (i, entry) in manifest.entries.iter().enumerate() {

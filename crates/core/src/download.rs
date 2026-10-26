@@ -11,7 +11,7 @@ use futures_util::{StreamExt, TryStreamExt};
 use reqwest::header::{ACCEPT_ENCODING, CONTENT_ENCODING, CONTENT_TYPE};
 use reqwest::{Client, Method, Response};
 use sha2::{Digest, Sha256};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tokio_util::io::StreamReader;
 
 use crate::content_db::ContentDb;
@@ -80,14 +80,15 @@ pub async fn download_to_file(
     check_status(&resp)?;
     let total = resp.content_length().unwrap_or(0);
 
-    let mut file = tokio::fs::File::create(dest).await?;
+    let file = tokio::fs::File::create(dest).await?;
+    let mut writer = BufWriter::with_capacity(256 * 1024, file);
     let mut hasher = Sha256::new();
     let mut done = 0u64;
     let mut stream = resp.bytes_stream();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk?;
         hasher.update(&chunk);
-        file.write_all(&chunk).await?;
+        writer.write_all(&chunk).await?;
         done += chunk.len() as u64;
         if let Some(p) = progress {
             p(Progress {
@@ -97,7 +98,7 @@ pub async fn download_to_file(
             });
         }
     }
-    file.flush().await?;
+    writer.flush().await?;
     Ok(hasher.finalize().into())
 }
 
@@ -215,11 +216,11 @@ pub async fn download_blobs(
     let stream = Box::pin(resp.bytes_stream().map_err(io::Error::other));
     let reader = StreamReader::new(stream);
     if zstd {
-        let mut decoder = ZstdDecoder::new(BufReader::new(reader));
+        let mut decoder = ZstdDecoder::new(BufReader::with_capacity(256 * 1024, reader));
         decoder.multiple_members(true);
         read_blob_stream(&mut decoder, db, manifest, indices, download_id, progress).await
     } else {
-        let mut reader = reader;
+        let mut reader = BufReader::with_capacity(256 * 1024, reader);
         read_blob_stream(&mut reader, db, manifest, indices, download_id, progress).await
     }
 }

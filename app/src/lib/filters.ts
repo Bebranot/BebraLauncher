@@ -109,10 +109,10 @@ export function matchesFilters(s: ServerRow, f: FilterState): boolean {
 }
 
 /** Free-text search over what the player sees of a server. */
-export function matchesSearch(s: ServerRow, query: string): boolean {
+export function matchesSearch(s: ServerRow, query: string, note?: string | null): boolean {
   const q = query.trim().toLowerCase();
   if (!q) return true;
-  const hay = `${s.name ?? ""} ${s.address} ${s.tags.join(" ")} ${s.map ?? ""} ${s.preset ?? ""}`;
+  const hay = `${s.name ?? ""} ${s.address} ${s.tags.join(" ")} ${s.map ?? ""} ${s.preset ?? ""} ${note ?? ""}`;
   return hay.toLowerCase().includes(q);
 }
 

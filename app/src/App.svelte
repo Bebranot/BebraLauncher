@@ -10,6 +10,7 @@
   import OptionsTab from "./lib/OptionsTab.svelte";
   import RecentTab from "./lib/RecentTab.svelte";
   import ServersTab from "./lib/ServersTab.svelte";
+  import SpaceBackground from "./lib/SpaceBackground.svelte";
   import UpdatesTab from "./lib/UpdatesTab.svelte";
   import Toast from "./lib/Toast.svelte";
   import { promo } from "./lib/rofl.svelte";
@@ -51,6 +52,7 @@
 
 <svelte:window {onkeydown} />
 
+<SpaceBackground />
 <div class="shell">
   <Header />
   <main>

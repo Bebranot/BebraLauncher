@@ -70,6 +70,19 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+html[data-bg="space"] body,
+html[data-bg="custom"] body {
+  background: transparent;
+}
+html[data-bg="space"] .shell,
+html[data-bg="custom"] .shell {
+  background: transparent;
+}
+html[data-bg="space"] .table,
+html[data-bg="custom"] .table {
+  background: color-mix(in srgb, var(--bg) 80%, transparent);
+}
+
 h1,
 h2,
 h3 {

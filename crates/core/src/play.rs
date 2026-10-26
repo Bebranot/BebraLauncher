@@ -87,6 +87,12 @@ pub struct PlayRequest {
     pub launcher_path: Option<PathBuf>,
     /// Overlay zip of text packs to mount over the game's files.
     pub overlay_zip: Option<PathBuf>,
+    /// Additional arguments passed to the engine.
+    pub extra_args: Vec<String>,
+    /// Client patch assemblies (.dll) to load.
+    pub patches: Vec<PathBuf>,
+    /// Client performance and optimization settings.
+    pub optimization: launch::OptimizationConfig,
 }
 
 pub struct PreparedGame {
@@ -129,6 +135,46 @@ pub async fn prepare(
         build.apply_self_hosting(&req.addr);
     }
 
+    let sources = Sources::official()?;
+
+    // Optimization: prefetch the engine in parallel with content download
+    // if the required engine version is not installed yet.
+    let engine_version = build.engine_version.clone();
+    let engine_needed = crate::engine::installed(dirs, &engine_version)
+        .ok()
+        .flatten()
+        .is_none();
+
+    let prefetch_task = if engine_needed {
+        let engine_client = client.clone();
+        let engine_dirs = dirs.clone();
+        let engine_sources = sources.clone();
+        Some(tokio::spawn(async move {
+            crate::engine::install_engine(
+                &engine_client,
+                &engine_sources.builds,
+                &engine_dirs,
+                &engine_version,
+                &engine_sources.key,
+                None,
+            )
+            .await
+        }))
+    } else {
+        None
+    };
+
+    struct AbortOnDrop<T>(Option<tokio::task::JoinHandle<T>>);
+    impl<T> Drop for AbortOnDrop<T> {
+        fn drop(&mut self) {
+            if let Some(h) = self.0.take() {
+                h.abort();
+            }
+        }
+    }
+
+    let mut prefetch_guard = AbortOnDrop(prefetch_task);
+
     let db = ContentDb::open(&dirs.content_db())?;
     let files = |p: Progress| on_stage(Stage::Files, Some(p));
     on_stage(Stage::Files, None);
@@ -137,6 +183,10 @@ pub async fn prepare(
         .map_err(PlayError::Files)?;
     let cleanup = updater::cleanup(&db)?;
 
+    if let Some(task) = prefetch_guard.0.take() {
+        let _ = task.await;
+    }
+
     let engine = |p: Progress| on_stage(Stage::Engine, Some(p));
     on_stage(Stage::Engine, None);
     let engine_progress: ProgressFn<'_> = &engine;
@@ -144,7 +194,7 @@ pub async fn prepare(
         client,
         &db,
         dirs,
-        &Sources::official()?,
+        &sources,
         content.version_id,
         Some(engine_progress),
     )
@@ -190,6 +240,9 @@ pub async fn prepare(
         compat_mode: req.compat_mode,
         launcher_path: req.launcher_path.clone(),
         overlay_zip: req.overlay_zip.clone(),
+        extra_args: req.extra_args.clone(),
+        patches: req.patches.clone(),
+        optimization: req.optimization.clone(),
     };
 
     Ok(PreparedGame {

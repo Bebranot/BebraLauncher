@@ -10,9 +10,7 @@
   const label = $derived(
     current
       ? current.username
-      : app.accounts.length > 0
-        ? t("acct.guest", { name: app.settings?.guest_name ?? "" })
-        : t("acct.notLoggedIn"),
+      : t("acct.guest", { name: app.settings?.guest_name || "Guest" }),
   );
 
   function choose(userId: string | null) {
@@ -53,8 +51,8 @@
 
   {#if open}
     <div class="popup">
+      <div class="sub small">{t("acct.select")}</div>
       {#if app.accounts.length > 0}
-        <div class="sub small">{t("acct.select")}</div>
         {#each app.accounts as a (a.user_id)}
           <div class="row">
             <button
@@ -67,13 +65,13 @@
             </button>
           </div>
         {/each}
-        <div class="row">
-          <button class="pick" class:on={app.selectedAccount === null} onclick={() => choose(null)}>
-            {t("acct.guest", { name: app.settings?.guest_name ?? "" })}
-          </button>
-        </div>
-        <div class="rule"></div>
       {/if}
+      <div class="row">
+        <button class="pick" class:on={app.selectedAccount === null} onclick={() => choose(null)}>
+          {t("acct.guest", { name: app.settings?.guest_name || "Guest" })}
+        </button>
+      </div>
+      <div class="rule"></div>
       {#if current}
         <button class="pick" onclick={logout}>{t("acct.logoutOf", { name: current.username })}</button>
       {/if}

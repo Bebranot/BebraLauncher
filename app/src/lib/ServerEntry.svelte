@@ -75,6 +75,29 @@
       // No clipboard access: the address is selectable text anyway.
     }
   }
+
+  const note = $derived(app.noteOf(server.address));
+  let editingNote = $state(false);
+  let noteDraft = $state("");
+
+  function startEditNote() {
+    noteDraft = note;
+    editingNote = true;
+  }
+
+  function cancelEditNote() {
+    editingNote = false;
+  }
+
+  function saveNote() {
+    void app.setServerNote(server.address, noteDraft);
+    editingNote = false;
+  }
+
+  function deleteNote() {
+    void app.setServerNote(server.address, "");
+    editingNote = false;
+  }
 </script>
 
 <div class="entry" bind:this={root}>
@@ -83,6 +106,7 @@
     <div class="cell name">
       <span class="chev" class:open={expanded}><Icon name="chevron" size={18} /></span>
       {#if isFavorite}<span class="fav" title={t("server.favoriteMark")}><Icon name="star" size={14} /></span>{/if}
+      {#if note}<span class="note-badge" title={note}><Icon name="note" size={13} /></span>{/if}
       <span class="title">{serverTitle(server)}</span>
     </div>
     {#if columns.mode}
@@ -107,13 +131,14 @@
       <!-- svelte-ignore a11y_consider_explicit_label -->
       <button
         class="btn soft"
+        class:accent={app.isRunning(server.address)}
         disabled={app.busy}
         onclick={(e) => {
           e.stopPropagation();
           void app.connect(server);
         }}
       >
-        {t("server.connect")}
+        {app.isRunning(server.address) ? t("server.running") : t("server.connect")}
       </button>
     </div>
   </div>
@@ -151,6 +176,39 @@
           {#each server.tags as tag}<span class="tag">{tagText(tag)}</span>{/each}
         </div>
       {/if}
+
+      <div class="note-box">
+        {#if editingNote}
+          <div class="note-edit">
+            <textarea
+              class="note-textarea"
+              bind:value={noteDraft}
+              placeholder={t("server.notePlaceholder")}
+              maxlength={500}
+              rows={2}
+            ></textarea>
+            <div class="note-btns">
+              <button class="btn small primary" onclick={saveNote}>{t("server.saveNote")}</button>
+              {#if note}
+                <button class="btn small ghost warn-text" onclick={deleteNote}>{t("server.deleteNote")}</button>
+              {/if}
+              <button class="btn small ghost" onclick={cancelEditNote}>{t("server.cancelNote")}</button>
+            </div>
+          </div>
+        {:else if note}
+          <div class="note-display">
+            <span class="note-icon" title={t("server.note")}><Icon name="note" size={15} /></span>
+            <span class="note-text">{note}</span>
+            <button class="link note-edit-link" onclick={startEditNote}>{t("server.editNote")}</button>
+          </div>
+        {:else}
+          <div class="note-empty">
+            <button class="link add-note-link" onclick={startEditNote}>
+              <span class="with-icon"><Icon name="note" size={14} />{t("server.addNote")}</span>
+            </button>
+          </div>
+        {/if}
+      </div>
 
       <div class="actions">
         <div class="links">
@@ -252,6 +310,12 @@
     color: var(--accent);
     display: grid;
   }
+  .note-badge {
+    flex: none;
+    color: var(--accent);
+    opacity: 0.85;
+    display: grid;
+  }
   .ping {
     white-space: nowrap;
     font-size: 13px;
@@ -330,5 +394,69 @@
     display: inline-flex;
     align-items: center;
     gap: 6px;
+  }
+  .note-box {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .note-display {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 7px 11px;
+    background: var(--tint);
+    border-left: 3px solid var(--accent);
+    border-radius: var(--radius-sm);
+    font-size: 13px;
+  }
+  .note-icon {
+    flex: none;
+    color: var(--accent);
+    margin-top: 1px;
+    display: grid;
+  }
+  .note-text {
+    flex: 1;
+    white-space: pre-wrap;
+    word-break: break-word;
+    user-select: text;
+    line-height: 1.4;
+  }
+  .note-edit-link {
+    flex: none;
+    font-size: 12px;
+    align-self: flex-start;
+  }
+  .note-edit {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-width: 600px;
+  }
+  .note-textarea {
+    resize: vertical;
+    width: 100%;
+    min-height: 52px;
+    font-size: 13px;
+    box-sizing: border-box;
+  }
+  .note-btns {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .note-empty {
+    display: flex;
+  }
+  .add-note-link {
+    font-size: 12px;
+    color: var(--sub);
+  }
+  .add-note-link:hover {
+    color: var(--accent);
+  }
+  .warn-text {
+    color: var(--warn);
   }
 </style>

@@ -212,6 +212,24 @@ pub async fn fetch_status(client: &Client, addr: &ServerAddr) -> Result<ServerSt
     get_json(client, &addr.status_url(), STATUS_TIMEOUT).await
 }
 
+/// Measures round-trip latency in milliseconds to the server's status endpoint.
+pub async fn ping_server(client: &Client, addr: &ServerAddr) -> Result<u64> {
+    let start = std::time::Instant::now();
+    let resp = client
+        .get(addr.status_url())
+        .timeout(STATUS_TIMEOUT)
+        .send()
+        .await?;
+    if resp.status().is_success() {
+        Ok(start.elapsed().as_millis() as u64)
+    } else {
+        Err(Error::HttpStatus {
+            status: resp.status().as_u16(),
+            url: addr.status_url(),
+        })
+    }
+}
+
 /// `/info` as requested right before connecting: no query, self-hosting rules applied.
 pub async fn fetch_info(client: &Client, addr: &ServerAddr) -> Result<ServerInfo> {
     let mut info: ServerInfo = get_json(client, &addr.info_url(), INFO_TIMEOUT).await?;

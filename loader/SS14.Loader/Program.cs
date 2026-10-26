@@ -53,6 +53,8 @@ internal class Program
             return false;
         }
 
+        PatchManager.Init(clientAssembly);
+
         if (!TryGetLoader(clientAssembly, out var loader))
             return false;
 
@@ -88,6 +90,21 @@ internal class Program
         }
 
         var args = new MainArgs(_engineArgs, _fileApi, redialApi, extraMounts);
+
+        var optEnv = Environment.GetEnvironmentVariable("BEBRA_OPTIMIZE");
+        if (optEnv == "1" || string.Equals(optEnv, "true", StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                System.Runtime.GCSettings.LatencyMode = System.Runtime.GCLatencyMode.SustainedLowLatency;
+                System.Threading.Thread.CurrentThread.Priority = System.Threading.ThreadPriority.AboveNormal;
+                Console.WriteLine("[BebraLoader] Applied runtime optimizations (SustainedLowLatency GC, ThreadPriority.AboveNormal)");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("[BebraLoader] Runtime optimization note: {0}", ex.Message);
+            }
+        }
 
         try
         {

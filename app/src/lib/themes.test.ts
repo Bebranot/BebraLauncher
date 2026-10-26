@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_CUSTOM,
   THEME_IDS,
+  applyTheme,
   backgroundFill,
   deriveCustom,
   exportCustom,
@@ -156,5 +157,30 @@ describe("sharing a custom theme", () => {
     for (const text of ["", "not json", "[]", "42", '"x"', "{}", '{"unrelated":1}']) {
       expect(importCustom(text, DEFAULT_CUSTOM), text).toBeNull();
     }
+  });
+});
+
+describe("applyTheme", () => {
+  it("sets dataset.theme and dataset.bg", () => {
+    const el = {
+      style: {
+        setProperty: () => {},
+        colorScheme: "",
+      },
+      dataset: {} as Record<string, string>,
+    };
+    applyTheme(
+      {
+        theme: "dark",
+        gradient: true,
+        decor: true,
+        custom: DEFAULT_CUSTOM,
+        font: "",
+        bg_type: "custom",
+      },
+      el as unknown as HTMLElement,
+    );
+    expect(el.dataset.theme).toBe("dark");
+    expect(el.dataset.bg).toBe("custom");
   });
 });

@@ -7,7 +7,7 @@ use bebra_core::accounts::{
 use bebra_core::auth::{AuthClient, Identity};
 use bebra_core::content_db::ContentDb;
 use bebra_core::dump;
-use bebra_core::hub::{HubClient, HubServerEntry};
+use bebra_core::hub::HubServerEntry;
 use bebra_core::launch;
 use bebra_core::packs;
 use bebra_core::server::{self, AuthMode};
@@ -97,8 +97,20 @@ impl ServerRow {
 
 #[tauri::command]
 pub async fn list_servers(state: State<'_, AppState>) -> CmdResult<Vec<ServerRow>> {
-    let servers = HubClient::official(state.client.clone())
-        .list_servers()
+    let hubs: Vec<String> = {
+        let s = state.settings.lock().unwrap();
+        s.hubs
+            .iter()
+            .filter(|h| h.enabled)
+            .map(|h| h.url.clone())
+            .collect()
+    };
+    let hubs = if hubs.is_empty() {
+        vec![bebra_core::hub::OFFICIAL_HUB_URL.to_string()]
+    } else {
+        hubs
+    };
+    let servers = bebra_core::hub::list_servers_from_hubs(&state.client, &hubs)
         .await
         .map_err(err)?;
     let rows: Vec<ServerRow> = servers.into_iter().map(ServerRow::from).collect();
@@ -371,7 +383,9 @@ pub async fn logout(state: State<'_, AppState>, user_id: String) -> CmdResult<bo
 pub fn select_account(state: State<'_, AppState>, account: Option<String>) -> CmdResult<()> {
     let acc_str = account.unwrap_or_default();
     if !acc_str.is_empty() {
-        acc_str.parse::<Uuid>().map_err(|_| "Неверный id аккаунта")?;
+        acc_str
+            .parse::<Uuid>()
+            .map_err(|_| "Неверный id аккаунта")?;
     }
     let mut settings = state.settings.lock().unwrap();
     settings.last_account = Some(acc_str);
@@ -432,6 +446,19 @@ pub fn raise_favorite(state: State<'_, AppState>, address: String) -> CmdResult<
     Ok(s.favorites.clone())
 }
 
+/// Sets or clears a personal note for a server address.
+#[tauri::command]
+pub fn set_server_note(
+    state: State<'_, AppState>,
+    address: String,
+    note: String,
+) -> CmdResult<std::collections::HashMap<String, String>> {
+    let mut s = state.settings.lock().unwrap();
+    s.set_server_note(&address, &note);
+    s.save(state.dirs.root()).map_err(err)?;
+    Ok(s.server_notes.clone())
+}
+
 /// Starts preparing and running the game. Progress and the outcome arrive as `play` events.
 /// `account` is a user id; without it the game starts as a guest.
 #[tauri::command]
@@ -477,6 +504,9 @@ pub fn start_play(
     let addr = ServerAddr::parse(address).map_err(err)?;
     let settings = state.settings.lock().unwrap().clone();
 
+    let patches = bebra_core::patches::resolve_patches(&state.dirs, &settings.enabled_patches);
+    let optimization = settings.optimization_config();
+
     game::start(
         app.clone(),
         state.game.clone(),
@@ -487,8 +517,17 @@ pub fn start_play(
             account,
             guest_name: settings.guest_name,
             compat_mode: settings.compat_mode,
+            discord_rpc: settings.discord_rpc,
             minimize_on_play: settings.minimize_on_play,
+            close_on_play: settings.close_on_play,
+            client_window_mode: settings.client_window_mode,
+            client_mute_unfocused: settings.client_mute_unfocused,
+            client_ui_scale: settings.client_ui_scale,
+            client_max_fps: settings.client_max_fps,
             enabled_packs: settings.enabled_packs,
+            extra_args: settings.extra_args,
+            patches,
+            optimization,
             preview,
             verbose: settings.verbose_log,
             history_key: address.to_string(),
@@ -607,8 +646,181 @@ pub fn open_packs_folder(state: State<'_, AppState>) -> CmdResult<()> {
 }
 
 #[tauri::command]
+pub fn open_patches_folder(state: State<'_, AppState>) -> CmdResult<()> {
+    open_folder(state.dirs.patches())
+}
+
+#[tauri::command]
 pub fn open_data_folder(state: State<'_, AppState>) -> CmdResult<()> {
     open_folder(state.dirs.root().to_path_buf())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BackgroundRow {
+    pub id: String,
+    pub name: String,
+    pub file_size: u64,
+}
+
+const SUPPORTED_BG_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "webp", "gif"];
+
+fn is_supported_bg_extension(ext: &str) -> bool {
+    let lower = ext.to_ascii_lowercase();
+    SUPPORTED_BG_EXTENSIONS.iter().any(|&e| e == lower)
+}
+
+fn validate_bg_filename(name: &str) -> CmdResult<()> {
+    let clean = name.trim();
+    if clean.is_empty()
+        || clean.len() > 200
+        || clean.contains(['/', '\\', ':'])
+        || clean.contains("..")
+    {
+        return Err("Недопустимое имя файла".into());
+    }
+    let p = std::path::Path::new(clean);
+    if p.file_name() != Some(std::ffi::OsStr::new(clean)) {
+        return Err("Недопустимое имя файла".into());
+    }
+    let ext = p.extension().and_then(|s| s.to_str()).unwrap_or("");
+    if !is_supported_bg_extension(ext) {
+        return Err("Недопустимый тип файла изображения".into());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn list_backgrounds(state: State<'_, AppState>) -> CmdResult<Vec<BackgroundRow>> {
+    let dir = state.dirs.backgrounds();
+    if !dir.is_dir() {
+        return Ok(Vec::new());
+    }
+    let mut rows = Vec::new();
+    let entries = std::fs::read_dir(&dir).map_err(err)?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_file() {
+            if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
+                if is_supported_bg_extension(ext) {
+                    let file_size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+                    let id = entry.file_name().to_string_lossy().to_string();
+                    let name = path
+                        .file_stem()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .unwrap_or_else(|| id.clone());
+                    rows.push(BackgroundRow { id, name, file_size });
+                }
+            }
+        }
+    }
+    rows.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    Ok(rows)
+}
+
+#[tauri::command]
+pub fn save_background(
+    state: State<'_, AppState>,
+    name: String,
+    data_base64: String,
+) -> CmdResult<BackgroundRow> {
+    let dir = state.dirs.backgrounds();
+    std::fs::create_dir_all(&dir).map_err(err)?;
+
+    let raw_name: String = name
+        .chars()
+        .filter(|c| c.is_alphanumeric() || matches!(*c, '-' | '_' | '.' | ' '))
+        .collect();
+    let clean = raw_name.trim();
+    if clean.is_empty() {
+        return Err("Имя файла не может быть пустым".into());
+    }
+
+    let ext = std::path::Path::new(clean)
+        .extension()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_ascii_lowercase());
+
+    let final_filename = match ext {
+        Some(e) if is_supported_bg_extension(&e) => clean.to_string(),
+        _ => format!("{clean}.png"),
+    };
+
+    let payload = if let Some(idx) = data_base64.find(";base64,") {
+        &data_base64[idx + 8..]
+    } else {
+        &data_base64
+    };
+
+    use base64::Engine;
+    let bytes = base64::prelude::BASE64_STANDARD
+        .decode(payload.trim())
+        .map_err(|e| format!("Не удалось декодировать изображение: {e}"))?;
+
+    if bytes.is_empty() {
+        return Err("Файл пуст".into());
+    }
+    if bytes.len() > 30 * 1024 * 1024 {
+        return Err("Файл слишком большой (максимум 30 МБ)".into());
+    }
+
+    let file_path = dir.join(&final_filename);
+    std::fs::write(&file_path, &bytes).map_err(err)?;
+
+    let file_size = bytes.len() as u64;
+    let name_stem = std::path::Path::new(&final_filename)
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| final_filename.clone());
+
+    Ok(BackgroundRow {
+        id: final_filename,
+        name: name_stem,
+        file_size,
+    })
+}
+
+#[tauri::command]
+pub fn get_background(state: State<'_, AppState>, name: String) -> CmdResult<String> {
+    validate_bg_filename(&name)?;
+    let path = state.dirs.backgrounds().join(&name);
+    let bytes = std::fs::read(&path).map_err(err)?;
+    let ext = path
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("png")
+        .to_ascii_lowercase();
+    let mime = match ext.as_str() {
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        "gif" => "image/gif",
+        _ => "image/png",
+    };
+    use base64::Engine;
+    let b64 = base64::prelude::BASE64_STANDARD.encode(&bytes);
+    Ok(format!("data:{mime};base64,{b64}"))
+}
+
+#[tauri::command]
+pub fn delete_background(state: State<'_, AppState>, name: String) -> CmdResult<()> {
+    validate_bg_filename(&name)?;
+    let path = state.dirs.backgrounds().join(&name);
+    if path.is_file() {
+        let _ = std::fs::remove_file(&path);
+    }
+
+    let mut settings = state.settings.lock().unwrap();
+    if settings.bg_custom_name.as_deref() == Some(&name) {
+        settings.bg_custom_name = None;
+        let _ = settings.save(state.dirs.root());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn open_backgrounds_folder(state: State<'_, AppState>) -> CmdResult<()> {
+    let dir = state.dirs.backgrounds();
+    let _ = std::fs::create_dir_all(&dir);
+    open_folder(dir)
 }
 
 #[derive(Serialize)]
@@ -830,6 +1042,29 @@ pub fn list_packs(state: State<'_, AppState>) -> Vec<PackRow> {
             problems: p.problems,
         })
         .collect()
+}
+
+#[derive(Serialize)]
+pub struct PatchRow {
+    id: String,
+    name: String,
+    file_size: u64,
+    enabled: bool,
+}
+
+#[tauri::command]
+pub fn list_patches(state: State<'_, AppState>) -> CmdResult<Vec<PatchRow>> {
+    let enabled = state.settings.lock().unwrap().enabled_patches.clone();
+    let patches = bebra_core::patches::scan_patches(&state.dirs).map_err(err)?;
+    Ok(patches
+        .into_iter()
+        .map(|p| PatchRow {
+            enabled: enabled.contains(&p.id),
+            id: p.id,
+            name: p.name,
+            file_size: p.file_size,
+        })
+        .collect())
 }
 
 /// How long the news feed is kept before it is read again.

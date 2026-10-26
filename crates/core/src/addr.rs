@@ -18,9 +18,14 @@ pub struct ServerAddr {
 
 impl ServerAddr {
     /// Parses `ss14://host[:port][/path]` or `ss14s://...`. A missing scheme means `ss14://`.
+    /// Also accepts `http://` and `https://` by mapping them to `ss14://` and `ss14s://`.
     pub fn parse(input: &str) -> Result<Self> {
         let input = input.trim();
-        let with_scheme = if input.contains("://") {
+        let with_scheme = if let Some(rest) = input.strip_prefix("http://") {
+            format!("ss14://{rest}")
+        } else if let Some(rest) = input.strip_prefix("https://") {
+            format!("ss14s://{rest}")
+        } else if input.contains("://") {
             input.to_string()
         } else {
             format!("ss14://{input}")
@@ -209,6 +214,11 @@ mod tests {
             "ss14s://server.ss14.org/perseus/"
         );
         assert_eq!(n("example.com"), "ss14://example.com/");
+        assert_eq!(n("http://localhost:1212"), "ss14://localhost:1212/");
+        assert_eq!(
+            n("https://hub.corvax.fun:443"),
+            "ss14s://hub.corvax.fun:443/"
+        );
     }
 
     #[test]
@@ -217,7 +227,7 @@ mod tests {
             "",
             "   ",
             "ss14://",
-            "http://example.com",
+            "ftp://example.com",
             "ftp://x",
             "ss14s:///path",
         ] {

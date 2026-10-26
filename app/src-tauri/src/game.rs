@@ -1,6 +1,7 @@
 //! Starting the game for the UI: runs `bebra_core::play` on a thread of its own and reports
 //! what happens as `play` events.
 
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -41,8 +42,10 @@ pub enum PlayEvent {
     Running {
         pid: u32,
         plays_as: String,
+        address: String,
     },
     Exited {
+        pid: u32,
         code: Option<i32>,
         log_tail: Vec<String>,
     },
@@ -58,47 +61,66 @@ pub enum PlayEvent {
     },
 }
 
-/// At most one game is being prepared or run by the launcher at a time.
+/// Tracks running games and ensures at most one game is being prepared at a time.
 #[derive(Default)]
 pub struct GameState {
-    active: Mutex<Option<Arc<Notify>>>,
+    preparing: Mutex<Option<Arc<Notify>>>,
+    running: Mutex<std::collections::HashSet<u32>>,
 }
 
 impl GameState {
-    /// Takes the slot, or says that someone else holds it.
-    fn begin(&self) -> Result<Arc<Notify>, String> {
-        let mut active = self.active.lock().unwrap();
-        if active.is_some() {
+    /// Takes the preparation slot, or says that another game is currently preparing.
+    fn begin_prepare(&self) -> Result<Arc<Notify>, String> {
+        let mut prep = self.preparing.lock().unwrap();
+        if prep.is_some() {
             return Err(BUSY.into());
         }
         let cancel = Arc::new(Notify::new());
-        *active = Some(cancel.clone());
+        *prep = Some(cancel.clone());
         Ok(cancel)
     }
 
-    fn release(&self) {
-        *self.active.lock().unwrap() = None;
+    fn end_prepare(&self) {
+        *self.preparing.lock().unwrap() = None;
+    }
+
+    pub fn is_preparing(&self) -> bool {
+        self.preparing.lock().unwrap().is_some()
+    }
+
+    pub fn register_running(&self, pid: u32) {
+        self.running.lock().unwrap().insert(pid);
+    }
+
+    pub fn unregister_running(&self, pid: u32) -> usize {
+        let mut r = self.running.lock().unwrap();
+        r.remove(&pid);
+        r.len()
+    }
+
+    pub fn running_count(&self) -> usize {
+        self.running.lock().unwrap().len()
     }
 
     /// Is a game being prepared or running?
     pub fn is_active(&self) -> bool {
-        self.active.lock().unwrap().is_some()
+        self.is_preparing() || self.running_count() > 0
     }
 
     /// Stops the preparation (downloads). Does nothing once the game itself is running.
     pub fn cancel(&self) {
-        if let Some(c) = self.active.lock().unwrap().as_ref() {
+        if let Some(c) = self.preparing.lock().unwrap().as_ref() {
             c.notify_one();
         }
     }
 }
 
-/// Frees the slot when the play thread ends, however it ends.
-struct Release(Arc<GameState>);
+/// Frees the preparation slot when the preparation ends, however it ends.
+struct PrepareRelease(Arc<GameState>);
 
-impl Drop for Release {
+impl Drop for PrepareRelease {
     fn drop(&mut self) {
-        self.0.release();
+        self.0.end_prepare();
     }
 }
 
@@ -109,7 +131,13 @@ pub struct PlayParams {
     pub account: Option<Uuid>,
     pub guest_name: String,
     pub compat_mode: bool,
+    pub discord_rpc: bool,
     pub minimize_on_play: bool,
+    pub close_on_play: bool,
+    pub client_window_mode: String,
+    pub client_mute_unfocused: bool,
+    pub client_ui_scale: String,
+    pub client_max_fps: u32,
     /// The address string the history is keyed by (as the hub lists it).
     pub history_key: String,
     /// The server's name, for the history.
@@ -120,11 +148,17 @@ pub struct PlayParams {
     pub preview: bool,
     /// Log the launch command (secrets hidden).
     pub verbose: bool,
+    /// Extra engine arguments / cvars.
+    pub extra_args: String,
+    /// Client patch assemblies (.dll) to load.
+    pub patches: Vec<PathBuf>,
+    /// Client performance and optimization settings.
+    pub optimization: bebra_core::launch::OptimizationConfig,
 }
 
 pub fn start(app: AppHandle, game: Arc<GameState>, params: PlayParams) -> Result<(), String> {
-    // Claim the slot before the thread starts so a second click is refused right away.
-    let cancel = game.begin()?;
+    // Claim the preparation slot before the thread starts so a second click is refused right away.
+    let cancel = game.begin_prepare()?;
     crate::applog::line(&format!(
         "play {} (account: {})",
         params.addr.as_str(),
@@ -134,12 +168,12 @@ pub fn start(app: AppHandle, game: Arc<GameState>, params: PlayParams) -> Result
             "guest"
         }
     ));
-    let release = Release(game.clone());
+    let game_clone = game.clone();
 
     let spawned = std::thread::Builder::new()
         .name("play".into())
         .spawn(move || {
-            let _release = release;
+            let release = PrepareRelease(game_clone.clone());
 
             let emit = |event: PlayEvent| {
                 let _ = app.emit(EVENT, event);
@@ -161,28 +195,32 @@ pub fn start(app: AppHandle, game: Arc<GameState>, params: PlayParams) -> Result
                     r = prepare(&app, &params) => r.map_err(Some),
                 }
             });
+
+            // Preparation finished: release the preparation lock so other games can prepare.
+            drop(release);
+
             match prepared {
-                Ok(game) if params.preview => {
+                Ok(prepared_game) if params.preview => {
                     crate::applog::line("launch preview");
                     emit(PlayEvent::Preview {
-                        command: game.command.describe(),
+                        command: prepared_game.command.describe(),
                     });
                 }
-                Ok(game) => {
+                Ok(prepared_game) => {
                     if params.verbose {
                         crate::applog::line(&format!(
                             "launch command: {}",
-                            game.command.describe()
+                            prepared_game.command.describe()
                         ));
                     }
-                    run_game(&app, &emit, &params, game);
+                    run_game(&app, &emit, &params, &game_clone, prepared_game);
                 }
                 Err(None) => emit(PlayEvent::Cancelled),
                 Err(Some(failure)) => emit(PlayEvent::failed(failure.code, failure.message)),
             }
         });
     spawned.map(drop).map_err(|e| {
-        game.release();
+        game.end_prepare();
         format!("не удалось запустить поток: {e}")
     })
 }
@@ -240,6 +278,40 @@ async fn prepare(app: &AppHandle, params: &PlayParams) -> Result<play::PreparedG
             None
         }
     };
+    let mut extra_args = Vec::new();
+    if !params.discord_rpc {
+        extra_args.push("--cvar".to_string());
+        extra_args.push("discord.enabled=false".to_string());
+    }
+    match params.client_window_mode.as_str() {
+        "windowed" => {
+            extra_args.push("--cvar".to_string());
+            extra_args.push("display.window_mode=0".to_string());
+        }
+        "fullscreen" => {
+            extra_args.push("--cvar".to_string());
+            extra_args.push("display.window_mode=1".to_string());
+        }
+        "borderless" => {
+            extra_args.push("--cvar".to_string());
+            extra_args.push("display.window_mode=2".to_string());
+        }
+        _ => {}
+    }
+    if !params.client_mute_unfocused {
+        extra_args.push("--cvar".to_string());
+        extra_args.push("audio.mute_when_unfocused=false".to_string());
+    }
+    if params.client_ui_scale != "auto" && !params.client_ui_scale.is_empty() {
+        extra_args.push("--cvar".to_string());
+        extra_args.push(format!("display.ui_scale={}", params.client_ui_scale));
+    }
+    if params.client_max_fps > 0 {
+        extra_args.push("--cvar".to_string());
+        extra_args.push(format!("display.max_fps={}", params.client_max_fps));
+    }
+    // User-defined extra args take precedence over UI defaults.
+    extra_args.extend(bebra_core::launch::split_args(&params.extra_args));
     let req = PlayRequest {
         addr: params.addr.clone(),
         via_hub: false,
@@ -250,6 +322,9 @@ async fn prepare(app: &AppHandle, params: &PlayParams) -> Result<play::PreparedG
         loader_exe,
         launcher_path: std::env::current_exe().ok(),
         overlay_zip,
+        extra_args,
+        patches: params.patches.clone(),
+        optimization: params.optimization.clone(),
     };
 
     // Progress callbacks come once per file; only tell the UI when the percentage moves.
@@ -354,40 +429,62 @@ fn record_play_time(app: &AppHandle, key: &str, seconds: u64) {
     let _ = settings.save(state.dirs.root());
 }
 
+static SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
+
 fn run_game(
     app: &AppHandle,
     emit: &impl Fn(PlayEvent),
     params: &PlayParams,
-    game: play::PreparedGame,
+    game: &Arc<GameState>,
+    prepared_game: play::PreparedGame,
 ) {
     let dirs = &params.dirs;
     emit(PlayEvent::Stage { stage: "starting" });
-    let (out_log, err_log) = (
-        dirs.logs().join("client.stdout.log"),
-        dirs.logs().join("client.stderr.log"),
-    );
-    let mut child = match launch::spawn(&game.command, &out_log, &err_log) {
+
+    let session_id = SESSION_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let (out_log, err_log) = if game.running_count() == 0 {
+        (
+            dirs.logs().join("client.stdout.log"),
+            dirs.logs().join("client.stderr.log"),
+        )
+    } else {
+        (
+            dirs.logs().join(format!("client-{session_id}.stdout.log")),
+            dirs.logs().join(format!("client-{session_id}.stderr.log")),
+        )
+    };
+
+    let mut child = match launch::spawn(&prepared_game.command, &out_log, &err_log) {
         Ok(c) => c,
         Err(e) => {
             emit(PlayEvent::failed("start", e.to_string()));
             return;
         }
     };
-    crate::applog::line(&format!("game started, pid {}", child.id()));
+    let pid = child.id();
+    game.register_running(pid);
+    crate::applog::line(&format!("game started, pid {pid}"));
     remember_game(app, params);
     emit(PlayEvent::Running {
-        pid: child.id(),
-        plays_as: game.plays_as,
+        pid,
+        plays_as: prepared_game.plays_as,
+        address: params.history_key.clone(),
     });
+    if params.close_on_play {
+        crate::applog::line("close_on_play enabled: exiting launcher");
+        app.exit(0);
+        return;
+    }
     if params.minimize_on_play {
         set_minimized(app, true);
     }
 
     let started = std::time::Instant::now();
     let code = child.wait().ok().and_then(|s| s.code());
+    let remaining = game.unregister_running(pid);
     record_play_time(app, &params.history_key, started.elapsed().as_secs());
     crate::applog::line(&format!(
-        "game exited, code {code:?}, after {} s",
+        "game pid {pid} exited, code {code:?}, after {} s (remaining active: {remaining})",
         started.elapsed().as_secs()
     ));
     let log_tail = if code == Some(0) {
@@ -398,8 +495,12 @@ fn run_game(
         tail.reverse();
         tail
     };
-    if params.minimize_on_play {
+    if params.minimize_on_play && remaining == 0 {
         set_minimized(app, false);
     }
-    emit(PlayEvent::Exited { code, log_tail });
+    emit(PlayEvent::Exited {
+        pid,
+        code,
+        log_tail,
+    });
 }

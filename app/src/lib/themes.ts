@@ -258,6 +258,7 @@ export interface ThemeOptions {
   custom: CustomColors;
   /** Font family name, or empty for the built-in one. */
   font: string;
+  bg_type?: string;
 }
 
 // ---------------------------------------------------------------- colour helpers
@@ -469,6 +470,7 @@ export function applyTheme(options: ThemeOptions, root: HTMLElement = document.d
   set("--on-accent", isLight(tokens.accent) ? "#14151A" : "#FFFFFF");
   set("--font", fontFamily(options.font));
   root.dataset.theme = theme;
+  root.dataset.bg = options.bg_type ?? "space";
   root.style.colorScheme = isLight(tokens.background) ? "light" : "dark";
 }
 

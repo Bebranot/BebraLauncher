@@ -61,6 +61,7 @@ let accounts: AccountRow[] = [
 const DEFAULT_SETTINGS: Settings = {
   guest_name: "JoeGenero",
   compat_mode: false,
+  discord_rpc: true,
   minimize_on_play: true,
   theme: "dark",
   theme_gradient: false,
@@ -94,6 +95,30 @@ const DEFAULT_SETTINGS: Settings = {
       account: null,
     },
   ],
+  hubs: [
+    { url: "https://hub.spacestation14.com/", enabled: true },
+  ],
+  extra_args: "",
+  enabled_patches: [],
+  opt_profile: "balanced",
+  opt_fast_lighting: false,
+  opt_unlock_fps: false,
+  opt_high_priority: true,
+  opt_server_gc: true,
+  bg_type: "space",
+  bg_custom_name: null,
+  bg_dim: 40,
+  bg_blur: 0,
+  client_window_mode: "default",
+  client_mute_unfocused: true,
+  client_ui_scale: "auto",
+  client_max_fps: 0,
+  close_on_play: false,
+  auto_refresh_interval: 0,
+  confirm_connect: false,
+  server_notes: {
+    "ss14s://example-one.test": "Любимый РП сервер (мейн: Инженер)",
+  },
 };
 let settings: Settings = structuredClone(DEFAULT_SETTINGS);
 
@@ -137,7 +162,8 @@ let storageUsed = 410 * 1024 * 1024;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 let cancelled = false;
 
-async function fakePlay() {
+let mockPid = 1000;
+async function fakePlay(address?: string) {
   cancelled = false;
   const ev = (e: object) => emit("play", e);
   await ev({ kind: "stage", stage: "account" });
@@ -152,7 +178,8 @@ async function fakePlay() {
   }
   await ev({ kind: "stage", stage: "starting" });
   await sleep(600);
-  await ev({ kind: "running", pid: 1234, plays_as: "serjo13" });
+  const pid = mockPid++;
+  await ev({ kind: "running", pid, plays_as: "serjo13", address });
 }
 
 let tokenSet = false;
@@ -278,8 +305,33 @@ export function installMock() {
           settings.favorites = [addr, ...settings.favorites.filter((x) => x !== addr)];
           return settings.favorites;
         }
+        case "set_server_note": {
+          const addr = a.address as string;
+          const note = ((a.note as string) ?? "").trim();
+          settings.server_notes = { ...(settings.server_notes ?? {}) };
+          if (note) {
+            settings.server_notes[addr] = note;
+          } else {
+            delete settings.server_notes[addr];
+          }
+          return settings.server_notes;
+        }
         case "list_packs":
           return packs.map((p) => ({ ...p, enabled: settings.enabled_packs.includes(p.id) }));
+        case "list_patches":
+          return [];
+        case "list_backgrounds":
+          return [
+            { id: "sample_station.png", name: "sample_station", file_size: 1_240_000 },
+          ];
+        case "save_background":
+          return { id: (a.name as string) || "custom.png", name: (a.name as string) || "custom", file_size: 500_000 };
+        case "get_background":
+          return "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='800' height='600'><rect width='800' height='600' fill='%231a2234'/><text x='50%25' y='50%25' fill='%23fff' font-family='sans-serif' font-size='24' text-anchor='middle'>Custom Wallpaper Preview</text></svg>";
+        case "delete_background":
+          return null;
+        case "open_backgrounds_folder":
+        case "open_patches_folder":
         case "open_packs_folder":
         case "open_logs_folder":
         case "open_data_folder":
@@ -348,7 +400,7 @@ export function installMock() {
           accounts = accounts.filter((x) => x.user_id !== a.userId);
           return true;
         case "play":
-          void fakePlay();
+          void fakePlay(a.address as string);
           return null;
         case "cancel_play":
           cancelled = true;

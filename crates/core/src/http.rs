@@ -34,7 +34,11 @@ pub fn is_valid_proxy(url: &str) -> bool {
 pub fn build_client_with_proxy(proxy: Option<&str>) -> Result<Client> {
     let mut builder = Client::builder()
         .user_agent(concat!("BebraLauncher/", env!("CARGO_PKG_VERSION")))
-        .connect_timeout(Duration::from_secs(10));
+        .connect_timeout(Duration::from_secs(10))
+        .tcp_nodelay(true)
+        .http2_adaptive_window(true)
+        .pool_max_idle_per_host(10)
+        .pool_idle_timeout(Duration::from_secs(90));
     if let Some(url) = proxy.map(str::trim).filter(|p| !p.is_empty()) {
         if !is_valid_proxy(url) {
             return Err(Error::Other(format!("not a usable proxy address: {url}")));

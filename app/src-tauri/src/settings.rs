@@ -12,6 +12,8 @@ pub struct Settings {
     pub guest_name: String,
     /// Start the game in the GLES2 fallback renderer.
     pub compat_mode: bool,
+    /// Whether Discord Rich Presence is enabled in the game client.
+    pub discord_rpc: bool,
     /// Minimize the launcher while the game runs, and bring it back when the game closes.
     pub minimize_on_play: bool,
     /// Id of the colour theme; the UI knows the list and falls back to the default.
@@ -49,6 +51,71 @@ pub struct Settings {
     pub favorites: Vec<String>,
     /// Servers played recently, newest first.
     pub history: Vec<HistoryEntry>,
+    /// Server hubs used to populate the server list.
+    pub hubs: Vec<HubSetting>,
+    /// Additional arguments passed to the game client / engine.
+    pub extra_args: String,
+    /// Client patches (.dll files in patches folder) enabled by the user.
+    pub enabled_patches: Vec<String>,
+    /// Client optimization profile: "off", "balanced", "max_fps", "potato", or "custom".
+    pub opt_profile: String,
+    /// Fast lighting: disable soft shadows and lighting blur.
+    pub opt_fast_lighting: bool,
+    /// Unlock framerate: disable VSync and set max FPS to uncapped.
+    pub opt_unlock_fps: bool,
+    /// Run game process with elevated Windows priority.
+    pub opt_high_priority: bool,
+    /// Enable .NET Server Garbage Collection and DATAS to prevent frame stutters.
+    pub opt_server_gc: bool,
+    /// Background mode: "space" (default space canvas), "custom" (user image), "none" (solid/theme).
+    pub bg_type: String,
+    /// Filename of selected custom background in backgrounds folder.
+    pub bg_custom_name: Option<String>,
+    /// Background darkening tint overlay percentage (0..95, default 40).
+    pub bg_dim: u32,
+    /// Background blur filter in px (0..30, default 0).
+    pub bg_blur: u32,
+    /// Game client window mode: "default", "windowed", "fullscreen", "borderless".
+    pub client_window_mode: String,
+    /// Mute game audio when client is unfocused / minimized.
+    pub client_mute_unfocused: bool,
+    /// Game client UI scale: "auto", "0.75", "1.0", "1.25", "1.5", "1.75", "2.0".
+    pub client_ui_scale: String,
+    /// Maximum client FPS limit (0 = uncapped / profile default).
+    pub client_max_fps: u32,
+    /// Close the launcher completely when the game starts.
+    pub close_on_play: bool,
+    /// Server list auto-refresh interval in seconds (0 = off, 15, 30, 60, 120).
+    pub auto_refresh_interval: u32,
+    /// Confirm connect with server details modal before launching.
+    pub confirm_connect: bool,
+    /// Personal user notes per server address.
+    #[serde(default)]
+    pub server_notes: std::collections::HashMap<String, String>,
+}
+
+/// Configured server hub.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HubSetting {
+    pub url: String,
+    pub enabled: bool,
+}
+
+impl Default for HubSetting {
+    fn default() -> Self {
+        Self {
+            url: bebra_core::hub::OFFICIAL_HUB_URL.to_string(),
+            enabled: true,
+        }
+    }
+}
+
+pub fn default_hubs() -> Vec<HubSetting> {
+    vec![HubSetting {
+        url: bebra_core::hub::OFFICIAL_HUB_URL.to_string(),
+        enabled: true,
+    }]
 }
 
 /// Colours of the user's own theme, as `#RRGGBB`.
@@ -146,6 +213,7 @@ impl Default for Settings {
         Self {
             guest_name: FALLBACK_USERNAME.to_string(),
             compat_mode: false,
+            discord_rpc: true,
             minimize_on_play: true,
             theme: "dark".to_string(),
             theme_gradient: false,
@@ -164,6 +232,26 @@ impl Default for Settings {
             last_account: None,
             favorites: Vec::new(),
             history: Vec::new(),
+            hubs: default_hubs(),
+            extra_args: String::new(),
+            enabled_patches: Vec::new(),
+            opt_profile: "balanced".to_string(),
+            opt_fast_lighting: false,
+            opt_unlock_fps: false,
+            opt_high_priority: true,
+            opt_server_gc: true,
+            bg_type: "space".to_string(),
+            bg_custom_name: None,
+            bg_dim: 40,
+            bg_blur: 0,
+            client_window_mode: "default".to_string(),
+            client_mute_unfocused: true,
+            client_ui_scale: "auto".to_string(),
+            client_max_fps: 0,
+            close_on_play: false,
+            auto_refresh_interval: 0,
+            confirm_connect: false,
+            server_notes: std::collections::HashMap::new(),
         }
     }
 }
@@ -236,6 +324,26 @@ impl Settings {
         }
     }
 
+    /// Sets or removes a personal note for a server address.
+    pub fn set_server_note(&mut self, address: &str, note: &str) {
+        let trimmed = note.trim();
+        if trimmed.is_empty() {
+            self.server_notes.remove(address);
+        } else {
+            let clean: String = trimmed
+                .chars()
+                .filter(|c| !c.is_control() || *c == '\n' || *c == '\r' || *c == '\t')
+                .take(500)
+                .collect();
+            let final_text = clean.trim().to_string();
+            if final_text.is_empty() {
+                self.server_notes.remove(address);
+            } else {
+                self.server_notes.insert(address.to_string(), final_text);
+            }
+        }
+    }
+
     /// Cleans up values typed by the user.
     pub fn sanitized(mut self) -> Self {
         let name: String = self
@@ -286,7 +394,165 @@ impl Settings {
                 && !id.contains(['/', '\\'])
                 && seen.insert(id.clone())
         });
+
+        // Patch ids are plain file names, each at most once.
+        let mut seen_patches = std::collections::HashSet::new();
+        self.enabled_patches.retain(|id| {
+            !id.is_empty()
+                && id.len() <= 200
+                && !id.contains(['/', '\\'])
+                && seen_patches.insert(id.clone())
+        });
+
+        // Hubs: normalize URLs, filter out invalid/duplicate URLs.
+        let mut seen_hubs = std::collections::HashSet::new();
+        let mut clean_hubs = Vec::new();
+        for h in self.hubs {
+            if let Some(norm) = bebra_core::hub::normalize_hub_url(&h.url) {
+                if seen_hubs.insert(norm.clone()) {
+                    clean_hubs.push(HubSetting {
+                        url: norm,
+                        enabled: h.enabled,
+                    });
+                }
+            }
+        }
+        if clean_hubs.is_empty() {
+            clean_hubs = default_hubs();
+        }
+        self.hubs = clean_hubs;
+
+        // Extra args: clean control characters, limit length.
+        self.extra_args = self
+            .extra_args
+            .chars()
+            .filter(|c| !c.is_control() || *c == ' ' || *c == '\t')
+            .take(1000)
+            .collect::<String>()
+            .trim()
+            .to_string();
+
+        match self.opt_profile.as_str() {
+            "off" | "none" | "balanced" | "max_fps" | "potato" | "iskander" | "custom" => {}
+            _ => self.opt_profile = "balanced".to_string(),
+        }
+
+        match self.bg_type.as_str() {
+            "space" | "custom" | "none" => {}
+            _ => self.bg_type = "space".to_string(),
+        }
+
+        self.bg_custom_name = self.bg_custom_name.and_then(|name| {
+            let clean: String = name
+                .chars()
+                .filter(|c| !c.is_control() && *c != '/' && *c != '\\')
+                .take(200)
+                .collect();
+            let trimmed = clean.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        });
+
+        self.bg_dim = self.bg_dim.min(95);
+        self.bg_blur = self.bg_blur.min(30);
+
+        match self.client_window_mode.as_str() {
+            "default" | "windowed" | "fullscreen" | "borderless" => {}
+            _ => self.client_window_mode = "default".to_string(),
+        }
+
+        match self.client_ui_scale.as_str() {
+            "auto" | "0.75" | "1.0" | "1.25" | "1.5" | "1.75" | "2.0" => {}
+            _ => self.client_ui_scale = "auto".to_string(),
+        }
+
+        self.client_max_fps = self.client_max_fps.min(360);
+
+        match self.auto_refresh_interval {
+            0 | 15 | 30 | 60 | 120 | 300 => {}
+            _ => self.auto_refresh_interval = 0,
+        }
+
+        let mut clean_notes = std::collections::HashMap::new();
+        for (addr, note) in self.server_notes {
+            let addr = addr.trim().to_string();
+            if addr.is_empty() || addr.len() > 256 {
+                continue;
+            }
+            let clean_note: String = note
+                .chars()
+                .filter(|c| !c.is_control() || *c == '\n' || *c == '\r' || *c == '\t')
+                .take(500)
+                .collect();
+            let trimmed = clean_note.trim().to_string();
+            if !trimmed.is_empty() {
+                clean_notes.insert(addr, trimmed);
+            }
+        }
+        self.server_notes = clean_notes;
+
         self
+    }
+
+    /// Resolves the optimization profile into a concrete runtime configuration.
+    pub fn optimization_config(&self) -> bebra_core::launch::OptimizationConfig {
+        match self.opt_profile.as_str() {
+            "off" | "none" => bebra_core::launch::OptimizationConfig {
+                profile: "off".into(),
+                server_gc: false,
+                fast_lighting: false,
+                unlock_fps: false,
+                high_priority: false,
+                light_resolution: None,
+            },
+            "potato" => bebra_core::launch::OptimizationConfig {
+                profile: "potato".into(),
+                server_gc: true,
+                fast_lighting: true,
+                unlock_fps: true,
+                high_priority: true,
+                light_resolution: Some(0.35),
+            },
+            "iskander" => bebra_core::launch::OptimizationConfig {
+                profile: "iskander".into(),
+                server_gc: true,
+                fast_lighting: true,
+                unlock_fps: true,
+                high_priority: true,
+                light_resolution: Some(0.2),
+            },
+            "max_fps" => bebra_core::launch::OptimizationConfig {
+                profile: "max_fps".into(),
+                server_gc: true,
+                fast_lighting: false,
+                unlock_fps: true,
+                high_priority: true,
+                light_resolution: None,
+            },
+            "custom" => bebra_core::launch::OptimizationConfig {
+                profile: "custom".into(),
+                server_gc: self.opt_server_gc,
+                fast_lighting: self.opt_fast_lighting,
+                unlock_fps: self.opt_unlock_fps,
+                high_priority: self.opt_high_priority,
+                light_resolution: if self.opt_fast_lighting {
+                    Some(0.35)
+                } else {
+                    None
+                },
+            },
+            _ => bebra_core::launch::OptimizationConfig {
+                profile: "balanced".into(),
+                server_gc: true,
+                fast_lighting: false,
+                unlock_fps: false,
+                high_priority: true,
+                light_resolution: None,
+            },
+        }
     }
 
     /// Moves a favourite to the top of the list.
@@ -480,6 +746,47 @@ mod tests {
         assert_eq!(s.guest_name, "X");
         assert!(!s.theme_gradient && s.columns.players && !s.columns.ping);
         assert_eq!(s.favorites, ["a"]);
+        assert_eq!(s.hubs.len(), 1);
+        assert_eq!(s.extra_args, "");
+        assert!(s.enabled_patches.is_empty());
+        assert!(s.discord_rpc);
+    }
+
+    #[test]
+    fn hubs_and_extra_args_are_sanitized() {
+        let s = Settings {
+            hubs: vec![
+                HubSetting {
+                    url: "https://hub.corvax.fun".into(),
+                    enabled: true,
+                },
+                HubSetting {
+                    url: "https://hub.corvax.fun/".into(), // duplicate
+                    enabled: false,
+                },
+                HubSetting {
+                    url: "invalid-url".into(),
+                    enabled: true,
+                },
+            ],
+            extra_args: "  --cvar display.vsync=false \0 \r\n ".into(),
+            ..Settings::default()
+        }
+        .sanitized();
+
+        assert_eq!(s.hubs.len(), 1);
+        assert_eq!(s.hubs[0].url, "https://hub.corvax.fun/");
+        assert!(s.hubs[0].enabled);
+        assert_eq!(s.extra_args, "--cvar display.vsync=false");
+
+        // Empty hubs list gets restored to default
+        let empty_hubs = Settings {
+            hubs: vec![],
+            ..Settings::default()
+        }
+        .sanitized();
+        assert_eq!(empty_hubs.hubs.len(), 1);
+        assert_eq!(empty_hubs.hubs[0].url, bebra_core::hub::OFFICIAL_HUB_URL);
     }
 
     #[test]
@@ -489,6 +796,103 @@ mod tests {
         assert!(s.toggle_favorite("b"));
         assert!(!s.toggle_favorite("a"));
         assert_eq!(s.favorites, ["b"]);
+    }
+
+    #[test]
+    fn optimization_profiles_and_config() {
+        let mut s = Settings::default();
+        assert_eq!(s.opt_profile, "balanced");
+        let cfg = s.optimization_config();
+        assert_eq!(cfg.profile, "balanced");
+        assert!(cfg.server_gc);
+        assert!(!cfg.fast_lighting);
+        assert!(!cfg.unlock_fps);
+        assert!(cfg.high_priority);
+
+        s.opt_profile = "potato".into();
+        let cfg_potato = s.optimization_config();
+        assert_eq!(cfg_potato.profile, "potato");
+        assert!(cfg_potato.fast_lighting);
+        assert!(cfg_potato.unlock_fps);
+        assert_eq!(cfg_potato.light_resolution, Some(0.35));
+
+        s.opt_profile = "iskander".into();
+        let cfg_iskander = s.optimization_config();
+        assert_eq!(cfg_iskander.profile, "iskander");
+        assert!(cfg_iskander.fast_lighting);
+        assert!(cfg_iskander.unlock_fps);
+        assert_eq!(cfg_iskander.light_resolution, Some(0.2));
+
+        s.opt_profile = "max_fps".into();
+        let cfg_fps = s.optimization_config();
+        assert_eq!(cfg_fps.profile, "max_fps");
+        assert!(!cfg_fps.fast_lighting);
+        assert!(cfg_fps.unlock_fps);
+
+        s.opt_profile = "custom".into();
+        s.opt_server_gc = false;
+        s.opt_fast_lighting = true;
+        s.opt_unlock_fps = true;
+        s.opt_high_priority = false;
+        let cfg_custom = s.optimization_config();
+        assert_eq!(cfg_custom.profile, "custom");
+        assert!(!cfg_custom.server_gc);
+        assert!(cfg_custom.fast_lighting);
+        assert!(cfg_custom.unlock_fps);
+        assert!(!cfg_custom.high_priority);
+
+        s.opt_profile = "invalid_name".into();
+        let san = s.sanitized();
+        assert_eq!(san.opt_profile, "balanced");
+    }
+
+    #[test]
+    fn background_and_client_settings_sanitized() {
+        let s = Settings {
+            bg_type: "unknown_mode".into(),
+            bg_custom_name: Some("  ../bad/path\\name.png \0 ".into()),
+            bg_dim: 150,
+            bg_blur: 50,
+            client_window_mode: "invalid".into(),
+            client_ui_scale: "3.5".into(),
+            client_max_fps: 1000,
+            auto_refresh_interval: 999,
+            ..Settings::default()
+        }
+        .sanitized();
+
+        assert_eq!(s.bg_type, "space");
+        assert_eq!(s.bg_custom_name.as_deref(), Some("..badpathname.png"));
+        assert_eq!(s.bg_dim, 95);
+        assert_eq!(s.bg_blur, 30);
+        assert_eq!(s.client_window_mode, "default");
+        assert_eq!(s.client_ui_scale, "auto");
+        assert_eq!(s.client_max_fps, 360);
+        assert_eq!(s.auto_refresh_interval, 0);
+    }
+
+    #[test]
+    fn server_notes_sanitization_and_management() {
+        let mut s = Settings::default();
+        s.set_server_note("ss14s://corvax.example", "  Главный инженер на смене  ");
+        assert_eq!(
+            s.server_notes.get("ss14s://corvax.example").map(String::as_str),
+            Some("Главный инженер на смене")
+        );
+
+        // Blank note removes the entry
+        s.set_server_note("ss14s://corvax.example", "   ");
+        assert!(s.server_notes.get("ss14s://corvax.example").is_none());
+
+        // Sanitization trims, drops empty/invalid addresses and limits length
+        s.server_notes.insert("  ss14s://test.org  ".into(), "  Заметка \0 с нулём  ".into());
+        s.server_notes.insert("   ".into(), "валидный текст".into());
+        let san = s.sanitized();
+        assert_eq!(
+            san.server_notes.get("ss14s://test.org").map(String::as_str),
+            Some("Заметка  с нулём")
+        );
+        assert!(!san.server_notes.contains_key("   "));
     }
 
     fn tempdir() -> PathBuf {

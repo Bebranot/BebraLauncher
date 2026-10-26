@@ -449,6 +449,9 @@ async fn main() -> Result<()> {
                 loader_exe,
                 launcher_path: None,
                 overlay_zip: None,
+                extra_args: Vec::new(),
+                patches: Vec::new(),
+                optimization: bebra_core::launch::OptimizationConfig::default(),
             };
             let printer = ProgressPrinter::new("files");
             let engine_printer = ProgressPrinter::new("engine");

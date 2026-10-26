@@ -17,6 +17,7 @@ pub mod launch;
 pub mod manifest;
 pub mod modules;
 pub mod packs;
+pub mod patches;
 pub mod paths;
 pub mod play;
 pub mod process;

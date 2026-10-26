@@ -213,9 +213,13 @@ pub async fn install_engine(
         }
     }
 
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
     let part = dirs
         .engines()
-        .join(format!("{}.zip.part", resolved.version));
+        .join(format!("{}.zip.{}-{}.part", resolved.version, std::process::id(), nanos));
     let result = download_and_check(client, &resolved, &want_sha, key, &part, progress).await;
     if let Err(e) = result {
         let _ = std::fs::remove_file(&part);
@@ -223,7 +227,17 @@ pub async fn install_engine(
     }
 
     // Move into place; the signature file goes last, it marks the install as complete.
-    std::fs::rename(&part, &zip)?;
+    if !zip.is_file() {
+        if let Err(e) = std::fs::rename(&part, &zip) {
+            if !zip.is_file() {
+                let _ = std::fs::remove_file(&part);
+                return Err(e.into());
+            }
+            let _ = std::fs::remove_file(&part);
+        }
+    } else {
+        let _ = std::fs::remove_file(&part);
+    }
     std::fs::write(&sig, &resolved.sig)?;
     Ok(InstalledEngine {
         version: resolved.version,

@@ -53,6 +53,16 @@ impl DataDirs {
         self.root.join("packs")
     }
 
+    /// Client patches (`.dll` files the player puts here).
+    pub fn patches(&self) -> PathBuf {
+        self.root.join("patches")
+    }
+
+    /// Custom backgrounds / wallpapers uploaded by the player.
+    pub fn backgrounds(&self) -> PathBuf {
+        self.root.join("backgrounds")
+    }
+
     /// The merged overlay of the enabled packs, as handed to the Loader.
     pub fn overlays(&self) -> PathBuf {
         self.root.join("overlays")
@@ -63,7 +73,14 @@ impl DataDirs {
     }
 
     pub fn ensure(&self) -> Result<()> {
-        for dir in [self.engines(), self.modules(), self.logs(), self.packs()] {
+        for dir in [
+            self.engines(),
+            self.modules(),
+            self.logs(),
+            self.packs(),
+            self.patches(),
+            self.backgrounds(),
+        ] {
             std::fs::create_dir_all(dir)?;
         }
         Ok(())

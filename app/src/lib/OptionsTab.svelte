@@ -5,6 +5,7 @@
     errorText,
     type DiagRow,
     type PackRow,
+    type PatchRow,
     type StorageRow,
     type VersionRow,
   } from "./api";
@@ -32,6 +33,7 @@
     void api.getAutostart().then((v) => (autostart = v)).catch(() => {});
     void api.getLinksRegistered().then((v) => (links = v)).catch(() => {});
     void loadPacks();
+    void loadPatches();
     void loadStorage();
   });
 
@@ -109,6 +111,37 @@
     flashTheme(t("opt.custom.imported"));
   }
 
+  // ------------------------------------------------------------ backgrounds
+  let bgFileInput = $state<HTMLInputElement>();
+  let uploadingBg = $state(false);
+  let bgThumbnails = $state<Record<string, string>>({});
+
+  $effect(() => {
+    const list = app.backgrounds;
+    for (const bg of list) {
+      if (!bgThumbnails[bg.id]) {
+        void api.getBackground(bg.id).then((url) => {
+          bgThumbnails = { ...bgThumbnails, [bg.id]: url };
+        }).catch(() => {});
+      }
+    }
+  });
+
+  async function handleBgFile(e: Event) {
+    const input = e.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    if (!file) return;
+    uploadingBg = true;
+    try {
+      await app.uploadBackground(file);
+    } catch {
+      // error shown by app.say
+    } finally {
+      uploadingBg = false;
+      input.value = "";
+    }
+  }
+
   // ------------------------------------------------------------ server list
   const COLUMNS: ["round_time" | "players" | "map" | "mode" | "ping", Key][] = [
     ["round_time", "opt.col.roundTime"],
@@ -151,6 +184,79 @@
     if (i < 0 || j < 0 || j >= list.length) return;
     [list[i], list[j]] = [list[j], list[i]];
     app.updateSettings({ enabled_packs: list });
+  }
+
+  // ------------------------------------------------------------ client patches
+  let patches = $state<PatchRow[]>([]);
+
+  async function loadPatches() {
+    patches = await api.listPatches().catch(() => []);
+  }
+
+  function togglePatch(patch: PatchRow, on: boolean) {
+    if (!s) return;
+    const rest = s.enabled_patches.filter((id) => id !== patch.id);
+    app.updateSettings({ enabled_patches: on ? [...rest, patch.id] : rest });
+  }
+
+  // ------------------------------------------------------------ server hubs
+  const OFFICIAL_HUB = "https://hub.spacestation14.com/";
+  let newHubUrl = $state("");
+  let hubError = $state<string | null>(null);
+
+  const hubs = $derived(s?.hubs ?? []);
+
+  function isOfficial(url: string) {
+    return url === OFFICIAL_HUB || url === OFFICIAL_HUB.slice(0, -1);
+  }
+
+  function toggleHub(index: number, enabled: boolean) {
+    if (!s) return;
+    const next = s.hubs.map((h, i) => (i === index ? { ...h, enabled } : h));
+    app.updateSettings({ hubs: next });
+    void app.refreshServers();
+  }
+
+  function removeHub(index: number) {
+    if (!s) return;
+    const next = s.hubs.filter((_, i) => i !== index);
+    app.updateSettings({ hubs: next });
+    void app.refreshServers();
+  }
+
+  function addPresetHub(url: string) {
+    if (!s) return;
+    hubError = null;
+    const normalized = url.endsWith("/") ? url : `${url}/`;
+    if (hubs.some((h) => h.url.toLowerCase() === normalized.toLowerCase())) {
+      hubError = t("opt.hubsDuplicate");
+      return;
+    }
+    const next = [...hubs, { url: normalized, enabled: true }];
+    app.updateSettings({ hubs: next });
+    void app.refreshServers();
+  }
+
+  function addHub(e: SubmitEvent) {
+    e.preventDefault();
+    hubError = null;
+    const raw = newHubUrl.trim();
+    if (!raw) return;
+
+    if (!/^https?:\/\/[^\s/$.?#].[^\s]*$/i.test(raw)) {
+      hubError = t("opt.hubsBadUrl");
+      return;
+    }
+    const normalized = raw.endsWith("/") ? raw : `${raw}/`;
+    if (hubs.some((h) => h.url.toLowerCase() === normalized.toLowerCase())) {
+      hubError = t("opt.hubsDuplicate");
+      return;
+    }
+
+    const next = [...hubs, { url: normalized, enabled: true }];
+    app.updateSettings({ hubs: next });
+    void app.refreshServers();
+    newHubUrl = "";
   }
 
   // ------------------------------------------------------------ data
@@ -294,6 +400,80 @@
       app.say(errorText(e));
     }
   }
+
+  let showOptDetails = $state(false);
+
+  function setOptimizationProfile(profile: string) {
+    if (profile === "iskander") {
+      app.updateSettings({
+        opt_profile: "iskander",
+        opt_server_gc: true,
+        opt_fast_lighting: true,
+        opt_unlock_fps: true,
+        opt_high_priority: true,
+      });
+    } else if (profile === "potato") {
+      app.updateSettings({
+        opt_profile: "potato",
+        opt_server_gc: true,
+        opt_fast_lighting: true,
+        opt_unlock_fps: true,
+        opt_high_priority: true,
+      });
+    } else if (profile === "max_fps") {
+      app.updateSettings({
+        opt_profile: "max_fps",
+        opt_server_gc: true,
+        opt_fast_lighting: false,
+        opt_unlock_fps: true,
+        opt_high_priority: true,
+      });
+    } else if (profile === "off" || profile === "none") {
+      app.updateSettings({
+        opt_profile: "off",
+        opt_server_gc: false,
+        opt_fast_lighting: false,
+        opt_unlock_fps: false,
+        opt_high_priority: false,
+      });
+    } else if (profile === "custom") {
+      app.updateSettings({ opt_profile: "custom" });
+      showOptDetails = true;
+    } else {
+      app.updateSettings({
+        opt_profile: "balanced",
+        opt_server_gc: true,
+        opt_fast_lighting: false,
+        opt_unlock_fps: false,
+        opt_high_priority: true,
+      });
+    }
+  }
+
+  function updateOptField(partial: Partial<import("./api").Settings>) {
+    app.updateSettings({
+      ...partial,
+      opt_profile: "custom",
+    });
+  }
+
+  function getProfileDescription(profile: string): string {
+    switch (profile) {
+      case "iskander":
+        return t("opt.profile.iskanderDesc");
+      case "potato":
+        return t("opt.profile.potatoDesc");
+      case "max_fps":
+        return t("opt.profile.max_fpsDesc");
+      case "off":
+      case "none":
+        return t("opt.profile.offDesc");
+      case "custom":
+        return t("opt.profile.customDesc");
+      default:
+        return t("opt.profile.balancedDesc");
+    }
+  }
 </script>
 
 {#if s}
@@ -330,11 +510,185 @@
         <small class="sub">{t("opt.guestHint")}</small>
       </label>
 
-      <Option label={t("opt.compat")} hint={t("opt.compatHint")} checked={s.compat_mode} onchange={(v) => app.updateSettings({ compat_mode: v })} />
-      <Option label={t("opt.minimize")} hint={t("opt.minimizeHint")} checked={s.minimize_on_play} onchange={(v) => app.updateSettings({ minimize_on_play: v })} />
+      <label class="field">
+        <span>{t("opt.autoRefresh")}</span>
+        <select
+          value={s.auto_refresh_interval}
+          onchange={(e) => app.updateSettings({ auto_refresh_interval: Number(e.currentTarget.value) })}
+        >
+          <option value={0}>{t("opt.autoRefreshOff")}</option>
+          <option value={15}>{t("opt.autoRefresh15")}</option>
+          <option value={30}>{t("opt.autoRefresh30")}</option>
+          <option value={60}>{t("opt.autoRefresh60")}</option>
+          <option value={120}>{t("opt.autoRefresh120")}</option>
+        </select>
+      </label>
+
+      <Option
+        label={t("opt.confirmConnect")}
+        hint={t("opt.confirmConnectHint")}
+        checked={s.confirm_connect}
+        onchange={(v) => app.updateSettings({ confirm_connect: v })}
+      />
       <Option label={t("opt.autostart")} hint={t("opt.autostartHint")} checked={autostart} onchange={setAutostart} />
       <Option label={t("opt.links")} hint={t("opt.linksHint")} checked={links} onchange={setLinks} />
-      <Option label={t("opt.ignoreRedial")} hint={t("opt.ignoreRedialHint")} checked={s.ignore_redial} onchange={(v) => app.updateSettings({ ignore_redial: v })} />
+    </section>
+
+    <!-- ------------------------------------------------------------ client -->
+    <section>
+      <h2>{t("opt.client")}</h2>
+      <p class="sub">{t("opt.clientDesc")}</p>
+
+      <label class="field">
+        <span>{t("opt.windowMode")}</span>
+        <select
+          value={s.client_window_mode}
+          onchange={(e) => app.updateSettings({ client_window_mode: e.currentTarget.value })}
+        >
+          <option value="default">{t("opt.windowDefault")}</option>
+          <option value="windowed">{t("opt.windowWindowed")}</option>
+          <option value="fullscreen">{t("opt.windowFullscreen")}</option>
+          <option value="borderless">{t("opt.windowBorderless")}</option>
+        </select>
+      </label>
+
+      <label class="field">
+        <span>{t("opt.uiScale")}</span>
+        <select
+          value={s.client_ui_scale}
+          onchange={(e) => app.updateSettings({ client_ui_scale: e.currentTarget.value })}
+        >
+          <option value="auto">{t("opt.uiScaleAuto")}</option>
+          <option value="0.75">75%</option>
+          <option value="1.0">100%</option>
+          <option value="1.25">125%</option>
+          <option value="1.5">150%</option>
+          <option value="1.75">175%</option>
+          <option value="2.0">200%</option>
+        </select>
+      </label>
+
+      <label class="field">
+        <span>{t("opt.maxFps")}</span>
+        <select
+          value={s.client_max_fps}
+          onchange={(e) => app.updateSettings({ client_max_fps: Number(e.currentTarget.value) })}
+        >
+          <option value={0}>{t("opt.maxFpsUncapped")}</option>
+          <option value={60}>60 FPS</option>
+          <option value={75}>75 FPS</option>
+          <option value={120}>120 FPS</option>
+          <option value={144}>144 FPS</option>
+          <option value={165}>165 FPS</option>
+          <option value={240}>240 FPS</option>
+        </select>
+      </label>
+
+      <Option
+        label={t("opt.muteUnfocused")}
+        hint={t("opt.muteUnfocusedHint")}
+        checked={s.client_mute_unfocused}
+        onchange={(v) => app.updateSettings({ client_mute_unfocused: v })}
+      />
+      <Option
+        label={t("opt.closeOnPlay")}
+        hint={t("opt.closeOnPlayHint")}
+        checked={s.close_on_play}
+        onchange={(v) => app.updateSettings({ close_on_play: v })}
+      />
+      <Option
+        label={t("opt.minimize")}
+        hint={t("opt.minimizeHint")}
+        checked={s.minimize_on_play}
+        onchange={(v) => app.updateSettings({ minimize_on_play: v })}
+      />
+      <Option
+        label={t("opt.compat")}
+        hint={t("opt.compatHint")}
+        checked={s.compat_mode}
+        onchange={(v) => app.updateSettings({ compat_mode: v })}
+      />
+      <Option
+        label={t("opt.discordRpc")}
+        hint={t("opt.discordRpcHint")}
+        checked={s.discord_rpc}
+        onchange={(v) => app.updateSettings({ discord_rpc: v })}
+      />
+      <Option
+        label={t("opt.ignoreRedial")}
+        hint={t("opt.ignoreRedialHint")}
+        checked={s.ignore_redial}
+        onchange={(v) => app.updateSettings({ ignore_redial: v })}
+      />
+      <label class="field">
+        <span>{t("opt.extraArgs")}</span>
+        <input
+          type="text"
+          placeholder={t("opt.extraArgsPlaceholder")}
+          value={s.extra_args}
+          oninput={(e) => app.updateSettings({ extra_args: e.currentTarget.value })}
+        />
+        <small class="sub">{t("opt.extraArgsDesc")}</small>
+      </label>
+    </section>
+
+    <!-- ------------------------------------------------------------ optimization -->
+    <section>
+      <h2>{t("opt.optimization")}</h2>
+      <p class="sub">{t("opt.optProfileDesc")}</p>
+
+      <label class="field">
+        <span>{t("opt.optProfile")}</span>
+        <select
+          value={s.opt_profile}
+          onchange={(e) => setOptimizationProfile(e.currentTarget.value)}
+        >
+          <option value="balanced">{t("opt.profile.balanced")}</option>
+          <option value="max_fps">{t("opt.profile.max_fps")}</option>
+          <option value="potato">{t("opt.profile.potato")}</option>
+          <option value="iskander">{t("opt.profile.iskander")}</option>
+          <option value="off">{t("opt.profile.off")}</option>
+          <option value="custom">{t("opt.profile.custom")}</option>
+        </select>
+        <small class="sub">{getProfileDescription(s.opt_profile)}</small>
+      </label>
+
+      {#if s.opt_profile === "custom" || showOptDetails}
+        <div class="opt-details">
+          <Option
+            label={t("opt.optServerGc")}
+            hint={t("opt.optServerGcHint")}
+            checked={s.opt_server_gc}
+            onchange={(v) => updateOptField({ opt_server_gc: v })}
+          />
+          <Option
+            label={t("opt.optFastLighting")}
+            hint={t("opt.optFastLightingHint")}
+            checked={s.opt_fast_lighting}
+            onchange={(v) => updateOptField({ opt_fast_lighting: v })}
+          />
+          <Option
+            label={t("opt.optUnlockFps")}
+            hint={t("opt.optUnlockFpsHint")}
+            checked={s.opt_unlock_fps}
+            onchange={(v) => updateOptField({ opt_unlock_fps: v })}
+          />
+          <Option
+            label={t("opt.optHighPriority")}
+            hint={t("opt.optHighPriorityHint")}
+            checked={s.opt_high_priority}
+            onchange={(v) => updateOptField({ opt_high_priority: v })}
+          />
+        </div>
+      {/if}
+
+      {#if s.opt_profile !== "custom"}
+        <div class="opt-toggle-row">
+          <button class="btn secondary sm" onclick={() => (showOptDetails = !showOptDetails)}>
+            {showOptDetails ? "▲ " + t("opt.optDetails") : "▼ " + t("opt.optDetails")}
+          </button>
+        </div>
+      {/if}
     </section>
 
     <ErpPromo />
@@ -396,6 +750,131 @@
           <small class="sub">{t("opt.fontCustomHint")}</small>
         {/if}
       </div>
+
+      <div class="field">
+        <span>{t("opt.background")}</span>
+        <div class="bg-mode-row">
+          <button
+            class="btn"
+            class:primary={s.bg_type === "space"}
+            onclick={() => app.updateSettings({ bg_type: "space" })}
+          >
+            {t("opt.bgSpace")}
+          </button>
+          <button
+            class="btn"
+            class:primary={s.bg_type === "custom"}
+            onclick={() => app.updateSettings({ bg_type: "custom" })}
+          >
+            {t("opt.bgCustom")}
+          </button>
+          <button
+            class="btn"
+            class:primary={s.bg_type === "none"}
+            onclick={() => app.updateSettings({ bg_type: "none" })}
+          >
+            {t("opt.bgNone")}
+          </button>
+        </div>
+      </div>
+
+      {#if s.bg_type === "custom" || s.bg_type === "space"}
+        <div class="bg-controls">
+          <label class="field range-field">
+            <span>{t("opt.bgDim", { value: s.bg_dim })}</span>
+            <input
+              type="range"
+              min="0"
+              max="90"
+              step="5"
+              value={s.bg_dim}
+              oninput={(e) => app.updateSettings({ bg_dim: Number(e.currentTarget.value) })}
+            />
+          </label>
+          {#if s.bg_type === "custom"}
+            <label class="field range-field">
+              <span>{t("opt.bgBlur", { value: s.bg_blur })}</span>
+              <input
+                type="range"
+                min="0"
+                max="25"
+                step="1"
+                value={s.bg_blur}
+                oninput={(e) => app.updateSettings({ bg_blur: Number(e.currentTarget.value) })}
+              />
+            </label>
+          {/if}
+        </div>
+      {/if}
+
+      {#if s.bg_type === "custom"}
+        <div class="bg-gallery-section">
+          <div class="bg-actions-row">
+            <input
+              type="file"
+              accept="image/png,image/jpeg,image/webp,image/gif"
+              bind:this={bgFileInput}
+              onchange={handleBgFile}
+              style="display: none;"
+            />
+            <button
+              class="btn primary"
+              disabled={uploadingBg}
+              onclick={() => bgFileInput?.click()}
+            >
+              {uploadingBg ? "..." : "+ " + t("opt.bgUpload")}
+            </button>
+            <button class="btn" onclick={() => app.resetBackground()}>
+              ↩ {t("opt.bgReset")}
+            </button>
+            <button class="btn" onclick={() => api.openBackgroundsFolder()}>
+              📁 {t("opt.bgFolder")}
+            </button>
+          </div>
+
+          {#if app.backgrounds.length === 0}
+            <p class="sub small empty-bg-hint">{t("opt.bgEmpty")}</p>
+          {:else}
+            <div class="bg-grid">
+              {#each app.backgrounds as bg (bg.id)}
+                <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+                <div
+                  class="bg-card"
+                  class:active={s.bg_custom_name === bg.id}
+                  onclick={() => app.selectBackground(bg.id)}
+                >
+                  <div
+                    class="bg-thumb"
+                    style:background-image={bgThumbnails[bg.id] ? `url('${bgThumbnails[bg.id]}')` : "none"}
+                  >
+                    {#if !bgThumbnails[bg.id]}
+                      <span class="sub small">...</span>
+                    {/if}
+                    {#if s.bg_custom_name === bg.id}
+                      <span class="active-badge">{t("opt.bgActive")}</span>
+                    {/if}
+                  </div>
+                  <div class="bg-card-info">
+                    <span class="bg-card-name" title={bg.name}>{bg.name}</span>
+                    <span class="sub small">{formatBytes(bg.file_size)}</span>
+                  </div>
+                  <button
+                    class="btn icon delete-btn"
+                    title={t("opt.bgDelete")}
+                    aria-label={t("opt.bgDelete")}
+                    onclick={(e) => {
+                      e.stopPropagation();
+                      void app.deleteBackground(bg.id);
+                    }}
+                  >
+                    ✕
+                  </button>
+                </div>
+              {/each}
+            </div>
+          {/if}
+        </div>
+      {/if}
     </section>
 
     <!-- ------------------------------------------------------------ server list -->
@@ -406,6 +885,73 @@
           <Option label={t(label)} checked={s.columns[key]} onchange={(v) => setColumn(key, v)} />
         {/each}
       </div>
+    </section>
+
+    <!-- ------------------------------------------------------------ server hubs -->
+    <section>
+      <h2>{t("opt.hubs")}</h2>
+      <p class="sub">{t("opt.hubsDesc")}</p>
+
+      <ul class="hubs">
+        {#each hubs as hub, i (hub.url)}
+          <li>
+            <input
+              type="checkbox"
+              checked={hub.enabled}
+              onchange={(e) => toggleHub(i, e.currentTarget.checked)}
+              aria-label={hub.url}
+            />
+            <div class="grow">
+              <span class="hub-url">{hub.url}</span>
+              {#if isOfficial(hub.url)}
+                <span class="sub small">({t("opt.hubsDefault")})</span>
+              {/if}
+            </div>
+            {#if !isOfficial(hub.url)}
+              <button
+                class="btn icon"
+                title={t("opt.hubsRemove")}
+                aria-label={t("opt.hubsRemove")}
+                onclick={() => removeHub(i)}
+              >
+                ✕
+              </button>
+            {/if}
+          </li>
+        {/each}
+      </ul>
+
+      <form class="hub-form" onsubmit={addHub}>
+        <input
+          type="text"
+          placeholder={t("opt.hubsPlaceholder")}
+          bind:value={newHubUrl}
+          spellcheck="false"
+        />
+        <button class="btn" type="submit" disabled={!newHubUrl.trim()}>
+          {t("opt.hubsAdd")}
+        </button>
+      </form>
+      <div class="hub-presets">
+        <span class="sub small">{t("opt.hubsPresets")}:</span>
+        <button
+          type="button"
+          class="btn small"
+          onclick={() => addPresetHub("https://hub.corvax.fun/")}
+        >
+          {t("opt.hubsCorvax")}
+        </button>
+        <button
+          type="button"
+          class="btn small"
+          onclick={() => addPresetHub("https://hub.spacestories.club/")}
+        >
+          {t("opt.hubsSpaceStories")}
+        </button>
+      </div>
+      {#if hubError}
+        <div class="error small">{hubError}</div>
+      {/if}
     </section>
 
     <!-- ------------------------------------------------------------ text packs -->
@@ -452,6 +998,40 @@
       <div class="row">
         <button class="btn open-r" onclick={() => api.openPacksFolder()}>{t("opt.packsOpen")}</button>
         <button class="btn open-l" onclick={loadPacks}>{t("opt.packsRefresh")}</button>
+      </div>
+    </section>
+
+    <!-- ------------------------------------------------------------ client patches -->
+    <section>
+      <h2>{t("opt.patches")}</h2>
+      <p class="sub">{t("opt.patchesDesc")}</p>
+
+      {#if patches.length === 0}
+        <p class="sub">{t("opt.patchesEmpty")}</p>
+      {:else}
+        <ul class="patches-list">
+          {#each patches as patch (patch.id)}
+            <li>
+              <input
+                type="checkbox"
+                checked={s.enabled_patches.includes(patch.id)}
+                onchange={(e) => togglePatch(patch, e.currentTarget.checked)}
+                aria-label={patch.name}
+              />
+              <div class="grow">
+                <div>
+                  <b>{patch.name}</b>
+                  <span class="sub small">· {formatBytes(patch.file_size)}</span>
+                </div>
+                <div class="sub small code">{patch.id}</div>
+              </div>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+      <div class="row">
+        <button class="btn open-r" onclick={() => api.openPatchesFolder()}>{t("opt.patchesOpen")}</button>
+        <button class="btn open-l" onclick={loadPatches}>{t("opt.patchesRefresh")}</button>
       </div>
     </section>
 
@@ -697,6 +1277,64 @@
   .packs li.bad {
     border-color: color-mix(in srgb, var(--bad) 60%, transparent);
   }
+  .patches-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .patches-list li {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    background: var(--tint);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+  }
+  .code {
+    font-family: "Cascadia Mono", Consolas, monospace;
+  }
+  .hubs {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .hubs li {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    background: var(--tint);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+  }
+  .hub-form {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+  .hub-presets {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 6px;
+    flex-wrap: wrap;
+  }
+  .hub-form input[type="text"] {
+    flex: 1;
+    min-width: 200px;
+  }
+  .hub-url {
+    word-break: break-all;
+    font-family: "Cascadia Mono", Consolas, monospace;
+    font-size: 13px;
+  }
   .version {
     cursor: default;
     width: max-content;
@@ -738,5 +1376,141 @@
   .detail {
     user-select: text;
     word-break: break-all;
+  }
+  .opt-details {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-top: 10px;
+    padding: 12px;
+    background: var(--tint);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+  }
+  .opt-toggle-row {
+    margin-top: 6px;
+  }
+  .bg-mode-row {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-top: 4px;
+  }
+  .bg-controls {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 12px 14px;
+    background: var(--tint);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+  }
+  .range-field {
+    width: 100%;
+  }
+  .range-field input[type="range"] {
+    width: 100%;
+    max-width: 320px;
+    cursor: pointer;
+    accent-color: var(--accent);
+  }
+  .bg-gallery-section {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    margin-top: 4px;
+  }
+  .bg-actions-row {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+  .empty-bg-hint {
+    padding: 8px 0;
+  }
+  .bg-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: 12px;
+    margin-top: 6px;
+  }
+  .bg-card {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 8px;
+    background: var(--tint);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: border-color 0.15s, background 0.15s;
+  }
+  .bg-card:hover {
+    background: var(--tint-hover);
+    border-color: var(--border-high);
+  }
+  .bg-card.active {
+    border-color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 12%, var(--tint));
+  }
+  .bg-thumb {
+    position: relative;
+    width: 100%;
+    height: 100px;
+    background-size: cover;
+    background-position: center;
+    border-radius: 4px;
+    background-color: var(--ctrl-mid);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+  }
+  .active-badge {
+    position: absolute;
+    top: 6px;
+    left: 6px;
+    background: var(--accent);
+    color: var(--on-accent);
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 6px;
+    border-radius: 4px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+  .bg-card-info {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+  .bg-card-name {
+    font-size: 13px;
+    font-weight: 500;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .delete-btn {
+    position: absolute;
+    top: 12px;
+    right: 12px;
+    min-height: 24px;
+    height: 24px;
+    width: 24px;
+    padding: 0;
+    font-size: 11px;
+    background: rgba(0, 0, 0, 0.65);
+    color: #fff;
+    border-radius: 4px;
+    border: none;
+    opacity: 0.8;
+  }
+  .delete-btn:hover {
+    opacity: 1;
+    background: var(--bad);
   }
 </style>

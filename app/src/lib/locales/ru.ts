@@ -4,6 +4,7 @@ export const ru = {
   "header.discord": "Discord",
   "header.website": "Сайт",
   "header.version": "Версия {version}",
+  "header.runningCount": "В игре: {count}",
 
   "acct.none": "Аккаунт не выбран",
   "acct.notLoggedIn": "Вход не выполнен",
@@ -37,6 +38,7 @@ export const ru = {
   "col.time": "Раунд",
   "col.players": "Игроки",
   "server.connect": "Подключиться",
+  "server.running": "В игре",
   "server.addFavorite": "Добавить в избранное",
   "server.removeFavorite": "Убрать из избранного",
   "server.raise": "Поднять наверх",
@@ -53,6 +55,13 @@ export const ru = {
   "server.ping": "{ms} мс",
   "server.noPing": "—",
   "server.favoriteMark": "Избранное",
+  "server.note": "Заметка",
+  "server.notePlaceholder": "Напишите личную заметку к серверу…",
+  "server.addNote": "Добавить заметку",
+  "server.editNote": "Редактировать",
+  "server.deleteNote": "Удалить",
+  "server.saveNote": "Сохранить",
+  "server.cancelNote": "Отмена",
 
   "run.lobby": "Лобби",
   "run.ended": "Конец раунда",
@@ -165,6 +174,9 @@ export const ru = {
   "opt.compat": "Режим совместимости",
   "opt.compatHint":
     "Игра будет использовать другой графический режим (GLES2), который меньше подвержен ошибкам драйверов. Попробуйте, если есть проблемы с графикой или вылеты.",
+  "opt.discordRpc": "Discord Rich Presence",
+  "opt.discordRpcHint":
+    "Показывать статус игры и название сервера в вашем профиле Discord.",
   "opt.minimize": "Сворачивать лаунчер, пока идёт игра",
   "opt.minimizeHint": "После закрытия игры окно вернётся.",
   "opt.autostart": "Запускать вместе с Windows",
@@ -175,6 +187,59 @@ export const ru = {
   "opt.ignoreRedial": "Не переподключаться по запросу игры",
   "opt.ignoreRedialHint":
     "Игра не сможет заставить лаунчер подключиться заново (redial), в том числе к другому серверу.",
+  "opt.extraArgs": "Параметры запуска игры",
+  "opt.extraArgsDesc":
+    "Дополнительные аргументы командной строки или cvars (например: --cvar display.vsync=false).",
+  "opt.extraArgsPlaceholder": "--cvar display.vsync=false",
+
+  "opt.optimization": "Оптимизация клиента",
+  "opt.optProfile": "Режим оптимизации",
+  "opt.optProfileDesc":
+    "Улучшает стабильность фреймрейта и производительность клиента игры.",
+  "opt.profile.balanced": "Сбалансированный (рекомендуется)",
+  "opt.profile.balancedDesc":
+    "Оптимизирует память (.NET Server GC + DATAS) и кэш текстур, повышает приоритет процесса. Устраняет микрофризы без изменений в графике.",
+  "opt.profile.max_fps": "Максимальный FPS (мощный ПК / 144+ Гц)",
+  "opt.profile.max_fpsDesc":
+    "Разблокирует частоту кадров, отключает VSync, оптимизирует буфер ввода и выставляет высокий приоритет процесса.",
+  "opt.profile.potato": "Для слабых ПК (максимальная производительность)",
+  "opt.profile.potatoDesc":
+    "Отключает мягкие тени и размытие света, облегчает разрешение освещения. Огромный прирост FPS на слабых видеокартах и ноутбуках.",
+  "opt.profile.iskander": "Искандер (Ультра-оптимизация для слабых ноутбуков)",
+  "opt.profile.iskanderDesc":
+    "Экстремальный профиль: отключение мягких теней и размытия, максимальное сжатие освещения (0.2), лимит теней (8), урезание очередей света, компактный атлас текстур и высокий приоритет Windows.",
+  "opt.profile.off": "Отключено (стандартный клиент)",
+  "opt.profile.offDesc":
+    "Стандартный запуск без дополнительных параметров оптимизации.",
+  "opt.profile.custom": "Пользовательский",
+  "opt.profile.customDesc":
+    "Индивидуальная настройка параметров оптимизации ниже.",
+  "opt.optDetails": "Детальные параметры",
+  "opt.optServerGc": "Оптимизация памяти .NET (Server GC + DATAS)",
+  "opt.optServerGcHint":
+    "Включает многопоточный серверный сборщик мусора с динамическим расходом памяти. Устраняет микрофризы и задержки кадров во время раунда.",
+  "opt.optFastLighting": "Облегченное освещение (без мягких теней)",
+  "opt.optFastLightingHint":
+    "Отключает ресурсоемкие мягкие тени и пост-обработку размытия света. Значительно увеличивает FPS в людных и освещенных отсеках станции.",
+  "opt.optUnlockFps": "Разблокировка частоты кадров (отключение VSync)",
+  "opt.optUnlockFpsHint":
+    "Снимает ограничение частоты кадров и отключает вертикальную синхронизацию для минимальной задержки ввода на мониторах с высокой герцовкой.",
+  "opt.optHighPriority": "Повышенный приоритет процесса",
+  "opt.optHighPriorityHint":
+    "Задает высокий приоритет процессу игры в Windows, предотвращая просадки FPS от браузера, Discord или фоновых служб.",
+
+  "opt.hubs": "Серверные хабы",
+  "opt.hubsDesc":
+    "Источники списка серверов. Можно добавить адреса хабов других сообществ.",
+  "opt.hubsAdd": "Добавить хаб",
+  "opt.hubsPlaceholder": "https://hub.corvax.fun/",
+  "opt.hubsRemove": "Удалить",
+  "opt.hubsBadUrl": "Некорректный адрес хаба (должен начинаться с http:// или https://)",
+  "opt.hubsDuplicate": "Этот хаб уже есть в списке",
+  "opt.hubsDefault": "Официальный хаб",
+  "opt.hubsPresets": "Популярные хабы",
+  "opt.hubsCorvax": "Corvax",
+  "opt.hubsSpaceStories": "Space Stories",
 
   "opt.appearance": "Оформление",
   "opt.theme": "Тема",
@@ -218,6 +283,13 @@ export const ru = {
   "pack.up": "Выше",
   "pack.down": "Ниже",
   "pack.invalid": "Нельзя использовать",
+
+  "opt.patches": "Патчи клиента",
+  "opt.patchesDesc":
+    "Пользовательские .dll сборки (например, переводчик). Загружаются через Harmony при старте игры.",
+  "opt.patchesEmpty": "Патчей нет. Положите .dll в папку патчей.",
+  "opt.patchesOpen": "Открыть папку патчей",
+  "opt.patchesRefresh": "Обновить список",
 
   "opt.storage": "Данные",
   "opt.storageTotal": "Занято: {size}",
@@ -322,6 +394,45 @@ export const ru = {
   "upd.signed": "Каждая версия подписана: файл с неверной подписью не будет установлен.",
 
   "dialog.close": "Закрыть",
+
+  "opt.background": "Фон лаунчера",
+  "opt.bgMode": "Режим фона",
+  "opt.bgSpace": "Космос (стандартный)",
+  "opt.bgCustom": "Своя картинка",
+  "opt.bgNone": "Без фона (цвет темы)",
+  "opt.bgUpload": "Загрузить картинку",
+  "opt.bgReset": "Сбросить на космос",
+  "opt.bgFolder": "Открыть папку с фонами",
+  "opt.bgDim": "Затемнение фона: {value}%",
+  "opt.bgBlur": "Размытие фона: {value}px",
+  "opt.bgActive": "Активен",
+  "opt.bgDelete": "Удалить фон",
+  "opt.bgEmpty": "Нет загруженных фонов. Нажмите «Загрузить картинку» или перетащите файл в папку.",
+  "opt.client": "Клиент игры",
+  "opt.clientDesc": "Параметры запуска и отображения окна клиента Space Station 14.",
+  "opt.windowMode": "Режим окна",
+  "opt.windowDefault": "По умолчанию",
+  "opt.windowWindowed": "В окне",
+  "opt.windowFullscreen": "Полноэкранный",
+  "opt.windowBorderless": "В окне без рамки",
+  "opt.uiScale": "Масштаб интерфейса клиента",
+  "opt.uiScaleAuto": "Авто (DPI системы)",
+  "opt.maxFps": "Ограничение FPS",
+  "opt.maxFpsUncapped": "Без ограничений",
+  "opt.muteUnfocused": "Глушить звук в фоне",
+  "opt.muteUnfocusedHint": "Отключать звук игры при сворачивании или переключении в другое окно.",
+  "opt.closeOnPlay": "Закрывать лаунчер при запуске",
+  "opt.closeOnPlayHint": "Полностью закрывать лаунчер после успешного старта игры для экономии ресурсов.",
+  "opt.autoRefresh": "Автообновление списка серверов",
+  "opt.autoRefreshOff": "Отключено",
+  "opt.autoRefresh15": "Каждые 15 секунд",
+  "opt.autoRefresh30": "Каждые 30 секунд",
+  "opt.autoRefresh60": "Каждую минуту",
+  "opt.autoRefresh120": "Каждые 2 минуты",
+  "opt.confirmConnect": "Подтверждать вход на сервер",
+  "opt.confirmConnectHint": "Показывать карточку сервера перед запуском, предотвращая случайные нажатия.",
+  "confirm.title": "Подключение к серверу",
+  "confirm.prompt": "Вы уверены, что хотите подключиться к этому серверу?",
 } as const;
 
 export type Key = keyof typeof ru;

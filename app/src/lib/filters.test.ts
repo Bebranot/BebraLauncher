@@ -145,6 +145,8 @@ describe("search", () => {
     }
     expect(matchesSearch(s, "kitchen")).toBe(false);
     expect(matchesSearch(s, "   ")).toBe(true);
+    expect(matchesSearch(s, "инженер", "Мейн: Инженер")).toBe(true);
+    expect(matchesSearch(s, "капитан", "Мейн: Инженер")).toBe(false);
   });
 });
 

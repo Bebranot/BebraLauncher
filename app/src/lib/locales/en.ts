@@ -4,6 +4,7 @@ export const en: Dictionary = {
   "header.discord": "Discord",
   "header.website": "Website",
   "header.version": "Version {version}",
+  "header.runningCount": "Playing: {count}",
 
   "acct.none": "No account selected",
   "acct.notLoggedIn": "Not logged in",
@@ -37,6 +38,7 @@ export const en: Dictionary = {
   "col.time": "Round",
   "col.players": "Players",
   "server.connect": "Connect",
+  "server.running": "Playing",
   "server.addFavorite": "Add to favorites",
   "server.removeFavorite": "Remove from favorites",
   "server.raise": "Raise to top",
@@ -53,6 +55,13 @@ export const en: Dictionary = {
   "server.ping": "{ms} ms",
   "server.noPing": "—",
   "server.favoriteMark": "Favorite",
+  "server.note": "Note",
+  "server.notePlaceholder": "Write a personal note for this server…",
+  "server.addNote": "Add note",
+  "server.editNote": "Edit",
+  "server.deleteNote": "Delete",
+  "server.saveNote": "Save",
+  "server.cancelNote": "Cancel",
 
   "run.lobby": "Lobby",
   "run.ended": "Round ended",
@@ -165,6 +174,9 @@ export const en: Dictionary = {
   "opt.compat": "Compatibility mode",
   "opt.compatHint":
     "The game uses another graphics mode (GLES2) that is less prone to driver bugs. Try it if you have graphics problems or crashes.",
+  "opt.discordRpc": "Discord Rich Presence",
+  "opt.discordRpcHint":
+    "Show game status and server name in your Discord profile.",
   "opt.minimize": "Minimize the launcher while the game runs",
   "opt.minimizeHint": "The window comes back when the game closes.",
   "opt.autostart": "Start with Windows",
@@ -175,6 +187,59 @@ export const en: Dictionary = {
   "opt.ignoreRedial": "Do not reconnect when the game asks",
   "opt.ignoreRedialHint":
     "The game cannot make the launcher connect again (redial), including to another server.",
+  "opt.extraArgs": "Game launch arguments",
+  "opt.extraArgsDesc":
+    "Additional command line arguments or cvars (e.g. --cvar display.vsync=false).",
+  "opt.extraArgsPlaceholder": "--cvar display.vsync=false",
+
+  "opt.optimization": "Client Optimization",
+  "opt.optProfile": "Optimization Profile",
+  "opt.optProfileDesc":
+    "Improves framerate stability and game client performance.",
+  "opt.profile.balanced": "Balanced (recommended)",
+  "opt.profile.balancedDesc":
+    "Optimizes memory (.NET Server GC + DATAS) and texture caching, boosts process priority. Eliminates micro-stutters with no visual downgrade.",
+  "opt.profile.max_fps": "Maximum FPS (high-end PC / 144+ Hz)",
+  "opt.profile.max_fpsDesc":
+    "Unlocks frame rate, disables VSync, optimizes input buffers and sets high process priority.",
+  "opt.profile.potato": "Low-End PC (maximum performance)",
+  "opt.profile.potatoDesc":
+    "Disables soft shadows and light blur, scales down light resolution. Massive FPS boost on budget GPUs and laptops.",
+  "opt.profile.iskander": "Iskander (Ultra Performance for Weak Laptops)",
+  "opt.profile.iskanderDesc":
+    "Extreme low-end profile: disables soft shadows and blur, compresses light resolution (0.2), limits shadow casters (8), caps light iterations, compacts texture atlas, and sets high Windows priority.",
+  "opt.profile.off": "Disabled (vanilla client)",
+  "opt.profile.offDesc":
+    "Standard engine launch without additional optimization flags.",
+  "opt.profile.custom": "Custom",
+  "opt.profile.customDesc":
+    "Fine-tune individual optimization options below.",
+  "opt.optDetails": "Detailed Settings",
+  "opt.optServerGc": ".NET Memory Optimization (Server GC + DATAS)",
+  "opt.optServerGcHint":
+    "Enables multithreaded server garbage collection with dynamic memory adaptation to eliminate frame stutters during gameplay.",
+  "opt.optFastLighting": "Fast Lighting (disable soft shadows)",
+  "opt.optFastLightingHint":
+    "Disables GPU-heavy soft shadows and lighting blur. Dramatically improves FPS in crowded station areas.",
+  "opt.optUnlockFps": "Unlock Frame Rate (disable VSync)",
+  "opt.optUnlockFpsHint":
+    "Removes frame rate cap and disables vertical sync for lowest input latency on high-refresh-rate displays.",
+  "opt.optHighPriority": "Elevated Process Priority",
+  "opt.optHighPriorityHint":
+    "Gives the game process elevated CPU priority in Windows to prevent frame drops caused by background applications.",
+
+  "opt.hubs": "Server hubs",
+  "opt.hubsDesc":
+    "Sources for the server list. You can add hub addresses of other communities.",
+  "opt.hubsAdd": "Add hub",
+  "opt.hubsPlaceholder": "https://hub.corvax.fun/",
+  "opt.hubsRemove": "Remove",
+  "opt.hubsBadUrl": "Invalid hub URL (must begin with http:// or https://)",
+  "opt.hubsDuplicate": "This hub is already in the list",
+  "opt.hubsDefault": "Official hub",
+  "opt.hubsPresets": "Popular hubs",
+  "opt.hubsCorvax": "Corvax",
+  "opt.hubsSpaceStories": "Space Stories",
 
   "opt.appearance": "Appearance",
   "opt.theme": "Theme",
@@ -218,6 +283,13 @@ export const en: Dictionary = {
   "pack.up": "Up",
   "pack.down": "Down",
   "pack.invalid": "Cannot be used",
+
+  "opt.patches": "Client patches",
+  "opt.patchesDesc":
+    "User .dll assemblies (e.g. translator). Loaded via Harmony when the game starts.",
+  "opt.patchesEmpty": "No patches. Put .dll files into the patches folder.",
+  "opt.patchesOpen": "Open patches folder",
+  "opt.patchesRefresh": "Refresh list",
 
   "opt.storage": "Data",
   "opt.storageTotal": "Used: {size}",
@@ -322,4 +394,43 @@ export const en: Dictionary = {
   "upd.signed": "Every version is signed: a file with a wrong signature will not be installed.",
 
   "dialog.close": "Close",
+
+  "opt.background": "Launcher background",
+  "opt.bgMode": "Background mode",
+  "opt.bgSpace": "Space (default)",
+  "opt.bgCustom": "Custom image",
+  "opt.bgNone": "Theme color only",
+  "opt.bgUpload": "Upload image",
+  "opt.bgReset": "Reset to space",
+  "opt.bgFolder": "Open backgrounds folder",
+  "opt.bgDim": "Background dimming: {value}%",
+  "opt.bgBlur": "Background blur: {value}px",
+  "opt.bgActive": "Active",
+  "opt.bgDelete": "Delete background",
+  "opt.bgEmpty": "No uploaded backgrounds. Click \"Upload image\" or drop files into the folder.",
+  "opt.client": "Game client",
+  "opt.clientDesc": "Launch options and window display for Space Station 14.",
+  "opt.windowMode": "Window mode",
+  "opt.windowDefault": "Default",
+  "opt.windowWindowed": "Windowed",
+  "opt.windowFullscreen": "Fullscreen",
+  "opt.windowBorderless": "Borderless windowed",
+  "opt.uiScale": "Client UI scale",
+  "opt.uiScaleAuto": "Auto (System DPI)",
+  "opt.maxFps": "FPS limit",
+  "opt.maxFpsUncapped": "Uncapped",
+  "opt.muteUnfocused": "Mute when unfocused",
+  "opt.muteUnfocusedHint": "Mute game audio when minimized or alt-tabbed to another application.",
+  "opt.closeOnPlay": "Close launcher on start",
+  "opt.closeOnPlayHint": "Close the launcher process after the game starts to save system resources.",
+  "opt.autoRefresh": "Server list auto-refresh",
+  "opt.autoRefreshOff": "Disabled",
+  "opt.autoRefresh15": "Every 15 seconds",
+  "opt.autoRefresh30": "Every 30 seconds",
+  "opt.autoRefresh60": "Every minute",
+  "opt.autoRefresh120": "Every 2 minutes",
+  "opt.confirmConnect": "Confirm server join",
+  "opt.confirmConnectHint": "Show a confirmation card before launching to prevent accidental joins.",
+  "confirm.title": "Connect to server",
+  "confirm.prompt": "Are you sure you want to connect to this server?",
 };

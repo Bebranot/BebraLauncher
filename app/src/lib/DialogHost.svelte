@@ -1,5 +1,6 @@
 <script lang="ts">
   import AddFavoriteDialog from "./AddFavoriteDialog.svelte";
+  import ConfirmConnectDialog from "./ConfirmConnectDialog.svelte";
   import DirectConnectDialog from "./DirectConnectDialog.svelte";
   import LoginDialog from "./LoginDialog.svelte";
   import { app } from "./store.svelte";
@@ -11,6 +12,8 @@
   <DirectConnectDialog onclose={close} />
 {:else if app.dialog?.kind === "addfav"}
   <AddFavoriteDialog onclose={close} />
+{:else if app.dialog?.kind === "confirm_connect"}
+  <ConfirmConnectDialog onclose={close} server={app.dialog.server} />
 {:else if app.dialog?.kind === "login"}
   <LoginDialog onclose={close} relogin={app.dialog.relogin} />
 {/if}

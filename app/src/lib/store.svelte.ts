@@ -5,9 +5,11 @@ import {
   errorText,
   type AccountRow,
   type AppInfo,
+  type BackgroundRow,
   type HistoryEntry,
   type NewsItem,
   type PlayEvent,
+  type RunningClient,
   type UpdateStatus,
   type PlayStage,
   type RedialEvent,
@@ -36,6 +38,7 @@ const TABS: Tab[] = ["favorites", "servers", "recent", "news", "updates", "optio
 export type Dialog =
   | { kind: "direct" }
   | { kind: "addfav" }
+  | { kind: "confirm_connect"; server: ServerRow }
   | { kind: "login"; relogin?: { userId: string; username: string } };
 
 export type PlayState =
@@ -151,6 +154,11 @@ class Store {
   /** Current time in milliseconds, updated every second (for round timers). */
   now = $state(Date.now());
 
+  customBgUrl = $state<string | null>(null);
+  backgrounds = $state<BackgroundRow[]>([]);
+  backgroundsLoading = $state(false);
+
+  private autoRefreshTimer: ReturnType<typeof setInterval> | null = null;
   private saveTimer: ReturnType<typeof setTimeout> | undefined;
   private editedSinceSave = false;
   private noticeTimer: ReturnType<typeof setTimeout> | undefined;
@@ -167,7 +175,11 @@ class Store {
   /** The servers of the Servers tab: searched, filtered, sorted. */
   readonly visible = $derived(
     sortServers(
-      this.servers.filter((s) => matchesSearch(s, this.search) && matchesFilters(s, this.filters)),
+      this.servers.filter(
+        (s) =>
+          matchesSearch(s, this.search, this.settings?.server_notes?.[s.address]) &&
+          matchesFilters(s, this.filters),
+      ),
       this.sort,
       this.pings,
     ),
@@ -190,7 +202,13 @@ class Store {
     this.accounts.find((a) => a.user_id === this.selectedAccount) ?? null,
   );
 
-  readonly busy = $derived(this.play.phase === "preparing" || this.play.phase === "running");
+  runningClients = $state<RunningClient[]>([]);
+
+  readonly busy = $derived(this.play.phase === "preparing");
+
+  isRunning(address: string): boolean {
+    return this.runningClients.some((c) => c.address === address);
+  }
 
   /** The row for an address: from the hub, from its own answer, or a bare one. */
   rowFor(address: string, name: string | null = null): ServerRow {
@@ -218,6 +236,7 @@ class Store {
 
     await Promise.all([this.loadInfo(), this.loadSettings(), this.loadAccounts()]);
     this.pickDefaultAccount();
+    void this.loadBackgrounds();
 
     // Something to look at while the hub answers.
     const cached = await api.cachedServers().catch(() => []);
@@ -275,8 +294,94 @@ class Store {
       decor: s?.theme_decor ?? true,
       custom: s?.custom_theme ?? DEFAULT_CUSTOM,
       font: s?.font ?? "",
+      bg_type: s?.bg_type ?? "space",
     });
     i18n.preference = s?.language ?? "auto";
+    void this.loadActiveBackground();
+    this.restartAutoRefresh();
+  }
+
+  async loadBackgrounds() {
+    this.backgroundsLoading = true;
+    try {
+      this.backgrounds = await api.listBackgrounds();
+    } catch {
+      this.backgrounds = [];
+    } finally {
+      this.backgroundsLoading = false;
+    }
+  }
+
+  async loadActiveBackground() {
+    if (this.settings?.bg_type === "custom" && this.settings?.bg_custom_name) {
+      try {
+        this.customBgUrl = await api.getBackground(this.settings.bg_custom_name);
+      } catch {
+        this.customBgUrl = null;
+      }
+    } else {
+      this.customBgUrl = null;
+    }
+  }
+
+  async uploadBackground(file: File): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = async () => {
+        try {
+          const base64 = reader.result as string;
+          const bg = await api.saveBackground(file.name, base64);
+          await this.loadBackgrounds();
+          this.updateSettings({ bg_type: "custom", bg_custom_name: bg.id });
+          resolve();
+        } catch (e) {
+          this.say(errorText(e));
+          reject(e);
+        }
+      };
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(file);
+    });
+  }
+
+  selectBackground(name: string) {
+    this.updateSettings({ bg_type: "custom", bg_custom_name: name });
+  }
+
+  async deleteBackground(name: string) {
+    try {
+      await api.deleteBackground(name);
+      await this.loadBackgrounds();
+      if (this.settings?.bg_custom_name === name) {
+        const remaining = this.backgrounds[0];
+        if (remaining) {
+          this.updateSettings({ bg_custom_name: remaining.id });
+        } else {
+          this.updateSettings({ bg_type: "space", bg_custom_name: null });
+        }
+      }
+    } catch (e) {
+      this.say(errorText(e));
+    }
+  }
+
+  resetBackground() {
+    this.updateSettings({ bg_type: "space" });
+  }
+
+  restartAutoRefresh() {
+    if (this.autoRefreshTimer) {
+      clearInterval(this.autoRefreshTimer);
+      this.autoRefreshTimer = null;
+    }
+    const intervalSec = this.settings?.auto_refresh_interval ?? 0;
+    if (intervalSec > 0) {
+      this.autoRefreshTimer = setInterval(() => {
+        if (document.visibilityState === "visible" && !this.serversLoading && this.tab === "servers") {
+          void this.refreshServers();
+        }
+      }, intervalSec * 1000);
+    }
   }
 
   /**
@@ -409,6 +514,26 @@ class Store {
     return this.history.get(address);
   }
 
+  noteOf(address: string): string {
+    return this.settings?.server_notes?.[address] ?? "";
+  }
+
+  async setServerNote(address: string, note: string) {
+    if (!this.settings) return;
+    const trimmed = note.trim();
+    const updatedNotes = { ...(this.settings.server_notes ?? {}) };
+    if (trimmed) {
+      updatedNotes[address] = trimmed;
+    } else {
+      delete updatedNotes[address];
+    }
+    this.settings = { ...this.settings, server_notes: updatedNotes };
+    const saved = await api.setServerNote(address, trimmed).catch(() => null);
+    if (saved && this.settings) {
+      this.settings = { ...this.settings, server_notes: saved };
+    }
+  }
+
   // ------------------------------------------------------------ details
 
   /** What the server says about itself; asked once per server and run of the launcher. */
@@ -469,8 +594,12 @@ class Store {
   // ------------------------------------------------------------ connecting
 
   /** Connects to a server of the lists. */
-  async connect(server: ServerRow) {
+  async connect(server: ServerRow, bypassConfirm = false) {
     if (this.busy) return;
+    if (this.settings?.confirm_connect && !bypassConfirm) {
+      this.dialog = { kind: "confirm_connect", server };
+      return;
+    }
 
     // Problems we already know about are said at once, in the same box as the others.
     const account = this.selectedAccountRow;
@@ -576,15 +705,29 @@ class Store {
         };
         break;
       case "running":
-        this.play = { phase: "running", playsAs: e.plays_as };
+        this.runningClients = [
+          ...this.runningClients.filter((c) => c.pid !== e.pid),
+          { pid: e.pid, playsAs: e.plays_as, address: e.address },
+        ];
+        this.play = { phase: "idle" };
         this.redial = null;
         // The backend recorded the server and the account for this game.
         void this.loadSettings();
         break;
       case "exited":
+        if (e.pid != null) {
+          this.runningClients = this.runningClients.filter((c) => c.pid !== e.pid);
+        } else {
+          this.runningClients = [];
+        }
         // A clean exit needs no message.
-        this.play =
-          e.code === 0 ? { phase: "idle" } : { phase: "exited", code: e.code, logTail: e.log_tail };
+        if (e.code === 0) {
+          if (this.play.phase !== "preparing") {
+            this.play = { phase: "idle" };
+          }
+        } else {
+          this.play = { phase: "exited", code: e.code, logTail: e.log_tail };
+        }
         // Time played was added when the game closed.
         void this.loadSettings();
         break;

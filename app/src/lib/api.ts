@@ -90,9 +90,15 @@ export interface Columns {
   ping: boolean;
 }
 
+export interface HubSetting {
+  url: string;
+  enabled: boolean;
+}
+
 export interface Settings {
   guest_name: string;
   compat_mode: boolean;
+  discord_rpc: boolean;
   minimize_on_play: boolean;
   theme: string;
   theme_gradient: boolean;
@@ -111,6 +117,39 @@ export interface Settings {
   last_account: string | null;
   favorites: string[];
   history: HistoryEntry[];
+  hubs: HubSetting[];
+  extra_args: string;
+  enabled_patches: string[];
+  opt_profile: string;
+  opt_fast_lighting: boolean;
+  opt_unlock_fps: boolean;
+  opt_high_priority: boolean;
+  opt_server_gc: boolean;
+  bg_type: "space" | "custom" | "none" | string;
+  bg_custom_name: string | null;
+  bg_dim: number;
+  bg_blur: number;
+  client_window_mode: string;
+  client_mute_unfocused: boolean;
+  client_ui_scale: string;
+  client_max_fps: number;
+  close_on_play: boolean;
+  auto_refresh_interval: number;
+  confirm_connect: boolean;
+  server_notes?: Record<string, string>;
+}
+
+export interface BackgroundRow {
+  id: string;
+  name: string;
+  file_size: number;
+}
+
+export interface PatchRow {
+  id: string;
+  name: string;
+  file_size: number;
+  enabled: boolean;
 }
 
 export interface PackRow {
@@ -187,11 +226,17 @@ export interface UpdateStatus {
 
 export type PlayStage = "account" | "info" | "files" | "engine" | "starting";
 
+export interface RunningClient {
+  pid: number;
+  playsAs: string;
+  address?: string;
+}
+
 export type PlayEvent =
   | { kind: "stage"; stage: PlayStage }
   | { kind: "progress"; stage: PlayStage; done: number; total: number; unit: "items" | "bytes" }
-  | { kind: "running"; pid: number; plays_as: string }
-  | { kind: "exited"; code: number | null; log_tail: string[] }
+  | { kind: "running"; pid: number; plays_as: string; address?: string }
+  | { kind: "exited"; pid?: number; code: number | null; log_tail: string[] }
   | { kind: "failed"; code: string; message: string }
   | { kind: "cancelled" }
   | { kind: "preview"; command: string };
@@ -220,6 +265,8 @@ export const api = {
   toggleFavorite: (address: string) => invoke<string[]>("toggle_favorite", { address }),
   addFavorite: (address: string) => invoke<string[]>("add_favorite", { address }),
   raiseFavorite: (address: string) => invoke<string[]>("raise_favorite", { address }),
+  setServerNote: (address: string, note: string) =>
+    invoke<Record<string, string>>("set_server_note", { address, note }),
   play: (address: string, name: string | null, account: string | null) =>
     invoke<void>("play", { address, name, account }),
   launchPreview: (address: string, account: string | null) =>
@@ -233,6 +280,14 @@ export const api = {
   openLogsFolder: () => invoke<void>("open_logs_folder"),
   openPacksFolder: () => invoke<void>("open_packs_folder"),
   listPacks: () => invoke<PackRow[]>("list_packs"),
+  openPatchesFolder: () => invoke<void>("open_patches_folder"),
+  listPatches: () => invoke<PatchRow[]>("list_patches"),
+  openBackgroundsFolder: () => invoke<void>("open_backgrounds_folder"),
+  listBackgrounds: () => invoke<BackgroundRow[]>("list_backgrounds"),
+  saveBackground: (name: string, dataBase64: string) =>
+    invoke<BackgroundRow>("save_background", { name, dataBase64 }),
+  getBackground: (name: string) => invoke<string>("get_background", { name }),
+  deleteBackground: (name: string) => invoke<void>("delete_background", { name }),
   openUrl: (url: string) => invoke<void>("open_url", { url }),
   getAutostart: () => invoke<boolean>("get_autostart"),
   setAutostart: (enabled: boolean) => invoke<boolean>("set_autostart", { enabled }),

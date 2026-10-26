@@ -28,6 +28,10 @@ const CLEARED_ENV: &[&str] = &[
     "SS14_LAUNCHER_PATH",
     "SS14_LOG_CLIENT",
     "DOTNET_gcServer",
+    "DOTNET_GCDynamicAdaptationMode",
+    "DOTNET_gcConcurrent",
+    "DOTNET_TC_QuickJitForLoops",
+    "BEBRA_OPTIMIZE",
     "DOTNET_ROLL_FORWARD",
 ];
 
@@ -61,6 +65,44 @@ pub struct ConnectTarget {
     pub server_address: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcessPriority {
+    #[default]
+    Normal,
+    AboveNormal,
+    High,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct OptimizationConfig {
+    /// Optimization profile: "off", "balanced", "max_fps", "potato", or "custom".
+    pub profile: String,
+    /// Enable .NET Server GC, concurrent mode, and DATAS.
+    pub server_gc: bool,
+    /// Optimize lighting by disabling soft shadows and blur.
+    pub fast_lighting: bool,
+    /// Unlock max FPS and disable VSync.
+    pub unlock_fps: bool,
+    /// Process priority in Windows (High or AboveNormal).
+    pub high_priority: bool,
+    /// Scale of the lighting grid resolution (e.g. 0.35 on potato, None for default).
+    pub light_resolution: Option<f32>,
+}
+
+impl Default for OptimizationConfig {
+    fn default() -> Self {
+        Self {
+            profile: "balanced".into(),
+            server_gc: true,
+            fast_lighting: false,
+            unlock_fps: false,
+            high_priority: true,
+            light_resolution: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct LaunchSpec {
     pub loader_exe: PathBuf,
@@ -83,6 +125,12 @@ pub struct LaunchSpec {
     pub launcher_path: Option<PathBuf>,
     /// Overlay zip of text packs (`SS14_LOADER_OVERLAY_ZIP`); see [`crate::packs`].
     pub overlay_zip: Option<PathBuf>,
+    /// Additional arguments passed to the engine (e.g. custom cvars).
+    pub extra_args: Vec<String>,
+    /// Client patch assemblies (.dll) to load (`SS14_LOADER_PATCHES`).
+    pub patches: Vec<PathBuf>,
+    /// Client performance and optimization configuration.
+    pub optimization: OptimizationConfig,
 }
 
 #[derive(Clone)]
@@ -91,6 +139,7 @@ pub struct LaunchCommand {
     pub args: Vec<String>,
     pub env: Vec<(String, String)>,
     pub env_remove: Vec<String>,
+    pub priority: ProcessPriority,
 }
 
 const SECRET_ENV: &[&str] = &["ROBUST_AUTH_TOKEN"];
@@ -111,6 +160,9 @@ impl LaunchCommand {
             };
             out.push_str(&format!(" {k}={v}"));
         }
+        if self.priority != ProcessPriority::Normal {
+            out.push_str(&format!(" [priority={:?}]", self.priority));
+        }
         out
     }
 }
@@ -124,6 +176,39 @@ impl std::fmt::Debug for LaunchCommand {
 /// `ROBUST_MODULE_<NAME>`: upper case, dots become underscores.
 fn module_env_name(module: &str) -> String {
     format!("ROBUST_MODULE_{}", module.to_uppercase().replace('.', "_"))
+}
+
+/// Splits a command-line string into arguments, respecting single and double quotes.
+pub fn split_args(input: &str) -> Vec<String> {
+    let mut args = Vec::new();
+    let mut current = String::new();
+    let mut in_quotes = false;
+    let mut quote_char = ' ';
+
+    for ch in input.chars() {
+        match ch {
+            '"' | '\'' if !in_quotes => {
+                in_quotes = true;
+                quote_char = ch;
+            }
+            c if in_quotes && c == quote_char => {
+                in_quotes = false;
+            }
+            c if !in_quotes && c.is_whitespace() => {
+                if !current.is_empty() {
+                    args.push(current.clone());
+                    current.clear();
+                }
+            }
+            c => {
+                current.push(c);
+            }
+        }
+    }
+    if !current.is_empty() {
+        args.push(current);
+    }
+    args
 }
 
 pub fn build_command(spec: &LaunchSpec) -> LaunchCommand {
@@ -171,6 +256,85 @@ pub fn build_command(spec: &LaunchSpec) -> LaunchCommand {
         }
     }
 
+    // Client optimizations: pass CVars according to profile and settings.
+    let opt = &spec.optimization;
+    let is_iskander = opt.profile == "iskander";
+    if opt.fast_lighting {
+        let shadow_lights = if is_iskander { 8 } else { 16 };
+        args.extend([
+            "--cvar".into(),
+            "light.soft_shadows=false".into(),
+            "--cvar".into(),
+            "light.blur=false".into(),
+            "--cvar".into(),
+            format!("light.max_shadowcasting_lights={shadow_lights}"),
+        ]);
+    }
+    if opt.unlock_fps {
+        args.extend([
+            "--cvar".into(),
+            "display.vsync=false".into(),
+            "--cvar".into(),
+            "display.max_fps=0".into(),
+        ]);
+    }
+    if let Some(res) = opt.light_resolution {
+        args.extend(["--cvar".into(), format!("light.resolution_scale={res}")]);
+    }
+    if opt.profile != "off" && opt.profile != "none" {
+        args.extend([
+            "--cvar".into(),
+            "res.prototype_reload_watch=false".into(),
+            "--cvar".into(),
+            "res.texturepreloadingenabled=true".into(),
+            "--cvar".into(),
+            "res.texture_preload_cache=true".into(),
+            "--cvar".into(),
+            "display.gpu_preference=2".into(),
+        ]);
+        if opt.profile == "potato" {
+            args.extend([
+                "--cvar".into(),
+                "res.check_bad_file_extensions=false".into(),
+            ]);
+        }
+        if is_iskander {
+            args.extend([
+                "--cvar".into(),
+                "light.max_light_count=256".into(),
+                "--cvar".into(),
+                "light.max_occluder_count=256".into(),
+                "--cvar".into(),
+                "display.post_shader_render_target_pool_max_size=1048576".into(),
+                "--cvar".into(),
+                "res.rsi_atlas_size=4096".into(),
+                "--cvar".into(),
+                "res.check_bad_file_extensions=false".into(),
+                "--cvar".into(),
+                "res.checkpathcasing=false".into(),
+                "--cvar".into(),
+                "display.force_sync_windows=false".into(),
+                "--cvar".into(),
+                "midi.parallelism=1".into(),
+            ]);
+        }
+        if opt.profile == "max_fps" {
+            args.extend([
+                "--cvar".into(),
+                "display.input_buffer_size=16".into(),
+                "--cvar".into(),
+                "display.force_sync_windows=false".into(),
+            ]);
+        }
+    }
+
+    for extra in &spec.extra_args {
+        let trimmed = extra.trim();
+        if !trimmed.is_empty() {
+            args.push(trimmed.to_string());
+        }
+    }
+
     let mut env: Vec<(String, String)> = Vec::new();
     if let Some(a) = &spec.auth {
         env.push(("ROBUST_AUTH_TOKEN".into(), a.token.clone()));
@@ -180,6 +344,15 @@ pub fn build_command(spec: &LaunchSpec) -> LaunchCommand {
     }
     if let Some(zip) = &spec.overlay_zip {
         env.push(("SS14_LOADER_OVERLAY_ZIP".into(), zip.display().to_string()));
+    }
+    if !spec.patches.is_empty() {
+        let joined = spec
+            .patches
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+            .join(";");
+        env.push(("SS14_LOADER_PATCHES".into(), joined));
     }
     if let Some(path) = &spec.launcher_path {
         env.push(("SS14_LAUNCHER_PATH".into(), path.display().to_string()));
@@ -200,9 +373,26 @@ pub fn build_command(spec: &LaunchSpec) -> LaunchCommand {
     env.push(("DOTNET_TieredPGO".into(), "1".into()));
     env.push(("DOTNET_ReadyToRun".into(), "0".into()));
     env.push(("DOTNET_MULTILEVEL_LOOKUP".into(), "0".into()));
+    if opt.server_gc {
+        env.push(("DOTNET_gcServer".into(), "1".into()));
+        env.push(("DOTNET_GCDynamicAdaptationMode".into(), "1".into()));
+        env.push(("DOTNET_gcConcurrent".into(), "1".into()));
+        env.push(("DOTNET_TC_QuickJitForLoops".into(), "1".into()));
+        env.push(("BEBRA_OPTIMIZE".into(), "1".into()));
+    }
     if let Some(root) = &spec.dotnet_root {
         env.push(("DOTNET_ROOT".into(), root.display().to_string()));
     }
+
+    let priority = if opt.high_priority {
+        if opt.profile == "max_fps" || opt.profile == "potato" || opt.profile == "iskander" {
+            ProcessPriority::High
+        } else {
+            ProcessPriority::AboveNormal
+        }
+    } else {
+        ProcessPriority::Normal
+    };
 
     let env_remove = CLEARED_ENV
         .iter()
@@ -215,6 +405,7 @@ pub fn build_command(spec: &LaunchSpec) -> LaunchCommand {
         args,
         env,
         env_remove,
+        priority,
     }
 }
 
@@ -278,6 +469,18 @@ pub fn spawn(cmd: &LaunchCommand, stdout_log: &Path, stderr_log: &Path) -> Resul
         .stdin(Stdio::null())
         .stdout(out)
         .stderr(err);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let flags = match cmd.priority {
+            ProcessPriority::Normal => 0,
+            ProcessPriority::AboveNormal => 0x00008000,
+            ProcessPriority::High => 0x00000080,
+        };
+        if flags != 0 {
+            c.creation_flags(flags);
+        }
+    }
     for name in &cmd.env_remove {
         c.env_remove(name);
     }
@@ -334,6 +537,16 @@ mod tests {
             compat_mode: false,
             launcher_path: None,
             overlay_zip: None,
+            extra_args: vec![],
+            patches: vec![],
+            optimization: OptimizationConfig {
+                profile: "off".into(),
+                server_gc: false,
+                fast_lighting: false,
+                unlock_fps: false,
+                high_priority: false,
+                light_resolution: None,
+            },
         }
     }
 
@@ -592,6 +805,7 @@ mod tests {
             ],
             env: vec![("MY_TEST_VAR".into(), "world".into())],
             env_remove: vec!["ROBUST_AUTH_TOKEN".into()],
+            priority: ProcessPriority::Normal,
         };
         std::env::set_var("ROBUST_AUTH_TOKEN", "should-not-reach-the-child");
         let status = spawn(&cmd, &out, &err).unwrap().wait().unwrap();
@@ -612,8 +826,138 @@ mod tests {
             args: vec![],
             env: vec![],
             env_remove: vec![],
+            priority: ProcessPriority::Normal,
         };
         let err = spawn(&cmd, &tmp.path().join("o"), &tmp.path().join("e")).unwrap_err();
         assert!(err.to_string().contains("failed to start"));
+    }
+
+    #[test]
+    fn split_args_handles_whitespace_and_quotes() {
+        assert_eq!(
+            split_args("--cvar display.vsync=false --cvar gfx.threads=4"),
+            vec!["--cvar", "display.vsync=false", "--cvar", "gfx.threads=4"]
+        );
+        assert_eq!(
+            split_args(r#"--cvar "net.predict=false" --cvar 'audio.vol=1.0' plain"#),
+            vec![
+                "--cvar",
+                "net.predict=false",
+                "--cvar",
+                "audio.vol=1.0",
+                "plain"
+            ]
+        );
+        assert_eq!(split_args("   "), Vec::<String>::new());
+    }
+
+    #[test]
+    fn extra_args_appended_to_command() {
+        let mut s = spec();
+        s.extra_args = vec!["--cvar".into(), "display.vsync=false".into()];
+        let cmd = build_command(&s);
+        assert!(cmd.args.contains(&"--cvar".to_string()));
+        assert!(cmd.args.contains(&"display.vsync=false".to_string()));
+    }
+
+    #[test]
+    fn patches_set_loader_env() {
+        let mut s = spec();
+        s.patches = vec![
+            PathBuf::from(r"C:\patches\A.dll"),
+            PathBuf::from(r"C:\patches\B.dll"),
+        ];
+        let cmd = build_command(&s);
+        let val = env_of(&cmd, "SS14_LOADER_PATCHES").unwrap();
+        assert!(val.contains(r"C:\patches\A.dll;C:\patches\B.dll"));
+    }
+
+    #[test]
+    fn optimization_balanced_profile_adds_cvars_and_server_gc() {
+        let mut s = spec();
+        s.optimization = OptimizationConfig {
+            profile: "balanced".into(),
+            server_gc: true,
+            fast_lighting: false,
+            unlock_fps: false,
+            high_priority: true,
+            light_resolution: None,
+        };
+        let cmd = build_command(&s);
+        assert_eq!(cmd.priority, ProcessPriority::AboveNormal);
+        assert_eq!(env_of(&cmd, "DOTNET_gcServer").as_deref(), Some("1"));
+        assert_eq!(
+            env_of(&cmd, "DOTNET_GCDynamicAdaptationMode").as_deref(),
+            Some("1")
+        );
+        assert_eq!(env_of(&cmd, "BEBRA_OPTIMIZE").as_deref(), Some("1"));
+        assert!(cmd.args.contains(&"res.prototype_reload_watch=false".to_string()));
+        assert!(cmd.args.contains(&"res.texturepreloadingenabled=true".to_string()));
+        assert!(cmd.args.contains(&"res.texture_preload_cache=true".to_string()));
+    }
+
+    #[test]
+    fn optimization_potato_profile_adds_fast_lighting_and_low_res() {
+        let mut s = spec();
+        s.optimization = OptimizationConfig {
+            profile: "potato".into(),
+            server_gc: true,
+            fast_lighting: true,
+            unlock_fps: true,
+            high_priority: true,
+            light_resolution: Some(0.35),
+        };
+        let cmd = build_command(&s);
+        assert_eq!(cmd.priority, ProcessPriority::High);
+        assert!(cmd.args.contains(&"light.soft_shadows=false".to_string()));
+        assert!(cmd.args.contains(&"light.blur=false".to_string()));
+        assert!(cmd.args.contains(&"light.resolution_scale=0.35".to_string()));
+        assert!(cmd.args.contains(&"display.vsync=false".to_string()));
+        assert!(cmd.args.contains(&"display.max_fps=0".to_string()));
+        assert!(cmd.args.contains(&"res.check_bad_file_extensions=false".to_string()));
+    }
+
+    #[test]
+    fn optimization_max_fps_profile_unlocks_fps_and_high_priority() {
+        let mut s = spec();
+        s.optimization = OptimizationConfig {
+            profile: "max_fps".into(),
+            server_gc: true,
+            fast_lighting: false,
+            unlock_fps: true,
+            high_priority: true,
+            light_resolution: None,
+        };
+        let cmd = build_command(&s);
+        assert_eq!(cmd.priority, ProcessPriority::High);
+        assert!(cmd.args.contains(&"display.vsync=false".to_string()));
+        assert!(cmd.args.contains(&"display.max_fps=0".to_string()));
+        assert!(cmd.args.contains(&"display.input_buffer_size=16".to_string()));
+    }
+
+    #[test]
+    fn optimization_iskander_profile_ultra_optimizations() {
+        let mut s = spec();
+        s.optimization = OptimizationConfig {
+            profile: "iskander".into(),
+            server_gc: true,
+            fast_lighting: true,
+            unlock_fps: true,
+            high_priority: true,
+            light_resolution: Some(0.2),
+        };
+        let cmd = build_command(&s);
+        assert_eq!(cmd.priority, ProcessPriority::High);
+        assert!(cmd.args.contains(&"light.soft_shadows=false".to_string()));
+        assert!(cmd.args.contains(&"light.blur=false".to_string()));
+        assert!(cmd.args.contains(&"light.resolution_scale=0.2".to_string()));
+        assert!(cmd.args.contains(&"light.max_shadowcasting_lights=8".to_string()));
+        assert!(cmd.args.contains(&"light.max_light_count=256".to_string()));
+        assert!(cmd.args.contains(&"light.max_occluder_count=256".to_string()));
+        assert!(cmd.args.contains(&"res.rsi_atlas_size=4096".to_string()));
+        assert!(cmd.args.contains(&"midi.parallelism=1".to_string()));
+        assert!(cmd.args.contains(&"display.post_shader_render_target_pool_max_size=1048576".to_string()));
+        assert_eq!(env_of(&cmd, "DOTNET_gcServer").as_deref(), Some("1"));
+        assert_eq!(env_of(&cmd, "BEBRA_OPTIMIZE").as_deref(), Some("1"));
     }
 }
