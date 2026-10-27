@@ -59,6 +59,8 @@ pub struct ServerStatus {
     pub round_id: Option<i64>,
     #[serde(default)]
     pub panic_bunker: Option<bool>,
+    #[serde(default)]
+    pub auth_methods: Option<Vec<String>>,
 }
 
 impl ServerStatus {
@@ -87,6 +89,8 @@ pub struct AuthInfo {
     pub mode: AuthMode,
     /// Base64 libsodium sealed-box key, passed through to the client.
     pub public_key: String,
+    #[serde(default)]
+    pub login_urls: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -111,6 +115,8 @@ pub struct BuildInfo {
     pub manifest_hash: Option<String>,
     #[serde(default)]
     pub acz: bool,
+    #[serde(default)]
+    pub engine_type: Option<String>,
 }
 
 fn non_empty(s: &Option<String>) -> Option<&str> {
@@ -118,6 +124,12 @@ fn non_empty(s: &Option<String>) -> Option<&str> {
 }
 
 impl BuildInfo {
+    pub fn engine_type(&self) -> &str {
+        match self.engine_type.as_deref() {
+            Some(s) if !s.trim().is_empty() => s.trim(),
+            _ => "Robust",
+        }
+    }
     pub fn download_url(&self) -> Option<&str> {
         non_empty(&self.download_url)
     }
@@ -246,9 +258,74 @@ pub async fn fetch_info_preview(client: &Client, addr: &ServerAddr) -> Result<Se
     get_json(client, &url, STATUS_TIMEOUT).await
 }
 
+/// Extracts common tags from the server name if they are not already present in `existing_tags`.
+pub fn infer_tags(name: &str, existing_tags: &[String]) -> Vec<String> {
+    if existing_tags.iter().any(|t| t == "no_tag_infer") {
+        return Vec::new();
+    }
+
+    let mut added = Vec::new();
+    let lower_name = name.to_lowercase();
+
+    let has_lang = existing_tags.iter().any(|t| t.starts_with("lang:"));
+    if !has_lang {
+        if lower_name.contains("[ru]") || lower_name.contains("[rus]") || lower_name.contains("[ру]") || lower_name.contains(" ru ") {
+            added.push("lang:ru".to_string());
+        } else if lower_name.contains("[en]") || lower_name.contains("[eng]") || lower_name.contains(" en ") {
+            added.push("lang:en".to_string());
+        }
+    }
+
+    let has_18 = existing_tags.iter().any(|t| t == "18+");
+    if !has_18 && (lower_name.contains("18+") || lower_name.contains("+18") || lower_name.contains("[erp]")) {
+        added.push("18+".to_string());
+    }
+
+    let has_rp = existing_tags.iter().any(|t| t.starts_with("rp:"));
+    if !has_rp {
+        if lower_name.contains("[hrp]") || lower_name.contains("[hrp+]") || lower_name.contains(" hrp ") {
+            added.push("rp:high".to_string());
+        } else if lower_name.contains("[mrp]") || lower_name.contains("[mrp+]") || lower_name.contains(" mrp ") {
+            added.push("rp:med".to_string());
+        } else if lower_name.contains("[lrp]") || lower_name.contains("[lrp+]") || lower_name.contains(" lrp ") {
+            added.push("rp:low".to_string());
+        } else if lower_name.contains("[nrp]") || lower_name.contains("[nrp+]") || lower_name.contains(" nrp ") {
+            added.push("rp:none".to_string());
+        }
+    }
+
+    added
+}
+
+impl ServerStatus {
+    pub fn all_tags(&self) -> Vec<String> {
+        let mut tags = self.tags.clone();
+        if let Some(ref name) = self.name {
+            for tag in infer_tags(name, &tags) {
+                if !tags.contains(&tag) {
+                    tags.push(tag);
+                }
+            }
+        }
+        tags
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tag_inference() {
+        let existing = vec!["region:ru".to_string()];
+        let inferred = infer_tags("[MRP] [RU] [18+] Station", &existing);
+        assert!(inferred.contains(&"rp:med".to_string()));
+        assert!(inferred.contains(&"lang:ru".to_string()));
+        assert!(inferred.contains(&"18+".to_string()));
+
+        let with_no_infer = vec!["no_tag_infer".to_string()];
+        assert!(infer_tags("[MRP] [RU]", &with_no_infer).is_empty());
+    }
 
     #[test]
     fn status_from_live_hub_entry() {

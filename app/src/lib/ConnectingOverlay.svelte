@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import { api } from "./api";
   import { formatBytes, stageText } from "./format";
   import { hasKey, t, type Key } from "./i18n.svelte";
@@ -22,6 +23,15 @@
     const base = t(hasKey(key) ? (key as Key) : "fail.other");
     return code === "account_expired" && detail ? `${detail}: ${base}` : base;
   }
+
+  let flavorIndex = $state(0);
+  $effect(() => {
+    if (preparing) {
+      untrack(() => {
+        flavorIndex = Math.floor(Math.random() * 8);
+      });
+    }
+  });
 </script>
 
 {#if visible}
@@ -55,6 +65,7 @@
             </span>
           {/if}
         </div>
+        <div class="flavor-tip sub">{t(`conn.flavor.${flavorIndex}` as Key)}</div>
       {:else if play.phase === "failed"}
         <h2>{t("conn.title")}</h2>
         <p class="status error">{failText(play.code, play.message)}</p>
@@ -158,5 +169,13 @@
     font-size: 12px;
     white-space: pre-wrap;
     word-break: break-all;
+  }
+  .flavor-tip {
+    margin-top: 6px;
+    font-size: 12px;
+    font-style: italic;
+    text-align: center;
+    opacity: 0.8;
+    line-height: 1.4;
   }
 </style>

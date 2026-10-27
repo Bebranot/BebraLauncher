@@ -18,6 +18,42 @@
 
   let stars: Star[] = [];
   const STAR_COLORS = ["#ffffff", "#dbeafe", "#e0e7ff", "#fef3c7", "#cffafe"];
+  let staticBgCanvas: HTMLCanvasElement | null = null;
+  let lastRenderTime = 0;
+  const FRAME_INTERVAL = 1000 / 48; // ~48 FPS: visually smooth, avoids idle GPU drain
+
+  function updateStaticBg(width: number, height: number) {
+    const off = document.createElement("canvas");
+    off.width = width;
+    off.height = height;
+    const ctx = off.getContext("2d");
+    if (!ctx) return;
+
+    // Deep cosmic space background gradient
+    const bgGrad = ctx.createLinearGradient(0, 0, width, height);
+    bgGrad.addColorStop(0, "#06070b");
+    bgGrad.addColorStop(0.5, "#090c14");
+    bgGrad.addColorStop(1, "#07080f");
+    ctx.fillStyle = bgGrad;
+    ctx.fillRect(0, 0, width, height);
+
+    // Subtle cosmic nebula glow (indigo and cyan dust clouds)
+    const nebula1 = ctx.createRadialGradient(width * 0.25, height * 0.35, 10, width * 0.25, height * 0.35, Math.max(width, height) * 0.65);
+    nebula1.addColorStop(0, "rgba(45, 25, 75, 0.18)");
+    nebula1.addColorStop(0.5, "rgba(25, 35, 65, 0.08)");
+    nebula1.addColorStop(1, "rgba(0, 0, 0, 0)");
+    ctx.fillStyle = nebula1;
+    ctx.fillRect(0, 0, width, height);
+
+    const nebula2 = ctx.createRadialGradient(width * 0.8, height * 0.7, 10, width * 0.8, height * 0.7, Math.max(width, height) * 0.55);
+    nebula2.addColorStop(0, "rgba(16, 52, 75, 0.15)");
+    nebula2.addColorStop(0.6, "rgba(20, 30, 50, 0.05)");
+    nebula2.addColorStop(1, "rgba(0, 0, 0, 0)");
+    ctx.fillStyle = nebula2;
+    ctx.fillRect(0, 0, width, height);
+
+    staticBgCanvas = off;
+  }
 
   function initStars(width: number, height: number) {
     const count = Math.min(180, Math.max(80, Math.floor((width * height) / 9000)));
@@ -45,43 +81,28 @@
     const w = canvas.width;
     const h = canvas.height;
 
-    // Deep cosmic space background gradient
-    const bgGrad = ctx.createLinearGradient(0, 0, w, h);
-    bgGrad.addColorStop(0, "#06070b");
-    bgGrad.addColorStop(0.5, "#090c14");
-    bgGrad.addColorStop(1, "#07080f");
-    ctx.fillStyle = bgGrad;
-    ctx.fillRect(0, 0, w, h);
-
-    // Subtle cosmic nebula glow (indigo and cyan dust clouds)
-    const nebula1 = ctx.createRadialGradient(w * 0.25, h * 0.35, 10, w * 0.25, h * 0.35, Math.max(w, h) * 0.65);
-    nebula1.addColorStop(0, "rgba(45, 25, 75, 0.18)");
-    nebula1.addColorStop(0.5, "rgba(25, 35, 65, 0.08)");
-    nebula1.addColorStop(1, "rgba(0, 0, 0, 0)");
-    ctx.fillStyle = nebula1;
-    ctx.fillRect(0, 0, w, h);
-
-    const nebula2 = ctx.createRadialGradient(w * 0.8, h * 0.7, 10, w * 0.8, h * 0.7, Math.max(w, h) * 0.55);
-    nebula2.addColorStop(0, "rgba(16, 52, 75, 0.15)");
-    nebula2.addColorStop(0.6, "rgba(20, 30, 50, 0.05)");
-    nebula2.addColorStop(1, "rgba(0, 0, 0, 0)");
-    ctx.fillStyle = nebula2;
-    ctx.fillRect(0, 0, w, h);
+    if (staticBgCanvas) {
+      ctx.drawImage(staticBgCanvas, 0, 0);
+    } else {
+      ctx.clearRect(0, 0, w, h);
+    }
 
     // Render stars
     for (const star of stars) {
       const twinkle = Math.sin(time * star.speed + star.phase);
       const alpha = Math.max(0.1, Math.min(1.0, star.baseAlpha + twinkle * 0.3));
 
-      ctx.save();
-      ctx.globalAlpha = alpha;
       ctx.fillStyle = star.color;
 
+      // Fast halo for glowing stars without expensive shadowBlur
       if (star.hasGlow) {
-        ctx.shadowColor = star.color;
-        ctx.shadowBlur = 6;
+        ctx.globalAlpha = alpha * 0.3;
+        ctx.beginPath();
+        ctx.arc(star.x, star.y, star.radius * 2.8, 0, Math.PI * 2);
+        ctx.fill();
       }
 
+      ctx.globalAlpha = alpha;
       ctx.beginPath();
       ctx.arc(star.x, star.y, star.radius, 0, Math.PI * 2);
       ctx.fill();
@@ -98,8 +119,6 @@
         ctx.lineTo(star.x, star.y + spikeLen);
         ctx.stroke();
       }
-
-      ctx.restore();
     }
   }
 
@@ -121,7 +140,10 @@
     if (document.hidden || (app.settings?.bg_type ?? "space") !== "space") {
       return;
     }
-    render(time);
+    if (time - lastRenderTime >= FRAME_INTERVAL) {
+      lastRenderTime = time;
+      render(time);
+    }
     animId = requestAnimationFrame(loop);
   }
 
@@ -138,6 +160,7 @@
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     canvas.width = Math.floor(window.innerWidth * dpr);
     canvas.height = Math.floor(window.innerHeight * dpr);
+    updateStaticBg(canvas.width, canvas.height);
     initStars(canvas.width, canvas.height);
     render(performance.now());
   }

@@ -14,6 +14,7 @@
   import UpdatesTab from "./lib/UpdatesTab.svelte";
   import Toast from "./lib/Toast.svelte";
   import { promo } from "./lib/rofl.svelte";
+  import { t } from "./lib/i18n.svelte";
   import { app } from "./lib/store.svelte";
 
   let searchInput = $state<HTMLInputElement>();
@@ -43,9 +44,18 @@
     if ((e.key === "/" && !typing) || (e.key === "f" && e.ctrlKey)) {
       e.preventDefault();
       void focusSearch();
-    } else if (e.key === "Escape" && el === searchInput) {
-      app.search = "";
-      searchInput?.blur();
+    } else if (e.key === "Escape") {
+      if (el === searchInput || app.search !== "") {
+        app.search = "";
+        searchInput?.blur();
+      } else if (app.filtersOpen) {
+        app.filtersOpen = false;
+      }
+    } else if ((e.key === "F5" || (e.key === "r" && e.ctrlKey)) && !app.serversLoading) {
+      if (app.tab === "servers" || app.tab === "favorites") {
+        e.preventDefault();
+        void app.refreshServers();
+      }
     }
   }
 </script>
@@ -55,6 +65,16 @@
 <SpaceBackground />
 <div class="shell">
   <Header />
+  {#if app.intelWarning}
+    <div class="intel-alert" role="alert">
+      <div class="intel-text">
+        <strong>{t("opt.intelWarningTitle")}</strong>: {t("opt.intelWarningDesc")}
+      </div>
+      <button class="btn small" onclick={() => app.dismissIntelWarning()}>
+        {t("opt.intelWarningDismiss")}
+      </button>
+    </div>
+  {/if}
   <main>
     {#key app.tab}
       <div class="page">
@@ -87,6 +107,22 @@
     display: flex;
     flex-direction: column;
     height: 100%;
+  }
+  .intel-alert {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 16px;
+    background: color-mix(in srgb, var(--warn) 15%, transparent);
+    border-bottom: 1px solid color-mix(in srgb, var(--warn) 40%, transparent);
+    font-size: 13px;
+    color: var(--fg);
+    user-select: text;
+  }
+  .intel-text {
+    flex: 1;
+    line-height: 1.4;
   }
   main {
     flex: 1;

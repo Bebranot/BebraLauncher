@@ -341,6 +341,7 @@ pub fn build_command(spec: &LaunchSpec) -> LaunchCommand {
         env.push(("ROBUST_AUTH_USERID".into(), a.user_id.clone()));
         env.push(("ROBUST_AUTH_PUBKEY".into(), a.server_public_key.clone()));
         env.push(("ROBUST_AUTH_SERVER".into(), a.auth_server_url.clone()));
+        env.push(("ROBUST_AUTH_SERVERS".into(), format!("unset@{}", a.auth_server_url)));
     }
     if let Some(zip) = &spec.overlay_zip {
         env.push(("SS14_LOADER_OVERLAY_ZIP".into(), zip.display().to_string()));
@@ -415,8 +416,19 @@ fn non_empty(s: &str) -> Option<&str> {
 
 /// Writes the public key file the Loader wants as an argument (it reads a path, not a string).
 pub fn ensure_signing_key_file(dirs: &DataDirs) -> Result<PathBuf> {
-    let path = dirs.root().join("signing_key");
-    let pem = crate::signature::official_key_pem();
+    ensure_signing_key_file_for_engine(dirs, "Robust")
+}
+
+pub fn ensure_signing_key_file_for_engine(dirs: &DataDirs, engine: &str) -> Result<PathBuf> {
+    let filename = if engine.eq_ignore_ascii_case("multiverse") {
+        "signing_key_multiverse"
+    } else if engine.eq_ignore_ascii_case("supermatter") {
+        "signing_key_supermatter"
+    } else {
+        "signing_key"
+    };
+    let path = dirs.root().join(filename);
+    let pem = crate::signature::key_pem_for_engine(engine);
     if std::fs::read_to_string(&path).ok().as_deref() != Some(pem) {
         std::fs::create_dir_all(dirs.root())?;
         std::fs::write(&path, pem)?;
@@ -515,6 +527,7 @@ mod tests {
             version: "v1".into(),
             fork_id: "fork".into(),
             acz: false,
+            engine_type: None,
         }
     }
 

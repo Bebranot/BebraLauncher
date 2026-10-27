@@ -1,3 +1,7 @@
+export interface RecommendedHub {
+  url: string;
+  name: string;
+}
 // Typed wrappers over the app's Tauri commands (app/src-tauri/src/commands.rs).
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
@@ -20,6 +24,8 @@ export interface ServerRow {
   run_level: number | null;
   round_start_time: string | null;
   panic_bunker: boolean | null;
+  hub_url?: string | null;
+  auth_methods?: string[] | null;
 }
 
 export interface ServerDetails {
@@ -27,6 +33,8 @@ export interface ServerDetails {
   description: string | null;
   links: { name: string; url: string }[];
   auth: "optional" | "required" | "disabled";
+  login_urls?: string[] | null;
+  engine_type?: string | null;
 }
 
 export interface PingRow {
@@ -137,6 +145,9 @@ export interface Settings {
   auto_refresh_interval: number;
   confirm_connect: boolean;
   server_notes?: Record<string, string>;
+  favorite_names?: Record<string, string>;
+  launcher_ui_scale?: number;
+  dismissed_intel_warning?: boolean;
 }
 
 export interface BackgroundRow {
@@ -265,6 +276,20 @@ export const api = {
   toggleFavorite: (address: string) => invoke<string[]>("toggle_favorite", { address }),
   addFavorite: (address: string) => invoke<string[]>("add_favorite", { address }),
   raiseFavorite: (address: string) => invoke<string[]>("raise_favorite", { address }),
+  moveFavorite: (address: string, delta: number) => invoke<string[]>("move_favorite", { address, delta }),
+  editFavorite: (old_address: string, new_address: string, name?: string | null) =>
+    invoke<string[]>("edit_favorite", {
+      oldAddress: old_address,
+      newAddress: new_address,
+      old_address,
+      new_address,
+      name: name ?? null,
+    }),
+  setFavoriteName: (address: string, name?: string | null) =>
+    invoke<Record<string, string>>("set_favorite_name", { address, name: name ?? null }),
+  checkIntelWarning: () => invoke<boolean>("check_intel_warning"),
+  dismissIntelWarning: () => invoke<void>("dismiss_intel_warning"),
+  getRecommendedHubs: () => invoke<RecommendedHub[]>("get_recommended_hubs"),
   setServerNote: (address: string, note: string) =>
     invoke<Record<string, string>>("set_server_note", { address, note }),
   play: (address: string, name: string | null, account: string | null) =>

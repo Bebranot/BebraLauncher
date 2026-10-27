@@ -253,6 +253,58 @@ pub fn set_links_registered(enabled: bool) -> Result<(), String> {
     Ok(())
 }
 
+
+pub fn read_cpu_name() -> Option<String> {
+    use windows_sys::Win32::System::Registry::HKEY_LOCAL_MACHINE;
+    let subkey = wide(r"HARDWARE\DESCRIPTION\System\CentralProcessor\0");
+    let mut key: HKEY = std::ptr::null_mut();
+    let rc = unsafe { RegOpenKeyExW(HKEY_LOCAL_MACHINE, subkey.as_ptr(), 0, KEY_READ, &mut key) };
+    if rc != ERROR_SUCCESS {
+        return std::env::var("PROCESSOR_IDENTIFIER").ok();
+    }
+    struct RegGuard(HKEY);
+    impl Drop for RegGuard {
+        fn drop(&mut self) {
+            unsafe { RegCloseKey(self.0) };
+        }
+    }
+    let _guard = RegGuard(key);
+
+    let val_name = wide("ProcessorNameString");
+    let mut buf = [0u16; 256];
+    let mut size = (buf.len() * 2) as u32;
+    let rc = unsafe {
+        RegQueryValueExW(
+            key,
+            val_name.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null_mut(),
+            buf.as_mut_ptr() as *mut u8,
+            &mut size,
+        )
+    };
+    if rc == ERROR_SUCCESS {
+        let len = (size as usize / 2).saturating_sub(1);
+        Some(String::from_utf16_lossy(&buf[..len]).trim().to_string())
+    } else {
+        std::env::var("PROCESSOR_IDENTIFIER").ok()
+    }
+}
+
+pub fn is_vulnerable_intel_cpu() -> bool {
+    let Some(name) = read_cpu_name() else {
+        return false;
+    };
+    if !name.contains("Intel") && !name.contains("GenuineIntel") {
+        return false;
+    }
+    let affected = ["i7-13", "i9-13", "i7-14", "i9-14", "i5-13600K", "i5-14600K"];
+    let excluded = ["HX", "H", "P", "U", "T"];
+    let has_affected = affected.iter().any(|a| name.contains(a));
+    let has_excluded = excluded.iter().any(|e| name.ends_with(e) || name.contains(&format!("{e} ")));
+    has_affected && !has_excluded
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

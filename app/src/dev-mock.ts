@@ -86,6 +86,9 @@ const DEFAULT_SETTINGS: Settings = {
   language: "auto",
   last_account: null,
   favorites: ["ss14s://example-two.test", "ss14s://private.example:1212"],
+  favorite_names: { "ss14s://example-two.test": "Тестовое лобби" },
+  launcher_ui_scale: 100,
+  dismissed_intel_warning: false,
   history: [
     {
       address: "ss14s://example-one.test",
@@ -305,6 +308,57 @@ export function installMock() {
           settings.favorites = [addr, ...settings.favorites.filter((x) => x !== addr)];
           return settings.favorites;
         }
+        case "move_favorite": {
+          const addr = a.address as string;
+          const delta = a.delta as number;
+          const i = settings.favorites.indexOf(addr);
+          if (i !== -1) {
+            const target = Math.max(0, Math.min(settings.favorites.length - 1, i + delta));
+            if (target !== i) {
+              const item = settings.favorites.splice(i, 1)[0];
+              settings.favorites.splice(target, 0, item);
+            }
+          }
+          return settings.favorites;
+        }
+        case "edit_favorite": {
+          const oldAddr = (a.oldAddress ?? a.old_address) as string;
+          const newAddr = ((a.newAddress ?? a.new_address) as string).trim();
+          const name = a.name as string | null | undefined;
+          const i = settings.favorites.indexOf(oldAddr);
+          if (i !== -1) {
+            settings.favorites[i] = newAddr;
+            settings.favorite_names = { ...(settings.favorite_names ?? {}) };
+            delete settings.favorite_names[oldAddr];
+            if (name && name.trim()) {
+              settings.favorite_names[newAddr] = name.trim();
+            }
+          }
+          return settings.favorites;
+        }
+        case "set_favorite_name": {
+          const addr = a.address as string;
+          const name = a.name as string | null | undefined;
+          settings.favorite_names = { ...(settings.favorite_names ?? {}) };
+          if (name && name.trim()) {
+            settings.favorite_names[addr] = name.trim();
+          } else {
+            delete settings.favorite_names[addr];
+          }
+          return settings.favorite_names;
+        }
+        case "check_intel_warning":
+          return !settings.dismissed_intel_warning;
+        case "dismiss_intel_warning":
+          settings.dismissed_intel_warning = true;
+          return;
+        case "get_recommended_hubs":
+          return [
+            { url: "https://hub.spacestation14.com/", name: "Wizards' Den" },
+            { url: "https://hub.singularity14.co.uk/", name: "Singularity" },
+            { url: "https://hub.simplestation.org/", name: "SimpleStation" },
+            { url: "https://cdn.spacestationmultiverse.com/hub/", name: "Multiverse" },
+          ];
         case "set_server_note": {
           const addr = a.address as string;
           const note = ((a.note as string) ?? "").trim();

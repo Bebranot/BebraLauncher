@@ -5,7 +5,7 @@
 
 pub mod cull;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use rusqlite::{params, Connection, OptionalExtension};
@@ -204,16 +204,23 @@ impl ContentDb {
     /// Indices of manifest entries whose blob we don't have yet. A blob that appears under several
     /// paths is listed once (at its first index).
     pub fn missing_entries(&self, manifest: &Manifest) -> Result<Vec<usize>> {
-        let mut stmt = self
-            .conn
-            .prepare_cached("SELECT 1 FROM Content WHERE Hash = ?1")?;
+        let mut stmt = self.conn.prepare("SELECT Hash FROM Content")?;
+        let rows = stmt.query_map([], |r| r.get::<_, Vec<u8>>(0))?;
+        let mut existing: HashSet<Hash256> = HashSet::new();
+        for r in rows {
+            let bytes = r?;
+            if let Ok(hash) = bytes.try_into() {
+                existing.insert(hash);
+            }
+        }
+
         let mut queued: HashSet<Hash256> = HashSet::new();
         let mut missing = Vec::new();
         for (i, entry) in manifest.entries.iter().enumerate() {
             if queued.contains(&entry.hash) {
                 continue;
             }
-            if !stmt.exists([entry.hash.as_slice()])? {
+            if !existing.contains(&entry.hash) {
                 queued.insert(entry.hash);
                 missing.push(i);
             }
@@ -224,15 +231,17 @@ impl ContentDb {
     /// Stores a file after checking that it really has `hash`. Compresses with zstd when that saves
     /// enough space. Returns the content id and whether a new row was created.
     pub fn store_blob(&self, hash: &Hash256, data: &[u8]) -> Result<(i64, bool)> {
+        // Fast path: if already stored, skip duplicate hashing and compression
+        if let Some(id) = self.find_content_id(hash)? {
+            return Ok((id, false));
+        }
+
         let actual = blake2b256(data);
         if &actual != hash {
             return Err(Error::HashMismatch {
                 expected: to_hex(hash),
                 actual: to_hex(&actual),
             });
-        }
-        if let Some(id) = self.find_content_id(hash)? {
-            return Ok((id, false));
         }
 
         if !data.is_empty() {
@@ -356,20 +365,39 @@ impl ContentDb {
 
     /// Links every file of the manifest to the version. All blobs must already be stored.
     pub fn fill_manifest(&self, version_id: i64, manifest: &Manifest) -> Result<()> {
-        let mut find = self
-            .conn
-            .prepare("SELECT Id FROM Content WHERE Hash = ?1")?;
+        let mut hash_to_id: HashMap<Hash256, i64> = HashMap::with_capacity(manifest.entries.len());
+        {
+            let mut stmt = self.conn.prepare("SELECT Hash, Id FROM Content")?;
+            let rows = stmt.query_map([], |r| Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, i64>(1)?)))?;
+            for r in rows {
+                let (hash_bytes, id) = r?;
+                if let Ok(hash) = hash_bytes.try_into() {
+                    hash_to_id.insert(hash, id);
+                }
+            }
+        }
+
         let mut insert = self.conn.prepare(
             "INSERT INTO ContentManifest(VersionId, Path, ContentId) VALUES (?1, ?2, ?3)",
         )?;
         for entry in &manifest.entries {
-            let content_id: i64 = find
-                .query_row([entry.hash.as_slice()], |r| r.get(0))
-                .optional()?
+            let content_id = hash_to_id
+                .get(&entry.hash)
+                .copied()
                 .ok_or_else(|| Error::Other(format!("missing blob for {}", entry.path)))?;
             insert.execute(params![version_id, entry.path, content_id])?;
         }
         Ok(())
+    }
+
+    /// Count of files in a version without deserializing full paths and hashes.
+    pub fn count_manifest_entries(&self, version_id: i64) -> Result<usize> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM ContentManifest WHERE VersionId = ?1",
+            [version_id],
+            |r| r.get(0),
+        )?;
+        Ok(count as usize)
     }
 
     /// Adds one file to a version. The blob must already be stored.

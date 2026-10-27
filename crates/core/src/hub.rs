@@ -27,6 +27,8 @@ pub struct HubServerEntry {
     pub status: ServerStatus,
     #[serde(default, rename = "inferredTags", deserialize_with = "null_to_empty")]
     pub inferred_tags: Vec<String>,
+    #[serde(default)]
+    pub hub_url: Option<String>,
 }
 
 fn null_to_empty<'de, D: serde::Deserializer<'de>>(
@@ -144,9 +146,17 @@ pub async fn list_servers_from_hubs(
 
     while let Some(res) = join_set.join_next().await {
         match res {
-            Ok((_hub_url, Ok(entries))) => {
+            Ok((hub_url, Ok(entries))) => {
                 success_count += 1;
-                for entry in entries {
+                for mut entry in entries {
+                    entry.hub_url = Some(hub_url.clone());
+                    if let Some(ref name) = entry.status.name {
+                        for tag in crate::server::infer_tags(name, &entry.status.tags) {
+                            if !entry.status.tags.contains(&tag) {
+                                entry.status.tags.push(tag);
+                            }
+                        }
+                    }
                     match all_entries.entry(entry.address.clone()) {
                         std::collections::hash_map::Entry::Vacant(v) => {
                             v.insert(entry);

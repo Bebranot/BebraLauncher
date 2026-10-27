@@ -108,12 +108,13 @@ export function matchesFilters(s: ServerRow, f: FilterState): boolean {
   return true;
 }
 
-/** Free-text search over what the player sees of a server. */
+/** Free-text search over what the player sees of a server. Supports multi-term queries. */
 export function matchesSearch(s: ServerRow, query: string, note?: string | null): boolean {
   const q = query.trim().toLowerCase();
   if (!q) return true;
-  const hay = `${s.name ?? ""} ${s.address} ${s.tags.join(" ")} ${s.map ?? ""} ${s.preset ?? ""} ${note ?? ""}`;
-  return hay.toLowerCase().includes(q);
+  const hay = `${s.name ?? ""} ${s.address} ${s.tags.join(" ")} ${s.map ?? ""} ${s.preset ?? ""} ${note ?? ""}`.toLowerCase();
+  const terms = q.split(/\s+/).filter(Boolean);
+  return terms.every((term) => hay.includes(term));
 }
 
 // ---------------------------------------------------------------- sorting
@@ -138,14 +139,15 @@ export function nextSort(current: Sort, key: SortKey): Sort {
   return { key, desc: key === "players" || key === "time" };
 }
 
+const collator = new Intl.Collator(undefined, { sensitivity: "base" });
+
 /** Returns a sorted copy. `pings` maps an address to its milliseconds (missing = unknown). */
 export function sortServers(
   list: ServerRow[],
   sort: Sort,
   pings: Record<string, number | null | undefined> = {},
 ): ServerRow[] {
-  const text = (a: string | null, b: string | null) =>
-    (a ?? "").localeCompare(b ?? "", undefined, { sensitivity: "base" });
+  const text = (a: string | null, b: string | null) => collator.compare(a ?? "", b ?? "");
   const startOf = (s: ServerRow) =>
     s.run_level === 1 && s.round_start_time ? Date.parse(s.round_start_time) || null : null;
 

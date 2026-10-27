@@ -135,7 +135,8 @@ pub async fn prepare(
         build.apply_self_hosting(&req.addr);
     }
 
-    let sources = Sources::official()?;
+    let engine_type = build.engine_type();
+    let sources = Sources::for_engine(engine_type)?;
 
     // Optimization: prefetch the engine in parallel with content download
     // if the required engine version is not installed yet.
@@ -202,6 +203,12 @@ pub async fn prepare(
     .map_err(PlayError::Engine)?;
 
     let auth_client = AuthClient::official(client.clone());
+    let default_auth_url = auth_client.most_successful_url().to_string();
+    let effective_auth_server = if let Some(urls) = &info.auth.login_urls {
+        urls.first().cloned().unwrap_or(default_auth_url)
+    } else {
+        default_auth_url
+    };
     let auth = req
         .account
         .as_ref()
@@ -210,7 +217,7 @@ pub async fn prepare(
             token: a.token.expose().to_string(),
             user_id: a.user_id.to_string(),
             server_public_key: info.auth.public_key.clone(),
-            auth_server_url: auth_client.most_successful_url().to_string(),
+            auth_server_url: effective_auth_server,
         });
     let sends_account = auth.is_some();
     let plays_as = req
@@ -222,7 +229,7 @@ pub async fn prepare(
         loader_exe: req.loader_exe.clone(),
         dotnet_root: None,
         engine: prepared.engine,
-        signing_key_file: launch::ensure_signing_key_file(dirs)?,
+        signing_key_file: launch::ensure_signing_key_file_for_engine(dirs, engine_type)?,
         content_db: dirs.content_db(),
         content_version_id: content.version_id,
         modules: prepared

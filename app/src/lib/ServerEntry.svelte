@@ -32,7 +32,9 @@
   const details = $derived(app.details[server.address]);
   const ready = $derived(typeof details === "object" ? details : null);
   const ping = $derived(app.pings[server.address]);
-  const round = $derived(roundText(server, app.now));
+  const round = $derived(
+    columns.round_time && server.run_level === 1 ? roundText(server, app.now) : roundText(server),
+  );
   const played = $derived(app.historyOf(server.address));
   // A favourite the hub does not list and that did not answer: nothing known about it.
   const silent = $derived(
@@ -76,6 +78,24 @@
     }
   }
 
+  const customName = $derived(app.favoriteNameOf(server.address));
+  const displayTitle = $derived(customName || serverTitle(server));
+
+  function hubName(url: string): string {
+    try {
+      const u = new URL(url);
+      if (u.hostname.includes("spacestation14.com")) return "Wizards' Den";
+      if (u.hostname.includes("spacestation14.ru")) return "Singularity";
+      if (u.hostname.includes("simplestation.org")) return "SimpleStation";
+      if (u.hostname.includes("spacestationmultiverse.com")) return "Multiverse";
+      if (u.hostname.includes("corvax.fun")) return "Corvax";
+      if (u.hostname.includes("spacestories.club")) return "Space Stories";
+      return u.hostname;
+    } catch {
+      return url;
+    }
+  }
+
   const note = $derived(app.noteOf(server.address));
   let editingNote = $state(false);
   let noteDraft = $state("");
@@ -107,7 +127,7 @@
       <span class="chev" class:open={expanded}><Icon name="chevron" size={18} /></span>
       {#if isFavorite}<span class="fav" title={t("server.favoriteMark")}><Icon name="star" size={14} /></span>{/if}
       {#if note}<span class="note-badge" title={note}><Icon name="note" size={13} /></span>{/if}
-      <span class="title">{serverTitle(server)}</span>
+      <span class="title">{displayTitle}</span>
     </div>
     {#if columns.mode}
       <div class="cell center sub">{server.preset ?? ""}</div>
@@ -169,6 +189,18 @@
         {:else if ready?.auth === "disabled"}
           <span>{t("server.authDisabled")}</span>
         {/if}
+        {#if customName && customName !== serverTitle(server)}
+          <span class="sub original-name">({serverTitle(server)})</span>
+        {/if}
+        {#if server.hub_url}
+          <span class="hub-tag">{t("server.hubSource", { hub: hubName(server.hub_url) })}</span>
+        {/if}
+        {#if server.auth_methods && server.auth_methods.length > 0}
+          <span class="auth-tag">{t("server.allowedAuth", { providers: server.auth_methods.join(", ") })}</span>
+        {/if}
+        {#if ready?.engine_type && ready.engine_type.toLowerCase() !== "robust"}
+          <span class="engine-tag">Engine: {ready.engine_type}</span>
+        {/if}
       </div>
 
       {#if server.tags.length > 0}
@@ -219,9 +251,42 @@
           {/each}
         </div>
         <div class="fav-actions">
+          {#if raise}
+            <button
+              class="btn icon"
+              title={t("server.moveUp")}
+              aria-label={t("server.moveUp")}
+              onclick={() => app.moveFavorite(server.address, -1)}
+            >
+              <Icon name="up" size={16} />
+            </button>
+            <button
+              class="btn icon"
+              title={t("server.moveDown")}
+              aria-label={t("server.moveDown")}
+              onclick={() => app.moveFavorite(server.address, 1)}
+            >
+              <Icon name="down" size={16} />
+            </button>
+            <button
+              class="btn"
+              onclick={() => (app.dialog = { kind: "editfav", address: server.address, name: customName ?? server.name })}
+            >
+              {t("server.editFav")}
+            </button>
+            <button class="btn" onclick={() => app.raiseFavorite(server.address)}>
+              {t("server.raise")}
+            </button>
+          {:else if isFavorite}
+            <button
+              class="btn"
+              onclick={() => (app.dialog = { kind: "editfav", address: server.address, name: customName ?? server.name })}
+            >
+              {t("server.editFav")}
+            </button>
+          {/if}
           <button
             class="btn"
-            class:open-r={raise}
             onclick={() => app.toggleFavorite(server.address)}
           >
             <span class="with-icon">
@@ -229,11 +294,6 @@
               {isFavorite ? t("server.removeFavorite") : t("server.addFavorite")}
             </span>
           </button>
-          {#if raise}
-            <button class="btn open-l" onclick={() => app.raiseFavorite(server.address)}>
-              {t("server.raise")}
-            </button>
-          {/if}
         </div>
       </div>
     </div>
@@ -322,10 +382,11 @@
     font-variant-numeric: tabular-nums;
   }
   .dot {
-    width: 7px;
-    height: 7px;
+    width: 6px;
+    height: 6px;
     border-radius: 50%;
     background: currentColor;
+    box-shadow: 0 0 5px currentColor;
   }
   .ping.good {
     color: var(--good);
@@ -368,7 +429,8 @@
     gap: 6px;
   }
   .tag {
-    font-size: 12px;
+    font-size: 11px;
+    font-weight: 500;
     padding: 1px 9px;
     background: var(--tint-hover);
     border-radius: 999px;
@@ -388,7 +450,28 @@
   }
   .fav-actions {
     display: flex;
+    align-items: center;
+    gap: 6px;
     margin-left: auto;
+  }
+  .hub-tag,
+  .auth-tag,
+  .engine-tag {
+    display: inline-flex;
+    align-items: center;
+    font-size: 11px;
+    padding: 1px 7px;
+    background: var(--tint-hover);
+    border-radius: var(--radius-sm);
+    color: var(--sub);
+  }
+  .engine-tag {
+    color: var(--accent);
+    background: var(--accent-soft);
+    font-weight: 500;
+  }
+  .original-name {
+    font-style: italic;
   }
   .with-icon {
     display: inline-flex;
@@ -406,7 +489,7 @@
     gap: 8px;
     padding: 7px 11px;
     background: var(--tint);
-    border-left: 3px solid var(--accent);
+    border: 1px solid color-mix(in srgb, var(--accent) 25%, var(--line));
     border-radius: var(--radius-sm);
     font-size: 13px;
   }
@@ -425,7 +508,8 @@
   }
   .note-edit-link {
     flex: none;
-    font-size: 12px;
+    font-size: 11px;
+    font-weight: 500;
     align-self: flex-start;
   }
   .note-edit {
@@ -450,7 +534,8 @@
     display: flex;
   }
   .add-note-link {
-    font-size: 12px;
+    font-size: 11px;
+    font-weight: 500;
     color: var(--sub);
   }
   .add-note-link:hover {

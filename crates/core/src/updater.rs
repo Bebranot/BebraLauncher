@@ -66,7 +66,7 @@ pub async fn install_content(
     let mode = download_mode(build)?;
 
     if let Some(existing) = db.find_version(build)? {
-        let files = || -> Result<usize> { Ok(db.manifest_entries(existing.id)?.len()) };
+        let files = || -> Result<usize> { db.count_manifest_entries(existing.id) };
         if is_exact_match(db, build, existing.id, &existing)? {
             db.touch_version(existing.id)?;
             return Ok(InstalledContent {
@@ -117,9 +117,13 @@ pub struct Sources {
 impl Sources {
     /// The Wizards' Den builds CDN and signing key.
     pub fn official() -> Result<Self> {
+        Self::for_engine("Robust")
+    }
+
+    pub fn for_engine(engine: &str) -> Result<Self> {
         Ok(Self {
-            builds: UrlFallbackSet::new(engine::BUILDS_URLS),
-            key: crate::signature::official_key()?,
+            builds: engine::engine_urls(engine),
+            key: crate::signature::key_for_engine(engine)?,
         })
     }
 }

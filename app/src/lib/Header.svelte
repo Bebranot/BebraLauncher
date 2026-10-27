@@ -45,7 +45,11 @@
     align-items: center;
     justify-content: space-between;
     gap: 12px;
-    padding: 8px 12px;
+    padding: 8px 14px;
+    border-bottom: 1px solid var(--line);
+    transition: border-color 0.15s ease;
+  }
+  :global(html[data-theme="classic"]) header {
     border-bottom: 2px solid var(--accent);
   }
   .left {
@@ -57,13 +61,13 @@
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    font-size: 12px;
+    font-size: 11px;
     font-weight: 500;
-    padding: 3px 8px;
-    border-radius: var(--radius);
-    background: color-mix(in srgb, var(--accent) 18%, transparent);
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: var(--accent-soft);
     color: var(--accent);
-    border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
     user-select: none;
   }
   .dot {
@@ -72,6 +76,17 @@
     border-radius: 50%;
     background: var(--accent);
     box-shadow: 0 0 6px var(--accent);
+    animation: pulse 2s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%, 100% {
+      opacity: 1;
+      transform: scale(1);
+    }
+    50% {
+      opacity: 0.5;
+      transform: scale(0.85);
+    }
   }
   .right {
     display: grid;
@@ -85,5 +100,6 @@
   .links .btn {
     flex: 1;
     min-width: 90px;
+    font-size: 13px;
   }
 </style>

@@ -21,6 +21,16 @@ pub const BUILDS_URLS: [&str; 2] = [
     "https://robust-builds.fallback.cdn.spacestation14.com/",
 ];
 
+pub fn engine_urls(engine: &str) -> UrlFallbackSet {
+    if engine.eq_ignore_ascii_case("multiverse") {
+        UrlFallbackSet::new(["https://cdn.spacestationmultiverse.com/"])
+    } else if engine.eq_ignore_ascii_case("supermatter") {
+        UrlFallbackSet::new(["https://cdn.simplestation.org/supermatter/"])
+    } else {
+        UrlFallbackSet::new(BUILDS_URLS)
+    }
+}
+
 /// Redirect chains in the index are short; this only stops an accidental loop.
 const MAX_REDIRECTS: usize = 32;
 
@@ -66,17 +76,30 @@ pub struct ResolvedEngine {
     pub sig: String,
 }
 
+async fn fetch_manifest(client: &Client, urls: &UrlFallbackSet, suffix: &str) -> Result<EngineIndex> {
+    let resp = urls.join(suffix).get(client).await?;
+    if !resp.status().is_success() {
+        return Err(Error::HttpStatus {
+            status: resp.status().as_u16(),
+            url: resp.url().to_string(),
+        });
+    }
+    let bytes = resp.bytes().await?;
+    serde_json::from_slice(&bytes).map_err(|e| Error::Other(format!("bad engine index: {e}")))
+}
+
 impl EngineIndex {
     pub async fn fetch(client: &Client, urls: &UrlFallbackSet) -> Result<Self> {
-        let resp = urls.join("manifest.json").get(client).await?;
-        if !resp.status().is_success() {
-            return Err(Error::HttpStatus {
-                status: resp.status().as_u16(),
-                url: resp.url().to_string(),
-            });
+        match fetch_manifest(client, urls, "manifest.json").await {
+            Ok(idx) => Ok(idx),
+            Err(e) => {
+                if urls.urls().iter().any(|u| u.contains("spacestationmultiverse")) {
+                    fetch_manifest(client, urls, "ssmv-engine-manifest").await
+                } else {
+                    Err(e)
+                }
+            }
         }
-        let bytes = resp.bytes().await?;
-        serde_json::from_slice(&bytes).map_err(|e| Error::Other(format!("bad engine index: {e}")))
     }
 
     /// Follows redirects, refuses insecure builds, picks the first available platform of `rids`.

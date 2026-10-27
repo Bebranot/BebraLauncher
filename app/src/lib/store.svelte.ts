@@ -38,6 +38,7 @@ const TABS: Tab[] = ["favorites", "servers", "recent", "news", "updates", "optio
 export type Dialog =
   | { kind: "direct" }
   | { kind: "addfav" }
+  | { kind: "editfav"; address: string; name?: string | null }
   | { kind: "confirm_connect"; server: ServerRow }
   | { kind: "login"; relogin?: { userId: string; username: string } };
 
@@ -122,6 +123,7 @@ class Store {
   /** Milliseconds per server address; null = asked, no answer. */
   pings = $state<Record<string, number | null>>({});
 
+  intelWarning = $state(false);
   accounts = $state<AccountRow[]>([]);
   /** User id of the account to play with; `null` = guest. */
   selectedAccount = $state<string | null>(null);
@@ -212,11 +214,12 @@ class Store {
 
   /** The row for an address: from the hub, from its own answer, or a bare one. */
   rowFor(address: string, name: string | null = null): ServerRow {
+    const favName = this.favoriteNameOf(address);
     return (
       this.servers.find((s) => s.address === address) ??
       this.extra[address] ??
       (this.adhoc?.address === address ? this.adhoc : null) ??
-      placeholderRow(address, name ?? this.history.get(address)?.name ?? null)
+      placeholderRow(address, favName ?? name ?? this.history.get(address)?.name ?? null)
     );
   }
 
@@ -236,6 +239,7 @@ class Store {
 
     await Promise.all([this.loadInfo(), this.loadSettings(), this.loadAccounts()]);
     this.pickDefaultAccount();
+    void this.checkIntelWarning();
     void this.loadBackgrounds();
 
     // Something to look at while the hub answers.
@@ -297,6 +301,10 @@ class Store {
       bg_type: s?.bg_type ?? "space",
     });
     i18n.preference = s?.language ?? "auto";
+    if (typeof document !== "undefined") {
+      const scale = s?.launcher_ui_scale ?? 100;
+      document.documentElement.style.zoom = String(scale / 100);
+    }
     void this.loadActiveBackground();
     this.restartAutoRefresh();
   }
@@ -508,6 +516,59 @@ class Store {
   async raiseFavorite(address: string) {
     const favorites = await api.raiseFavorite(address).catch(() => null);
     if (favorites && this.settings) this.settings = { ...this.settings, favorites };
+  }
+
+  async moveFavorite(address: string, delta: number) {
+    const favorites = await api.moveFavorite(address, delta).catch(() => null);
+    if (favorites && this.settings) this.settings = { ...this.settings, favorites };
+  }
+
+  async editFavorite(oldAddress: string, newAddress: string, name?: string | null) {
+    try {
+      const favorites = await api.editFavorite(oldAddress, newAddress, name);
+      if (this.settings) {
+        const names = { ...(this.settings.favorite_names ?? {}) };
+        if (oldAddress !== newAddress) {
+          delete names[oldAddress];
+        }
+        if (name?.trim()) {
+          names[newAddress] = name.trim();
+        } else {
+          delete names[newAddress];
+        }
+        this.settings = { ...this.settings, favorites, favorite_names: names };
+      }
+      void this.refreshPings();
+    } catch (e) {
+      this.say(errorText(e));
+    }
+  }
+
+  favoriteNameOf(address: string): string | undefined {
+    return this.settings?.favorite_names?.[address];
+  }
+
+  async setFavoriteName(address: string, name?: string | null) {
+    try {
+      const names = await api.setFavoriteName(address, name);
+      if (this.settings) {
+        this.settings = { ...this.settings, favorite_names: names };
+      }
+    } catch (e) {
+      this.say(errorText(e));
+    }
+  }
+
+  async checkIntelWarning() {
+    this.intelWarning = await api.checkIntelWarning().catch(() => false);
+  }
+
+  async dismissIntelWarning() {
+    this.intelWarning = false;
+    await api.dismissIntelWarning().catch(() => {});
+    if (this.settings) {
+      this.settings = { ...this.settings, dismissed_intel_warning: true };
+    }
   }
 
   historyOf(address: string): HistoryEntry | undefined {

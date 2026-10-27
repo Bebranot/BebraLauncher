@@ -20,7 +20,7 @@
 
   {#if app.adhocRow}
     <div class="adhoc">
-      <h3 class="eyebrow">{t("servers.fromLink")}</h3>
+      <h3 class="adhoc-title">{t("servers.fromLink")}</h3>
       <div class="adhoc-table">
         <ServerTable rows={[app.adhocRow]} sortable={false} />
       </div>
@@ -56,6 +56,20 @@
         bind:value={app.search}
         bind:this={searchInput}
       />
+      {#if app.search.trim() !== ""}
+        <button
+          type="button"
+          class="clear-search-btn"
+          title={t("servers.clearSearch")}
+          aria-label={t("servers.clearSearch")}
+          onclick={() => {
+            app.search = "";
+            searchInput?.focus();
+          }}
+        >
+          ✕
+        </button>
+      {/if}
     </div>
     <button
       class="btn open-r"
@@ -89,11 +103,9 @@
     flex: none;
     display: flex;
     align-items: center;
+    gap: 8px;
     padding: 8px 14px;
     border-top: 1px solid var(--line);
-  }
-  .searchbox {
-    margin-right: 8px;
   }
   .searchbox {
     position: relative;
@@ -112,6 +124,29 @@
   .search {
     width: 100%;
     padding-left: 32px;
+    padding-right: 28px;
+  }
+  .clear-search-btn {
+    position: absolute;
+    right: 8px;
+    top: 50%;
+    transform: translateY(-50%);
+    background: none;
+    border: none;
+    color: var(--muted);
+    cursor: pointer;
+    padding: 3px 6px;
+    line-height: 1;
+    font-size: 13px;
+    border-radius: var(--radius);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: color 0.15s, background 0.15s;
+  }
+  .clear-search-btn:hover {
+    color: var(--fg);
+    background: var(--tint);
   }
   .spinner.small {
     width: 16px;
@@ -127,6 +162,14 @@
   }
   .adhoc h3 {
     padding: 0 18px 2px;
+  }
+  .adhoc-title {
+    margin: 0;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--sub);
   }
   .adhoc-table {
     display: flex;

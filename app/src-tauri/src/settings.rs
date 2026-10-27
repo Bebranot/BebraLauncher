@@ -92,6 +92,19 @@ pub struct Settings {
     /// Personal user notes per server address.
     #[serde(default)]
     pub server_notes: std::collections::HashMap<String, String>,
+    /// Custom user-assigned names for favourite servers.
+    #[serde(default)]
+    pub favorite_names: std::collections::HashMap<String, String>,
+    /// Scale factor for the launcher's own UI (percent, 75..=200).
+    #[serde(default = "default_ui_scale")]
+    pub launcher_ui_scale: u32,
+    /// Whether the user has dismissed the Intel 13th/14th Gen CPU degradation advisory.
+    #[serde(default)]
+    pub dismissed_intel_warning: bool,
+}
+
+fn default_ui_scale() -> u32 {
+    100
 }
 
 /// Configured server hub.
@@ -252,6 +265,9 @@ impl Default for Settings {
             auto_refresh_interval: 0,
             confirm_connect: false,
             server_notes: std::collections::HashMap::new(),
+            favorite_names: std::collections::HashMap::new(),
+            launcher_ui_scale: 100,
+            dismissed_intel_warning: false,
         }
     }
 }
@@ -317,11 +333,55 @@ impl Settings {
     pub fn toggle_favorite(&mut self, address: &str) -> bool {
         if let Some(i) = self.favorites.iter().position(|a| a == address) {
             self.favorites.remove(i);
+            self.favorite_names.remove(address);
             false
         } else {
             self.favorites.push(address.to_string());
             true
         }
+    }
+
+    /// Moves a favourite server up (delta < 0) or down (delta > 0) in the list.
+    pub fn move_favorite(&mut self, address: &str, delta: i32) {
+        if let Some(i) = self.favorites.iter().position(|a| a == address) {
+            let len = self.favorites.len();
+            if len <= 1 {
+                return;
+            }
+            let target = (i as i32 + delta).clamp(0, (len - 1) as i32) as usize;
+            if target != i {
+                let item = self.favorites.remove(i);
+                self.favorites.insert(target, item);
+            }
+        }
+    }
+
+    /// Renames or changes the address of an existing favourite.
+    pub fn edit_favorite(&mut self, old_address: &str, new_address: &str, new_name: Option<String>) {
+        if let Some(i) = self.favorites.iter().position(|a| a == old_address) {
+            let saved_name = new_name.or_else(|| self.favorite_names.remove(old_address));
+            self.favorites[i] = new_address.to_string();
+            if let Some(n) = saved_name {
+                let trimmed = n.trim();
+                if !trimmed.is_empty() {
+                    self.favorite_names.insert(new_address.to_string(), trimmed.chars().take(100).collect());
+                } else {
+                    self.favorite_names.remove(new_address);
+                }
+            }
+        }
+    }
+
+    /// Sets or clears a custom alias for a favourite server.
+    pub fn set_favorite_name(&mut self, address: &str, name: Option<String>) {
+        if let Some(n) = name {
+            let trimmed = n.trim();
+            if !trimmed.is_empty() {
+                self.favorite_names.insert(address.to_string(), trimmed.chars().take(100).collect());
+                return;
+            }
+        }
+        self.favorite_names.remove(address);
     }
 
     /// Sets or removes a personal note for a server address.
@@ -476,6 +536,8 @@ impl Settings {
             _ => self.auto_refresh_interval = 0,
         }
 
+        self.launcher_ui_scale = self.launcher_ui_scale.clamp(75, 200);
+
         let mut clean_notes = std::collections::HashMap::new();
         for (addr, note) in self.server_notes {
             let addr = addr.trim().to_string();
@@ -493,6 +555,24 @@ impl Settings {
             }
         }
         self.server_notes = clean_notes;
+
+        let mut clean_fav_names = std::collections::HashMap::new();
+        for (addr, name) in self.favorite_names {
+            let addr = addr.trim().to_string();
+            if addr.is_empty() || addr.len() > 256 {
+                continue;
+            }
+            let clean_name: String = name
+                .chars()
+                .filter(|c| !c.is_control() || *c == ' ')
+                .take(100)
+                .collect();
+            let trimmed = clean_name.trim().to_string();
+            if !trimmed.is_empty() {
+                clean_fav_names.insert(addr, trimmed);
+            }
+        }
+        self.favorite_names = clean_fav_names;
 
         self
     }
@@ -882,7 +962,7 @@ mod tests {
 
         // Blank note removes the entry
         s.set_server_note("ss14s://corvax.example", "   ");
-        assert!(s.server_notes.get("ss14s://corvax.example").is_none());
+        assert!(!s.server_notes.contains_key("ss14s://corvax.example"));
 
         // Sanitization trims, drops empty/invalid addresses and limits length
         s.server_notes.insert("  ss14s://test.org  ".into(), "  Заметка \0 с нулём  ".into());
@@ -895,9 +975,73 @@ mod tests {
         assert!(!san.server_notes.contains_key("   "));
     }
 
+    #[test]
+    fn moving_and_editing_favorites() {
+        let mut s = Settings::default();
+        s.toggle_favorite("a");
+        s.toggle_favorite("b");
+        s.toggle_favorite("c");
+        assert_eq!(s.favorites, ["a", "b", "c"]);
+
+        s.set_favorite_name("a", Some("Alpha".into()));
+        assert_eq!(s.favorite_names.get("a").map(String::as_str), Some("Alpha"));
+
+        // Move b down
+        s.move_favorite("b", 1);
+        assert_eq!(s.favorites, ["a", "c", "b"]);
+
+        // Move b up twice
+        s.move_favorite("b", -2);
+        assert_eq!(s.favorites, ["b", "a", "c"]);
+
+        // Edit favorite a -> a2 with new name
+        s.edit_favorite("a", "a2", Some("Alpha 2".into()));
+        assert_eq!(s.favorites, ["b", "a2", "c"]);
+        assert_eq!(s.favorite_names.get("a2").map(String::as_str), Some("Alpha 2"));
+
+        // Sanitization of favorite names and launcher UI scale
+        s.favorite_names.insert("  ss14s://fav.org  ".into(), "  Имя \0 с нулём  ".into());
+        s.favorite_names.insert("   ".into(), "имя".into());
+        s.launcher_ui_scale = 300;
+        let san = s.sanitized();
+        assert_eq!(
+            san.favorite_names.get("ss14s://fav.org").map(String::as_str),
+            Some("Имя  с нулём")
+        );
+        assert!(!san.favorite_names.contains_key("   "));
+        assert_eq!(san.launcher_ui_scale, 200);
+    }
+
     fn tempdir() -> PathBuf {
         let p = std::env::temp_dir().join(format!("bebra-settings-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&p).unwrap();
         p
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecommendedHub {
+    pub url: String,
+    pub name: String,
+}
+
+pub fn recommended_hubs() -> Vec<RecommendedHub> {
+    vec![
+        RecommendedHub {
+            url: "https://hub.spacestation14.com/".to_string(),
+            name: "Wizards' Den".to_string(),
+        },
+        RecommendedHub {
+            url: "https://hub.singularity14.co.uk/".to_string(),
+            name: "Singularity".to_string(),
+        },
+        RecommendedHub {
+            url: "https://hub.simplestation.org/".to_string(),
+            name: "SimpleStation".to_string(),
+        },
+        RecommendedHub {
+            url: "https://cdn.spacestationmultiverse.com/hub/".to_string(),
+            name: "Multiverse".to_string(),
+        },
+    ]
 }

@@ -6,6 +6,7 @@
     type DiagRow,
     type PackRow,
     type PatchRow,
+    type RecommendedHub,
     type StorageRow,
     type VersionRow,
   } from "./api";
@@ -29,9 +30,12 @@
   let autostart = $state(false);
   let links = $state(false);
 
+  let recommendedHubs = $state<RecommendedHub[]>([]);
+
   onMount(() => {
     void api.getAutostart().then((v) => (autostart = v)).catch(() => {});
     void api.getLinksRegistered().then((v) => (links = v)).catch(() => {});
+    void api.getRecommendedHubs().then((r) => (recommendedHubs = r)).catch(() => {});
     void loadPacks();
     void loadPatches();
     void loadStorage();
@@ -478,6 +482,18 @@
 
 {#if s}
   <div class="tab">
+    {#if app.intelWarning}
+      <div class="intel-card">
+        <div class="intel-card-header">
+          <strong>{t("opt.intelWarningTitle")}</strong>
+        </div>
+        <p class="intel-card-desc">{t("opt.intelWarningDesc")}</p>
+        <button class="btn small" onclick={() => app.dismissIntelWarning()}>
+          {t("opt.intelWarningDismiss")}
+        </button>
+      </div>
+    {/if}
+
     <!-- ------------------------------------------------------------ general -->
     <section>
       <h2>{t("opt.general")}</h2>
@@ -508,6 +524,24 @@
           oninput={(e) => app.updateSettings({ guest_name: e.currentTarget.value })}
         />
         <small class="sub">{t("opt.guestHint")}</small>
+      </label>
+
+      <label class="field">
+        <span>{t("opt.launcherUiScale")}</span>
+        <select
+          value={s.launcher_ui_scale ?? 100}
+          onchange={(e) => app.updateSettings({ launcher_ui_scale: Number(e.currentTarget.value) })}
+        >
+          <option value={75}>75%</option>
+          <option value={80}>80%</option>
+          <option value={90}>90%</option>
+          <option value={100}>100%</option>
+          <option value={110}>110%</option>
+          <option value={125}>125%</option>
+          <option value={150}>150%</option>
+          <option value={175}>175%</option>
+          <option value={200}>200%</option>
+        </select>
       </label>
 
       <label class="field">
@@ -949,6 +983,31 @@
           {t("opt.hubsSpaceStories")}
         </button>
       </div>
+
+      {#if recommendedHubs.length > 0}
+        <div class="recommended-hubs">
+          <span class="sub small">{t("opt.recommendedHubs")}:</span>
+          <div class="rec-list">
+            {#each recommendedHubs as rec (rec.url)}
+              {@const isAdded = hubs.some((h) => h.url.toLowerCase().replace(/\/$/, "") === rec.url.toLowerCase().replace(/\/$/, ""))}
+              <div class="rec-row">
+                <div class="rec-text">
+                  <span class="rec-name">{rec.name}</span>
+                  <span class="sub small">{rec.url}</span>
+                </div>
+                <button
+                  type="button"
+                  class="btn small soft"
+                  disabled={isAdded}
+                  onclick={() => addPresetHub(rec.url)}
+                >
+                  {isAdded ? "✓" : t("opt.addHub")}
+                </button>
+              </div>
+            {/each}
+          </div>
+        </div>
+      {/if}
       {#if hubError}
         <div class="error small">{hubError}</div>
       {/if}
@@ -1512,5 +1571,54 @@
   .delete-btn:hover {
     opacity: 1;
     background: var(--bad);
+  }
+  .intel-card {
+    margin-bottom: 16px;
+    padding: 12px 16px;
+    border-radius: var(--radius);
+    border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent);
+    background: color-mix(in srgb, var(--warn) 10%, transparent);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .intel-card-header {
+    color: var(--warn);
+  }
+  .intel-card-desc {
+    margin: 0;
+    font-size: 13px;
+    line-height: 1.4;
+    user-select: text;
+  }
+  .recommended-hubs {
+    margin-top: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .rec-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .rec-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 8px 12px;
+    background: var(--tint);
+    border-radius: var(--radius-sm);
+  }
+  .rec-text {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+  .rec-name {
+    font-weight: 500;
+    font-size: 13px;
   }
 </style>

@@ -160,7 +160,9 @@ pub fn clean(dirs: &DataDirs, db: &ContentDb) -> Result<CleanReport> {
     // the database open, and then this is simply skipped.
     let conn = db.connection();
     let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
-    let _ = conn.execute_batch("VACUUM;");
+    if cull.versions_removed > 0 || cull.blobs_removed > 0 || cull.interrupted_removed > 0 {
+        let _ = conn.execute_batch("VACUUM;");
+    }
 
     out.bytes_freed += db_before.saturating_sub(report(dirs).content_db);
     Ok(out)

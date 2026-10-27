@@ -213,15 +213,20 @@ pub struct StorageRow {
 }
 
 #[tauri::command]
-pub fn storage_info(state: State<'_, AppState>) -> StorageRow {
-    let r = storage::report(&state.dirs);
-    StorageRow {
-        content: r.content_db,
-        engines: r.engines,
-        modules: r.modules,
-        other: r.scratch + r.logs,
-        total: r.total(),
-    }
+pub async fn storage_info(state: State<'_, AppState>) -> CmdResult<StorageRow> {
+    let dirs = state.dirs.clone();
+    tokio::task::spawn_blocking(move || {
+        let r = storage::report(&dirs);
+        Ok(StorageRow {
+            content: r.content_db,
+            engines: r.engines,
+            modules: r.modules,
+            other: r.scratch + r.logs,
+            total: r.total(),
+        })
+    })
+    .await
+    .map_err(err)?
 }
 
 #[derive(Serialize)]
@@ -235,18 +240,23 @@ pub struct CleanRow {
 /// Removes old game versions and engines nobody needs any more. Refused while a game is
 /// being prepared or running.
 #[tauri::command]
-pub fn clean_storage(state: State<'_, AppState>) -> CmdResult<CleanRow> {
+pub async fn clean_storage(state: State<'_, AppState>) -> CmdResult<CleanRow> {
     if state.game.is_active() {
         return Err("Очистка недоступна, пока идёт запуск или игра".into());
     }
-    let db = ContentDb::open(&state.dirs.content_db()).map_err(err)?;
-    let r = storage::clean(&state.dirs, &db).map_err(err)?;
-    Ok(CleanRow {
-        freed: r.bytes_freed,
-        versions_removed: r.cull.versions_removed,
-        engines_removed: r.engines_removed,
-        modules_removed: r.modules_removed,
+    let dirs = state.dirs.clone();
+    tokio::task::spawn_blocking(move || {
+        let db = ContentDb::open(&dirs.content_db()).map_err(err)?;
+        let r = storage::clean(&dirs, &db).map_err(err)?;
+        Ok(CleanRow {
+            freed: r.bytes_freed,
+            versions_removed: r.cull.versions_removed,
+            engines_removed: r.engines_removed,
+            modules_removed: r.modules_removed,
+        })
     })
+    .await
+    .map_err(err)?
 }
 
 #[derive(Serialize)]
@@ -275,16 +285,20 @@ impl AccountRow {
 }
 
 #[tauri::command]
-pub fn list_accounts() -> CmdResult<Vec<AccountRow>> {
-    let now = OffsetDateTime::now_utc();
-    let mut rows: Vec<AccountRow> = CredentialStore::default()
-        .list()
-        .map_err(err)?
-        .iter()
-        .map(|a| AccountRow::new(a, now))
-        .collect();
-    rows.sort_by_key(|a| a.username.to_lowercase());
-    Ok(rows)
+pub async fn list_accounts() -> CmdResult<Vec<AccountRow>> {
+    tokio::task::spawn_blocking(|| {
+        let now = OffsetDateTime::now_utc();
+        let mut rows: Vec<AccountRow> = CredentialStore::default()
+            .list()
+            .map_err(err)?
+            .iter()
+            .map(|a| AccountRow::new(a, now))
+            .collect();
+        rows.sort_by_key(|a| a.username.to_lowercase());
+        Ok(rows)
+    })
+    .await
+    .map_err(err)?
 }
 
 #[derive(Serialize)]
@@ -444,6 +458,69 @@ pub fn raise_favorite(state: State<'_, AppState>, address: String) -> CmdResult<
     s.raise_favorite(&address);
     s.save(state.dirs.root()).map_err(err)?;
     Ok(s.favorites.clone())
+}
+
+/// Moves a favourite server up (delta = -1) or down (delta = 1).
+#[tauri::command]
+pub fn move_favorite(state: State<'_, AppState>, address: String, delta: i32) -> CmdResult<Vec<String>> {
+    let mut s = state.settings.lock().unwrap();
+    s.move_favorite(&address, delta);
+    s.save(state.dirs.root()).map_err(err)?;
+    Ok(s.favorites.clone())
+}
+
+/// Changes the address and/or custom name of an existing favourite.
+#[tauri::command]
+pub fn edit_favorite(
+    state: State<'_, AppState>,
+    old_address: String,
+    new_address: String,
+    name: Option<String>,
+) -> CmdResult<Vec<String>> {
+    let new_address = new_address.trim().to_string();
+    ServerAddr::parse(&new_address).map_err(err)?;
+    let mut s = state.settings.lock().unwrap();
+    s.edit_favorite(&old_address, &new_address, name);
+    s.save(state.dirs.root()).map_err(err)?;
+    Ok(s.favorites.clone())
+}
+
+/// Sets or removes a custom alias for a favourite server.
+#[tauri::command]
+pub fn set_favorite_name(
+    state: State<'_, AppState>,
+    address: String,
+    name: Option<String>,
+) -> CmdResult<std::collections::HashMap<String, String>> {
+    let mut s = state.settings.lock().unwrap();
+    s.set_favorite_name(&address, name);
+    s.save(state.dirs.root()).map_err(err)?;
+    Ok(s.favorite_names.clone())
+}
+
+/// Returns true if a desktop 13th/14th Gen Intel CPU is detected and the warning was not yet dismissed.
+#[tauri::command]
+pub fn check_intel_warning(state: State<'_, AppState>) -> bool {
+    let s = state.settings.lock().unwrap();
+    if s.dismissed_intel_warning {
+        return false;
+    }
+    crate::system::is_vulnerable_intel_cpu()
+}
+
+/// Dismisses the Intel 13th/14th Gen CPU degradation advisory.
+#[tauri::command]
+pub fn dismiss_intel_warning(state: State<'_, AppState>) -> CmdResult<()> {
+    let mut s = state.settings.lock().unwrap();
+    s.dismissed_intel_warning = true;
+    s.save(state.dirs.root()).map_err(err)?;
+    Ok(())
+}
+
+/// Returns the built-in recommended hub servers.
+#[tauri::command]
+pub fn get_recommended_hubs() -> Vec<crate::settings::RecommendedHub> {
+    crate::settings::recommended_hubs()
 }
 
 /// Sets or clears a personal note for a server address.
@@ -713,7 +790,7 @@ pub fn list_backgrounds(state: State<'_, AppState>) -> CmdResult<Vec<BackgroundR
             }
         }
     }
-    rows.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    rows.sort_by_key(|a| a.name.to_lowercase());
     Ok(rows)
 }
 
@@ -834,17 +911,22 @@ pub struct DumpRow {
 /// Writes the texts of the newest installed game version to a folder, as a start for a
 /// translation (a text pack). Then shows the folder.
 #[tauri::command]
-pub fn dump_locale(state: State<'_, AppState>) -> CmdResult<DumpRow> {
-    let db = ContentDb::open(&state.dirs.content_db()).map_err(err)?;
-    let out = state.dirs.root().join("dump");
-    let r = dump::dump_locale(&db, &out).map_err(err)?;
-    let _ = open_folder(r.dir.clone());
-    Ok(DumpRow {
-        files: r.files,
-        bytes: r.bytes,
-        version_id: r.version_id,
-        dir: r.dir.display().to_string(),
+pub async fn dump_locale(state: State<'_, AppState>) -> CmdResult<DumpRow> {
+    let dirs = state.dirs.clone();
+    tokio::task::spawn_blocking(move || {
+        let db = ContentDb::open(&dirs.content_db()).map_err(err)?;
+        let out = dirs.root().join("dump");
+        let r = dump::dump_locale(&db, &out).map_err(err)?;
+        let _ = open_folder(r.dir.clone());
+        Ok(DumpRow {
+            files: r.files,
+            bytes: r.bytes,
+            version_id: r.version_id,
+            dir: r.dir.display().to_string(),
+        })
     })
+    .await
+    .map_err(err)?
 }
 
 #[derive(Serialize)]
@@ -859,27 +941,32 @@ pub struct VersionRow {
 
 /// The game versions stored on this computer (debug view).
 #[tauri::command]
-pub fn content_versions(state: State<'_, AppState>) -> CmdResult<Vec<VersionRow>> {
-    let db = ContentDb::open(&state.dirs.content_db()).map_err(err)?;
-    let mut rows = Vec::new();
-    for v in db.list_versions().map_err(err)? {
-        let engine = db
-            .engine_dependencies(v.id)
-            .map_err(err)?
-            .into_iter()
-            .find(|(m, _)| m == "Robust")
-            .map(|(_, ver)| ver)
-            .unwrap_or_default();
-        rows.push(VersionRow {
-            id: v.id,
-            fork: v.fork_id.unwrap_or_default(),
-            version: v.fork_version.unwrap_or_default(),
-            engine,
-            files: db.manifest_entries(v.id).map_err(err)?.len(),
-            last_used: v.last_used,
-        });
-    }
-    Ok(rows)
+pub async fn content_versions(state: State<'_, AppState>) -> CmdResult<Vec<VersionRow>> {
+    let dirs = state.dirs.clone();
+    tokio::task::spawn_blocking(move || {
+        let db = ContentDb::open(&dirs.content_db()).map_err(err)?;
+        let mut rows = Vec::new();
+        for v in db.list_versions().map_err(err)? {
+            let engine = db
+                .engine_dependencies(v.id)
+                .map_err(err)?
+                .into_iter()
+                .find(|(m, _)| m == "Robust")
+                .map(|(_, ver)| ver)
+                .unwrap_or_default();
+            rows.push(VersionRow {
+                id: v.id,
+                fork: v.fork_id.unwrap_or_default(),
+                version: v.fork_version.unwrap_or_default(),
+                engine,
+                files: db.count_manifest_entries(v.id).map_err(err)?,
+                last_used: v.last_used,
+            });
+        }
+        Ok(rows)
+    })
+    .await
+    .map_err(err)?
 }
 
 /// Puts every option back to its default. Favourites, history, the chosen account and the
@@ -1027,21 +1114,26 @@ pub struct PackRow {
 }
 
 #[tauri::command]
-pub fn list_packs(state: State<'_, AppState>) -> Vec<PackRow> {
+pub async fn list_packs(state: State<'_, AppState>) -> CmdResult<Vec<PackRow>> {
+    let dirs = state.dirs.clone();
     let enabled = state.settings.lock().unwrap().enabled_packs.clone();
-    packs::scan(&state.dirs)
-        .into_iter()
-        .map(|p| PackRow {
-            enabled: enabled.contains(&p.id),
-            id: p.id,
-            name: p.name,
-            description: p.description,
-            files: p.files,
-            bytes: p.bytes,
-            cultures: p.cultures,
-            problems: p.problems,
-        })
-        .collect()
+    tokio::task::spawn_blocking(move || {
+        Ok(packs::scan(&dirs)
+            .into_iter()
+            .map(|p| PackRow {
+                enabled: enabled.contains(&p.id),
+                id: p.id,
+                name: p.name,
+                description: p.description,
+                files: p.files,
+                bytes: p.bytes,
+                cultures: p.cultures,
+                problems: p.problems,
+            })
+            .collect())
+    })
+    .await
+    .map_err(err)?
 }
 
 #[derive(Serialize)]
@@ -1053,18 +1145,23 @@ pub struct PatchRow {
 }
 
 #[tauri::command]
-pub fn list_patches(state: State<'_, AppState>) -> CmdResult<Vec<PatchRow>> {
+pub async fn list_patches(state: State<'_, AppState>) -> CmdResult<Vec<PatchRow>> {
+    let dirs = state.dirs.clone();
     let enabled = state.settings.lock().unwrap().enabled_patches.clone();
-    let patches = bebra_core::patches::scan_patches(&state.dirs).map_err(err)?;
-    Ok(patches
-        .into_iter()
-        .map(|p| PatchRow {
-            enabled: enabled.contains(&p.id),
-            id: p.id,
-            name: p.name,
-            file_size: p.file_size,
-        })
-        .collect())
+    tokio::task::spawn_blocking(move || {
+        let patches = bebra_core::patches::scan_patches(&dirs).map_err(err)?;
+        Ok(patches
+            .into_iter()
+            .map(|p| PatchRow {
+                enabled: enabled.contains(&p.id),
+                id: p.id,
+                name: p.name,
+                file_size: p.file_size,
+            })
+            .collect())
+    })
+    .await
+    .map_err(err)?
 }
 
 /// How long the news feed is kept before it is read again.

@@ -206,6 +206,7 @@ fn version_manifest_roundtrip_and_hash() {
 
     let entries = db.manifest_entries(v).unwrap();
     assert_eq!(entries, m.entries, "same entries, same (sorted) order");
+    assert_eq!(db.count_manifest_entries(v).unwrap(), m.entries.len());
     assert_eq!(db.compute_manifest_hash(v).unwrap(), m.hash);
 
     db.set_version_hash(v, &m.hash).unwrap();

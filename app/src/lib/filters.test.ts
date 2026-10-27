@@ -140,7 +140,7 @@ describe("search", () => {
       map: "Box",
       preset: "Nukeops",
     });
-    for (const q of ["space", "EXAMPLE", "lang:ru", "box", "nuke", "  station  "]) {
+    for (const q of ["space", "EXAMPLE", "lang:ru", "box", "nuke", "  station  ", "space box", "station nuke ru"]) {
       expect(matchesSearch(s, q), q).toBe(true);
     }
     expect(matchesSearch(s, "kitchen")).toBe(false);

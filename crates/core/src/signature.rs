@@ -11,6 +11,8 @@ use crate::{Error, Result};
 
 /// The public key from `SS14.Launcher/signing_key` (identical in the upstream repository).
 const OFFICIAL_KEY_PEM: &str = include_str!("signing_key.pem");
+const MULTIVERSE_KEY_PEM: &str = include_str!("signing_key_multiverse.pem");
+const SUPERMATTER_KEY_PEM: &str = include_str!("signing_key_supermatter.pem");
 
 /// DER prefix of an Ed25519 SubjectPublicKeyInfo; the 32 key bytes follow.
 const SPKI_PREFIX: [u8; 12] = [
@@ -24,6 +26,22 @@ pub fn official_key_pem() -> &'static str {
 
 pub fn official_key() -> Result<VerifyingKey> {
     parse_pem(OFFICIAL_KEY_PEM)
+}
+
+/// The PEM text for a named engine ("Robust", "Multiverse", "Supermatter").
+pub fn key_pem_for_engine(engine: &str) -> &'static str {
+    if engine.eq_ignore_ascii_case("multiverse") {
+        MULTIVERSE_KEY_PEM
+    } else if engine.eq_ignore_ascii_case("supermatter") {
+        SUPERMATTER_KEY_PEM
+    } else {
+        OFFICIAL_KEY_PEM
+    }
+}
+
+/// Returns the verifying key for the requested engine type.
+pub fn key_for_engine(engine: &str) -> Result<VerifyingKey> {
+    parse_pem(key_pem_for_engine(engine))
 }
 
 /// Parses a PEM `PUBLIC KEY` block holding an Ed25519 key.
@@ -92,6 +110,14 @@ pub(crate) mod tests {
     #[test]
     fn official_key_parses() {
         assert!(official_key().is_ok());
+    }
+
+    #[test]
+    fn engine_keys_parse() {
+        assert!(key_for_engine("Robust").is_ok());
+        assert!(key_for_engine("multiverse").is_ok());
+        assert!(key_for_engine("Supermatter").is_ok());
+        assert!(key_for_engine("anything_else").is_ok()); // falls back to robust
     }
 
     #[test]
