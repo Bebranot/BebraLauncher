@@ -32,8 +32,8 @@ import {
 import { i18n } from "./i18n.svelte";
 import { DEFAULT_CUSTOM, applyTheme } from "./themes";
 
-export type Tab = "favorites" | "servers" | "recent" | "news" | "updates" | "options";
-const TABS: Tab[] = ["favorites", "servers", "recent", "news", "updates", "options"];
+export type Tab = "favorites" | "servers" | "recent" | "news" | "updates" | "mods" | "options";
+const TABS: Tab[] = ["favorites", "servers", "recent", "news", "updates", "mods", "options"];
 
 export type Dialog =
   | { kind: "direct" }

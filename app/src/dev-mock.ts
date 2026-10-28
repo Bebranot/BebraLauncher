@@ -373,7 +373,17 @@ export function installMock() {
         case "list_packs":
           return packs.map((p) => ({ ...p, enabled: settings.enabled_packs.includes(p.id) }));
         case "list_patches":
-          return [];
+          return [
+            { id: "Translator.dll", name: "Translator", file_size: 45_200, enabled: settings.enabled_patches.includes("Translator.dll") }
+          ];
+        case "delete_patch":
+          settings.enabled_patches = settings.enabled_patches.filter((p) => p !== a.id);
+          return null;
+        case "install_patch": {
+          const id = (a.name as string) || "Mod.dll";
+          if (!settings.enabled_patches.includes(id)) settings.enabled_patches.push(id);
+          return { id, name: id.replace(/\.dll$/i, ""), file_size: 32_000, enabled: true };
+        }
         case "list_backgrounds":
           return [
             { id: "sample_station.png", name: "sample_station", file_size: 1_240_000 },
@@ -411,6 +421,11 @@ export function installMock() {
           const freed = storageUsed * 0.4;
           storageUsed -= freed;
           return { freed, versions_removed: 2, engines_removed: 1, modules_removed: 0 };
+        }
+        case "clean_storage_all": {
+          const freed = storageUsed * 0.95;
+          storageUsed -= freed;
+          return { freed, versions_removed: 5, engines_removed: 3, modules_removed: 0 };
         }
         case "dump_locale":
           return { files: 370, bytes: 2_400_000, version_id: 2, dir: "C:\\dump\\Locale" };

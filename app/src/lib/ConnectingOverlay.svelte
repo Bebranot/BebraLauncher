@@ -24,13 +24,30 @@
     return code === "account_expired" && detail ? `${detail}: ${base}` : base;
   }
 
+  const isPreparing = $derived(play.phase === "preparing");
+  const FLAVOR_COUNT = 74;
   let flavorIndex = $state(0);
   $effect(() => {
-    if (preparing) {
-      untrack(() => {
-        flavorIndex = Math.floor(Math.random() * 8);
-      });
+    if (!isPreparing) return;
+
+    flavorIndex = Math.floor(Math.random() * FLAVOR_COUNT);
+
+    let timer: ReturnType<typeof setTimeout>;
+
+    function scheduleNext() {
+      // 5 to 12 seconds randomly
+      const delay = 5000 + Math.floor(Math.random() * 7001);
+      timer = setTimeout(() => {
+        flavorIndex = (flavorIndex + 1 + Math.floor(Math.random() * (FLAVOR_COUNT - 1))) % FLAVOR_COUNT;
+        scheduleNext();
+      }, delay);
     }
+
+    scheduleNext();
+
+    return () => {
+      clearTimeout(timer);
+    };
   });
 </script>
 

@@ -86,9 +86,8 @@ fn remove_quietly(path: &Path) -> u64 {
 /// Drops old versions the usual way, then the engines and modules that no remaining version
 /// depends on, and the leftovers of unfinished downloads. Never call this while a game is
 /// being prepared: its engine may not be recorded yet.
-pub fn clean(dirs: &DataDirs, db: &ContentDb) -> Result<CleanReport> {
+fn clean_with_cull(dirs: &DataDirs, db: &ContentDb, cull: CullReport) -> Result<CleanReport> {
     let db_before = report(dirs).content_db;
-    let cull = updater::cleanup(db)?;
 
     let deps = db.all_engine_dependencies()?;
     let engines_in_use: HashSet<&str> = deps
@@ -111,6 +110,10 @@ pub fn clean(dirs: &DataDirs, db: &ContentDb) -> Result<CleanReport> {
         for entry in rd.flatten() {
             let path = entry.path();
             let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if name.ends_with(".part") {
+                out.bytes_freed += remove_quietly(&path);
+                continue;
+            }
             // `<version>.zip` and `<version>.sig`
             let Some(version) = name
                 .strip_suffix(".zip")
@@ -146,6 +149,7 @@ pub fn clean(dirs: &DataDirs, db: &ContentDb) -> Result<CleanReport> {
                     out.modules_removed += 1;
                 }
             }
+            let _ = std::fs::remove_dir(module.path());
         }
     }
 
@@ -166,6 +170,20 @@ pub fn clean(dirs: &DataDirs, db: &ContentDb) -> Result<CleanReport> {
 
     out.bytes_freed += db_before.saturating_sub(report(dirs).content_db);
     Ok(out)
+}
+
+/// Drops old versions the usual way, then the engines and modules that no remaining version
+/// depends on, and the leftovers of unfinished downloads. Never call this while a game is
+/// being prepared: its engine may not be recorded yet.
+pub fn clean(dirs: &DataDirs, db: &ContentDb) -> Result<CleanReport> {
+    let cull = updater::cleanup(db)?;
+    clean_with_cull(dirs, db, cull)
+}
+
+/// Drops all stored versions and unreferenced engines/modules (except any used by a running client).
+pub fn clean_all(dirs: &DataDirs, db: &ContentDb) -> Result<CleanReport> {
+    let cull = updater::cleanup_all(db)?;
+    clean_with_cull(dirs, db, cull)
 }
 
 #[cfg(test)]
@@ -238,6 +256,46 @@ mod tests {
             .join("Robust.Client.WebView/1.2.3/a")
             .is_file());
         assert!(!dirs.modules().join("Robust.Client.WebView/0.9.0").exists());
+        assert!(!dirs.scratch().join("half-downloaded.zip").exists());
+    }
+
+    #[test]
+    fn clean_all_removes_every_version_and_engine() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = DataDirs::at(tmp.path());
+        dirs.ensure().unwrap();
+        let db = ContentDb::open(&dirs.content_db()).unwrap();
+
+        let v = db.create_version("fork", "v1").unwrap();
+        db.add_engine_dependency(v, "Robust", "100.0.0").unwrap();
+        db.add_engine_dependency(v, "Robust.Client.WebView", "1.2.3")
+            .unwrap();
+
+        for ext in ["zip", "sig"] {
+            write(&dirs.engines().join(format!("100.0.0.{ext}")), 10);
+            write(&dirs.engines().join(format!("99.0.0.{ext}")), 10);
+        }
+        write(
+            &dirs
+                .modules()
+                .join("Robust.Client.WebView")
+                .join("1.2.3")
+                .join("a"),
+            20,
+        );
+        write(&dirs.scratch().join("half-downloaded.zip"), 30);
+
+        let r = clean_all(&dirs, &db).unwrap();
+        assert_eq!(r.cull.versions_removed, 1);
+        assert_eq!(r.engines_removed, 2);
+        assert_eq!(r.modules_removed, 1);
+        assert!(r.bytes_freed >= 20 + 20 + 20 + 30);
+
+        assert!(!dirs.engines().join("100.0.0.zip").exists());
+        assert!(!dirs.engines().join("100.0.0.sig").exists());
+        assert!(!dirs.engines().join("99.0.0.zip").exists());
+        assert!(!dirs.engines().join("99.0.0.sig").exists());
+        assert!(!dirs.modules().join("Robust.Client.WebView").exists());
         assert!(!dirs.scratch().join("half-downloaded.zip").exists());
     }
 }

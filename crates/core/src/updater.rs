@@ -219,6 +219,21 @@ pub async fn prepare_launch(
     })
 }
 
+
+
+/// Drops all stored versions and unused blobs, keeping only what a running client is using.
+pub fn cleanup_all(db: &ContentDb) -> Result<CullReport> {
+    let in_use = db.running_client_versions(crate::process::is_process_running_from)?;
+    db.cull(
+        CullPolicy {
+            max_versions: 0,
+            max_versions_per_fork: 0,
+            interrupted_keep_hours: 0,
+        },
+        &in_use,
+    )
+}
+
 /// Housekeeping after an install: drops old versions (the official limits: 15 in total, 3 per
 /// fork), never one that a running client is using.
 pub fn cleanup(db: &ContentDb) -> Result<CullReport> {

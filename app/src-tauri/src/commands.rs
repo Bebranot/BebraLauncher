@@ -259,6 +259,28 @@ pub async fn clean_storage(state: State<'_, AppState>) -> CmdResult<CleanRow> {
     .map_err(err)?
 }
 
+/// Removes all game versions, engines and modules. Refused while a game is
+/// being prepared or running.
+#[tauri::command]
+pub async fn clean_storage_all(state: State<'_, AppState>) -> CmdResult<CleanRow> {
+    if state.game.is_active() {
+        return Err("Очистка недоступна, пока идёт запуск или игра".into());
+    }
+    let dirs = state.dirs.clone();
+    tokio::task::spawn_blocking(move || {
+        let db = ContentDb::open(&dirs.content_db()).map_err(err)?;
+        let r = storage::clean_all(&dirs, &db).map_err(err)?;
+        Ok(CleanRow {
+            freed: r.bytes_freed,
+            versions_removed: r.cull.versions_removed,
+            engines_removed: r.engines_removed,
+            modules_removed: r.modules_removed,
+        })
+    })
+    .await
+    .map_err(err)?
+}
+
 #[derive(Serialize)]
 pub struct AccountRow {
     user_id: String,
@@ -1140,8 +1162,112 @@ pub async fn list_packs(state: State<'_, AppState>) -> CmdResult<Vec<PackRow>> {
 pub struct PatchRow {
     id: String,
     name: String,
+    #[allow(dead_code)]
     file_size: u64,
     enabled: bool,
+}
+
+fn validate_patch_id(id: &str) -> CmdResult<String> {
+    let clean = id.trim();
+    if clean.is_empty()
+        || clean.len() > 200
+        || clean.contains(['/', '\\', ':'])
+        || clean.contains("..")
+    {
+        return Err("Недопустимое имя файла мода".into());
+    }
+    let p = std::path::Path::new(clean);
+    if p.file_name() != Some(std::ffi::OsStr::new(clean)) {
+        return Err("Недопустимое имя файла мода".into());
+    }
+    if !p
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("dll"))
+        .unwrap_or(false)
+    {
+        return Err("Мод должен иметь расширение .dll".into());
+    }
+    Ok(clean.to_string())
+}
+
+#[tauri::command]
+pub fn delete_patch(state: State<'_, AppState>, id: String) -> CmdResult<()> {
+    let clean = validate_patch_id(&id)?;
+    let path = state.dirs.patches().join(&clean);
+    if path.is_file() {
+        std::fs::remove_file(&path).map_err(err)?;
+    }
+    let mut settings = state.settings.lock().unwrap();
+    if settings.enabled_patches.contains(&clean) {
+        settings.enabled_patches.retain(|p| p != &clean);
+        let _ = settings.save(state.dirs.root());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn install_patch(
+    state: State<'_, AppState>,
+    name: String,
+    data_base64: String,
+) -> CmdResult<PatchRow> {
+    let dir = state.dirs.patches();
+    std::fs::create_dir_all(&dir).map_err(err)?;
+
+    let raw_name: String = name
+        .chars()
+        .filter(|c| c.is_alphanumeric() || matches!(*c, '-' | '_' | '.' | ' '))
+        .collect();
+    let mut clean = raw_name.trim().to_string();
+    if clean.is_empty() {
+        return Err("Имя файла не может быть пустым".into());
+    }
+    if !clean.to_ascii_lowercase().ends_with(".dll") {
+        clean.push_str(".dll");
+    }
+    let filename = validate_patch_id(&clean)?;
+
+    let payload = if let Some(idx) = data_base64.find(";base64,") {
+        &data_base64[idx + 8..]
+    } else {
+        &data_base64
+    };
+
+    use base64::Engine;
+    let bytes = base64::prelude::BASE64_STANDARD
+        .decode(payload.trim())
+        .map_err(|e| format!("Не удалось декодировать файл мода: {e}"))?;
+
+    if bytes.is_empty() {
+        return Err("Файл пуст".into());
+    }
+    if bytes.len() > 100 * 1024 * 1024 {
+        return Err("Файл слишком большой (максимум 100 МБ)".into());
+    }
+
+    let target_path = dir.join(&filename);
+    std::fs::write(&target_path, &bytes).map_err(err)?;
+
+    let file_size = bytes.len() as u64;
+    let patch_name = std::path::Path::new(&filename)
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+
+    let mut settings = state.settings.lock().unwrap();
+    if !settings.enabled_patches.contains(&filename) {
+        settings.enabled_patches.push(filename.clone());
+        let _ = settings.save(state.dirs.root());
+    }
+
+    Ok(PatchRow {
+        id: filename,
+        name: patch_name,
+        file_size,
+        enabled: true,
+    })
 }
 
 #[tauri::command]

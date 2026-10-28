@@ -8,6 +8,7 @@
     ["recent", "tab.recent"],
     ["news", "tab.news"],
     ["updates", "tab.updates"],
+    ["mods", "tab.mods"],
     ["options", "tab.options"],
   ];
 </script>

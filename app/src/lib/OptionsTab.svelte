@@ -266,6 +266,8 @@
   // ------------------------------------------------------------ data
   let storage = $state<StorageRow | null>(null);
   let cleaning = $state(false);
+  let cleaningAll = $state(false);
+  let confirmCleanAll = $state(false);
   let cleanResult = $state<string | null>(null);
 
   async function loadStorage() {
@@ -288,6 +290,27 @@
   }
 
   // ------------------------------------------------------------ hidden debug section
+  async function cleanAll() {
+    if (!confirmCleanAll) {
+      confirmCleanAll = true;
+      setTimeout(() => (confirmCleanAll = false), 4000);
+      return;
+    }
+    confirmCleanAll = false;
+    cleaningAll = true;
+    cleanResult = null;
+    try {
+      const r = await api.cleanStorageAll();
+      cleanResult =
+        r.freed > 0 ? t("opt.cleaned", { size: formatBytes(r.freed) }) : t("opt.cleanedNothing");
+      await loadStorage();
+    } catch (e) {
+      cleanResult = errorText(e);
+    } finally {
+      cleaningAll = false;
+    }
+  }
+
   const DEBUG_KEY = "bebra.debug";
   const CLICKS_TO_UNLOCK = 7;
   let debug = $state(false);
@@ -1089,6 +1112,7 @@
         </ul>
       {/if}
       <div class="row">
+        <button class="btn primary" onclick={() => (app.tab = "mods")}>{t("tab.mods")}</button>
         <button class="btn open-r" onclick={() => api.openPatchesFolder()}>{t("opt.patchesOpen")}</button>
         <button class="btn open-l" onclick={loadPatches}>{t("opt.patchesRefresh")}</button>
       </div>
@@ -1109,8 +1133,11 @@
         </small>
       {/if}
       <div class="row">
-        <button class="btn" onclick={clean} disabled={cleaning || app.busy}>
+        <button class="btn" onclick={clean} disabled={cleaning || cleaningAll || app.busy}>
           {cleaning ? t("opt.cleaning") : t("opt.clean")}
+        </button>
+        <button class="btn" onclick={cleanAll} disabled={cleaning || cleaningAll || app.busy}>
+          {cleaningAll ? t("opt.cleaning") : confirmCleanAll ? t("opt.cleanAllConfirm") : t("opt.cleanAll")}
         </button>
         <button class="btn" onclick={() => api.openLogsFolder()}>{t("opt.openLogs")}</button>
         {#if cleanResult}<span class="sub">{cleanResult}</span>{/if}

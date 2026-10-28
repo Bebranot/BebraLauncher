@@ -307,6 +307,9 @@ export const api = {
   listPacks: () => invoke<PackRow[]>("list_packs"),
   openPatchesFolder: () => invoke<void>("open_patches_folder"),
   listPatches: () => invoke<PatchRow[]>("list_patches"),
+  deletePatch: (id: string) => invoke<void>("delete_patch", { id }),
+  installPatch: (name: string, dataBase64: string) =>
+    invoke<PatchRow>("install_patch", { name, dataBase64 }),
   openBackgroundsFolder: () => invoke<void>("open_backgrounds_folder"),
   listBackgrounds: () => invoke<BackgroundRow[]>("list_backgrounds"),
   saveBackground: (name: string, dataBase64: string) =>
@@ -320,6 +323,7 @@ export const api = {
   setLinksRegistered: (enabled: boolean) => invoke<boolean>("set_links_registered", { enabled }),
   storageInfo: () => invoke<StorageRow>("storage_info"),
   cleanStorage: () => invoke<CleanRow>("clean_storage"),
+  cleanStorageAll: () => invoke<CleanRow>("clean_storage_all"),
   updateStatus: () => invoke<UpdateStatus>("update_status"),
   checkUpdate: () => invoke<UpdateStatus>("check_update"),
   downloadUpdate: () => invoke<UpdateStatus>("download_update"),
