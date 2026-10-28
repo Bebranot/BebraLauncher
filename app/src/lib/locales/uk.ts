@@ -37,6 +37,7 @@ export const uk: Dictionary = {
   "col.mode": "Режим",
   "col.map": "Мапа",
   "col.ping": "Пінг",
+  "col.pingTooltip": "Час відповіді HTTP-запиту (/status RTT)",
   "col.time": "Раунд",
   "col.players": "Гравці",
   "server.connect": "Підключитися",
@@ -55,6 +56,7 @@ export const uk: Dictionary = {
   "server.copyAddress": "Копіювати адресу",
   "server.copied": "Скопійовано",
   "server.ping": "{ms} мс",
+  "server.pingTooltip": "HTTP RTT: {ms} мс",
   "server.noPing": "—",
   "server.favoriteMark": "Обране",
   "server.note": "Примітка",
@@ -95,6 +97,7 @@ export const uk: Dictionary = {
   "filters.min": "Мінімум:",
   "filters.max": "Максимум:",
   "filters.reset": "Скинути фільтри",
+  "filters.clickToFilter": "Фільтрувати за цим тегом",
 
   "news.recent": "Останні новини:",
   "news.loading": "Отримання новин…",
@@ -125,6 +128,7 @@ export const uk: Dictionary = {
   "fail.account_expired": "Вхід в акаунт закінчився: увійдіть знову.",
   "fail.account_missing": "Акаунт не знайдено: увійдіть знову.",
   "fail.auth_required": "Серверу потрібен акаунт Wizards' Den: увійдіть в акаунт угорі праворуч.",
+  "fail.disk_full": "Недостатньо вільного місця на диску для завантаження (потрібно щонайменше 500 МБ).",
   "fail.loader_missing": "Не знайдено завантажувач гри (SS14.Loader.exe). Перевстановіть лаунчер.",
   "fail.start": "Не вдалося запустити гру.",
   "fail.other": "Не вдалося запустити гру.",
@@ -272,7 +276,7 @@ export const uk: Dictionary = {
   "opt.col.players": "Гравці",
   "opt.col.map": "Мапа",
   "opt.col.mode": "Режим",
-  "opt.col.ping": "Пінг",
+  "opt.col.ping": "Пінг (HTTP)",
 
   "opt.packs": "Текстові пакети",
   "opt.packsDesc":

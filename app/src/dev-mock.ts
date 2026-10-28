@@ -417,6 +417,8 @@ export function installMock() {
             other: storageUsed * 0.1,
             total: storageUsed,
           };
+        case "list_running_clients":
+          return [];
         case "clean_storage": {
           const freed = storageUsed * 0.4;
           storageUsed -= freed;

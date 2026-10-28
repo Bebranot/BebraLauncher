@@ -269,27 +269,50 @@ pub fn infer_tags(name: &str, existing_tags: &[String]) -> Vec<String> {
 
     let has_lang = existing_tags.iter().any(|t| t.starts_with("lang:"));
     if !has_lang {
-        if lower_name.contains("[ru]") || lower_name.contains("[rus]") || lower_name.contains("[ру]") || lower_name.contains(" ru ") {
+        if lower_name.contains("[ru]")
+            || lower_name.contains("[rus]")
+            || lower_name.contains("[ру]")
+            || lower_name.contains(" ru ")
+        {
             added.push("lang:ru".to_string());
-        } else if lower_name.contains("[en]") || lower_name.contains("[eng]") || lower_name.contains(" en ") {
+        } else if lower_name.contains("[en]")
+            || lower_name.contains("[eng]")
+            || lower_name.contains(" en ")
+        {
             added.push("lang:en".to_string());
         }
     }
 
     let has_18 = existing_tags.iter().any(|t| t == "18+");
-    if !has_18 && (lower_name.contains("18+") || lower_name.contains("+18") || lower_name.contains("[erp]")) {
+    if !has_18
+        && (lower_name.contains("18+")
+            || lower_name.contains("+18")
+            || lower_name.contains("[erp]"))
+    {
         added.push("18+".to_string());
     }
 
     let has_rp = existing_tags.iter().any(|t| t.starts_with("rp:"));
     if !has_rp {
-        if lower_name.contains("[hrp]") || lower_name.contains("[hrp+]") || lower_name.contains(" hrp ") {
+        if lower_name.contains("[hrp]")
+            || lower_name.contains("[hrp+]")
+            || lower_name.contains(" hrp ")
+        {
             added.push("rp:high".to_string());
-        } else if lower_name.contains("[mrp]") || lower_name.contains("[mrp+]") || lower_name.contains(" mrp ") {
+        } else if lower_name.contains("[mrp]")
+            || lower_name.contains("[mrp+]")
+            || lower_name.contains(" mrp ")
+        {
             added.push("rp:med".to_string());
-        } else if lower_name.contains("[lrp]") || lower_name.contains("[lrp+]") || lower_name.contains(" lrp ") {
+        } else if lower_name.contains("[lrp]")
+            || lower_name.contains("[lrp+]")
+            || lower_name.contains(" lrp ")
+        {
             added.push("rp:low".to_string());
-        } else if lower_name.contains("[nrp]") || lower_name.contains("[nrp+]") || lower_name.contains(" nrp ") {
+        } else if lower_name.contains("[nrp]")
+            || lower_name.contains("[nrp+]")
+            || lower_name.contains(" nrp ")
+        {
             added.push("rp:none".to_string());
         }
     }

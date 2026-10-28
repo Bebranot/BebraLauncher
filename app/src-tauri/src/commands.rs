@@ -484,7 +484,11 @@ pub fn raise_favorite(state: State<'_, AppState>, address: String) -> CmdResult<
 
 /// Moves a favourite server up (delta = -1) or down (delta = 1).
 #[tauri::command]
-pub fn move_favorite(state: State<'_, AppState>, address: String, delta: i32) -> CmdResult<Vec<String>> {
+pub fn move_favorite(
+    state: State<'_, AppState>,
+    address: String,
+    delta: i32,
+) -> CmdResult<Vec<String>> {
     let mut s = state.settings.lock().unwrap();
     s.move_favorite(&address, delta);
     s.save(state.dirs.root()).map_err(err)?;
@@ -591,6 +595,29 @@ pub fn launch_preview(
     start_play(&app, &state, &address, None, account, true)
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunningClientDto {
+    pub pid: u32,
+    #[serde(rename = "playsAs")]
+    pub plays_as: String,
+    pub address: String,
+}
+
+/// Lists games that are currently running.
+#[tauri::command]
+pub fn list_running_clients(state: State<'_, AppState>) -> Vec<RunningClientDto> {
+    let sessions = crate::sessions::load_sessions(state.dirs.root());
+    sessions
+        .into_iter()
+        .filter(|s| bebra_core::process::is_process_running_from(s.pid, &s.image_path))
+        .map(|s| RunningClientDto {
+            pid: s.pid,
+            plays_as: s.plays_as,
+            address: s.address,
+        })
+        .collect()
+}
+
 /// Starts the game. The server and the account are remembered once the game is running.
 pub fn start_play(
     app: &AppHandle,
@@ -649,7 +676,12 @@ const REDIAL_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
 /// Handles the command line of a launcher process: our own start, a second start (forwarded by
 /// the single-instance plugin) or the game asking for a reconnect (`--commands …`).
 pub fn handle_launcher_args(app: &AppHandle, args: &[String]) {
-    for action in redial::actions(args) {
+    let actions = redial::actions(args);
+    if actions.is_empty() {
+        game::restore_window(app);
+        return;
+    }
+    for action in actions {
         match action {
             Action::Activate => game::restore_window(app),
             Action::Open { address } => {
@@ -807,7 +839,11 @@ pub fn list_backgrounds(state: State<'_, AppState>) -> CmdResult<Vec<BackgroundR
                         .file_stem()
                         .map(|s| s.to_string_lossy().to_string())
                         .unwrap_or_else(|| id.clone());
-                    rows.push(BackgroundRow { id, name, file_size });
+                    rows.push(BackgroundRow {
+                        id,
+                        name,
+                        file_size,
+                    });
                 }
             }
         }

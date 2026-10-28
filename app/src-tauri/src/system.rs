@@ -253,7 +253,6 @@ pub fn set_links_registered(enabled: bool) -> Result<(), String> {
     Ok(())
 }
 
-
 pub fn read_cpu_name() -> Option<String> {
     use windows_sys::Win32::System::Registry::HKEY_LOCAL_MACHINE;
     let subkey = wide(r"HARDWARE\DESCRIPTION\System\CentralProcessor\0");
@@ -301,7 +300,9 @@ pub fn is_vulnerable_intel_cpu() -> bool {
     let affected = ["i7-13", "i9-13", "i7-14", "i9-14", "i5-13600K", "i5-14600K"];
     let excluded = ["HX", "H", "P", "U", "T"];
     let has_affected = affected.iter().any(|a| name.contains(a));
-    let has_excluded = excluded.iter().any(|e| name.ends_with(e) || name.contains(&format!("{e} ")));
+    let has_excluded = excluded
+        .iter()
+        .any(|e| name.ends_with(e) || name.contains(&format!("{e} ")));
     has_affected && !has_excluded
 }
 

@@ -29,10 +29,11 @@
   }
 </script>
 
-{#snippet head(key: SortKey, label: string, center: boolean)}
+{#snippet head(key: SortKey, label: string, center: boolean, title?: string)}
   <button
     class="cell hbtn"
     class:center
+    {title}
     disabled={!sortable}
     onclick={() => sortBy(key)}
   >
@@ -45,7 +46,7 @@
     {@render head("name", t("col.name"), false)}
     {#if columns.mode}{@render head("mode", t("col.mode"), true)}{/if}
     {#if columns.map}{@render head("map", t("col.map"), true)}{/if}
-    {#if columns.ping}{@render head("ping", t("col.ping"), true)}{/if}
+    {#if columns.ping}{@render head("ping", t("col.ping"), true, t("col.pingTooltip"))}{/if}
     {#if columns.round_time}{@render head("time", t("col.time"), true)}{/if}
     {#if columns.players}{@render head("players", t("col.players"), true)}{/if}
     <div class="cell last"></div>

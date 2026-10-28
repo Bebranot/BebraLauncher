@@ -479,20 +479,29 @@ mod tests {
         store_contract(&MemoryStore::default());
     }
 
-    /// A store entry name that no real account uses, removed again at the end.
-    struct TestCredentials(CredentialStore);
+    static TEST_CRED_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-    impl TestCredentials {
+    /// A store entry name that no real account uses, removed again at the end.
+    struct TestCredentials<'a> {
+        store: CredentialStore,
+        _guard: std::sync::MutexGuard<'a, ()>,
+    }
+
+    impl<'a> TestCredentials<'a> {
         fn new(tag: &str) -> Self {
+            let guard = TEST_CRED_MUTEX.lock().unwrap();
             let prefix = format!("BebraLauncher-test/{tag}-{}/", std::process::id());
-            Self(CredentialStore::with_prefix(prefix))
+            Self {
+                store: CredentialStore::with_prefix(prefix),
+                _guard: guard,
+            }
         }
     }
 
-    impl Drop for TestCredentials {
+    impl<'a> Drop for TestCredentials<'a> {
         fn drop(&mut self) {
-            for a in self.0.list().unwrap_or_default() {
-                let _ = self.0.remove(a.user_id);
+            for a in self.store.list().unwrap_or_default() {
+                let _ = self.store.remove(a.user_id);
             }
         }
     }
@@ -500,28 +509,34 @@ mod tests {
     #[test]
     fn credential_manager_follows_the_contract() {
         let t = TestCredentials::new("contract");
-        store_contract(&t.0);
+        store_contract(&t.store);
     }
 
     #[test]
     fn credential_manager_survives_junk_entries_and_is_scoped_by_prefix() {
         let t = TestCredentials::new("junk");
-        let other = TestCredentials::new("other");
+        let other = CredentialStore::with_prefix(format!(
+            "BebraLauncher-test/other-{}/",
+            std::process::id()
+        ));
 
-        t.0.save(&account("alice", 1, NOW + Duration::days(30)))
+        t.store
+            .save(&account("alice", 1, NOW + Duration::days(30)))
             .unwrap();
         other
-            .0
             .save(&account("mallory", 9, NOW + Duration::days(30)))
             .unwrap();
         // Something under our prefix that isn't one of our accounts.
-        cred::write(&format!("{}garbage", t.0.prefix), "x", b"this is not json").unwrap();
+        cred::write(&format!("{}garbage", t.store.prefix), "x", b"this is not json").unwrap();
 
-        let listed = t.0.list().unwrap();
+        let listed = t.store.list().unwrap();
         assert_eq!(listed.len(), 1, "junk is skipped");
         assert_eq!(listed[0].username, "alice");
-        assert_eq!(other.0.list().unwrap().len(), 1);
-        let _ = cred::delete(&format!("{}garbage", t.0.prefix));
+        assert_eq!(other.list().unwrap().len(), 1);
+        let _ = cred::delete(&format!("{}garbage", t.store.prefix));
+        for a in other.list().unwrap_or_default() {
+            let _ = other.remove(a.user_id);
+        }
     }
 
     #[test]
@@ -533,8 +548,8 @@ mod tests {
             datetime!(2027-01-02 03:04:05.1234567 UTC),
         );
         a.token = Token::new("A".repeat(300));
-        t.0.save(&a).unwrap();
-        assert_eq!(t.0.list().unwrap(), [a]);
+        t.store.save(&a).unwrap();
+        assert_eq!(t.store.list().unwrap(), [a]);
     }
 
     #[test]
@@ -542,7 +557,7 @@ mod tests {
         let t = TestCredentials::new("big");
         let mut a = account("big", 3, NOW);
         a.token = Token::new("x".repeat(5000));
-        assert!(t.0.save(&a).is_err());
+        assert!(t.store.save(&a).is_err());
     }
 
     // ---- login / refresh / logout ----

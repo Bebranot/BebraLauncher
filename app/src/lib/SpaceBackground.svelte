@@ -122,9 +122,18 @@
     }
   }
 
+  function prefersReducedMotion(): boolean {
+    if (typeof window === "undefined" || !window.matchMedia) return false;
+    return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  }
+
   function startLoop() {
     if (animId !== null) return;
     if (document.hidden || (app.settings?.bg_type ?? "space") !== "space") return;
+    if (prefersReducedMotion()) {
+      render(0);
+      return;
+    }
     animId = requestAnimationFrame(loop);
   }
 
@@ -137,7 +146,7 @@
 
   function loop(time: number) {
     animId = null;
-    if (document.hidden || (app.settings?.bg_type ?? "space") !== "space") {
+    if (document.hidden || (app.settings?.bg_type ?? "space") !== "space" || prefersReducedMotion()) {
       return;
     }
     if (time - lastRenderTime >= FRAME_INTERVAL) {
@@ -165,10 +174,25 @@
     render(performance.now());
   }
 
+  let motionQuery: MediaQueryList | null = null;
+
+  function handleMotionChange() {
+    if (prefersReducedMotion()) {
+      stopLoop();
+      render(0);
+    } else if ((app.settings?.bg_type ?? "space") === "space" && !document.hidden) {
+      startLoop();
+    }
+  }
+
   onMount(() => {
     handleResize();
     window.addEventListener("resize", handleResize);
     document.addEventListener("visibilitychange", handleVisibilityChange);
+    if (window.matchMedia) {
+      motionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
+      motionQuery.addEventListener("change", handleMotionChange);
+    }
     startLoop();
   });
 
@@ -176,6 +200,10 @@
     stopLoop();
     window.removeEventListener("resize", handleResize);
     document.removeEventListener("visibilitychange", handleVisibilityChange);
+    if (motionQuery) {
+      motionQuery.removeEventListener("change", handleMotionChange);
+      motionQuery = null;
+    }
   });
 
   const bgType = $derived(app.settings?.bg_type ?? "space");

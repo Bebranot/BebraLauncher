@@ -5,9 +5,18 @@ use std::path::{Path, PathBuf};
 use bebra_core::launch::FALLBACK_USERNAME;
 use serde::{Deserialize, Serialize};
 
+pub const CURRENT_SCHEMA_VERSION: u32 = 1;
+
+fn default_schema_version() -> u32 {
+    CURRENT_SCHEMA_VERSION
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
+    /// Settings schema version for migrations and compatibility.
+    #[serde(default = "default_schema_version")]
+    pub schema_version: u32,
     /// The name used when playing without an account.
     pub guest_name: String,
     /// Start the game in the GLES2 fallback renderer.
@@ -224,6 +233,7 @@ pub const HISTORY_LIMIT: usize = 20;
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            schema_version: CURRENT_SCHEMA_VERSION,
             guest_name: FALLBACK_USERNAME.to_string(),
             compat_mode: false,
             discord_rpc: true,
@@ -277,19 +287,66 @@ impl Settings {
         root.join("settings.json")
     }
 
-    /// A missing or unreadable file means defaults: settings must never stop the app from starting.
-    pub fn load(root: &Path) -> Self {
-        std::fs::read(Self::path(root))
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default()
+    pub fn backup_path(root: &Path) -> PathBuf {
+        root.join("settings.json.bak")
     }
 
+    /// Loads settings with automatic backup recovery and corrupt file quarantine.
+    /// If settings.json is corrupted, it attempts to recover from settings.json.bak,
+    /// quarantines the corrupt file, and falls back to defaults only if no valid file exists.
+    pub fn load(root: &Path) -> Self {
+        let path = Self::path(root);
+        let bak = Self::backup_path(root);
+
+        if path.exists() {
+            match std::fs::read(&path) {
+                Ok(bytes) => match serde_json::from_slice::<Settings>(&bytes) {
+                    Ok(settings) => return settings,
+                    Err(e) => {
+                        crate::applog::line(&format!(
+                            "settings.json is corrupted ({e}); quarantining and attempting recovery"
+                        ));
+                        let ts = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs();
+                        let corrupt_path = root.join(format!("settings.json.corrupt-{ts}"));
+                        let _ = std::fs::rename(&path, corrupt_path);
+                    }
+                },
+                Err(e) => {
+                    crate::applog::line(&format!("cannot read settings.json ({e})"));
+                }
+            }
+        }
+
+        // Try recovering from backup
+        if bak.exists() {
+            if let Ok(bytes) = std::fs::read(&bak) {
+                if let Ok(settings) = serde_json::from_slice::<Settings>(&bytes) {
+                    crate::applog::line("settings restored successfully from settings.json.bak");
+                    return settings;
+                }
+            }
+        }
+
+        Settings::default()
+    }
+
+    /// Saves settings atomically, keeping a backup of the previous valid settings.json.
     pub fn save(&self, root: &Path) -> std::io::Result<()> {
         std::fs::create_dir_all(root)?;
         let path = Self::path(root);
+        let bak = Self::backup_path(root);
         let tmp = path.with_extension("json.tmp");
+
         std::fs::write(&tmp, serde_json::to_vec_pretty(self)?)?;
+
+        if path.exists() {
+            // Keep previous valid version as backup
+            let _ = std::fs::copy(&path, &bak);
+        }
+
         std::fs::rename(tmp, path)
     }
 
@@ -357,14 +414,20 @@ impl Settings {
     }
 
     /// Renames or changes the address of an existing favourite.
-    pub fn edit_favorite(&mut self, old_address: &str, new_address: &str, new_name: Option<String>) {
+    pub fn edit_favorite(
+        &mut self,
+        old_address: &str,
+        new_address: &str,
+        new_name: Option<String>,
+    ) {
         if let Some(i) = self.favorites.iter().position(|a| a == old_address) {
             let saved_name = new_name.or_else(|| self.favorite_names.remove(old_address));
             self.favorites[i] = new_address.to_string();
             if let Some(n) = saved_name {
                 let trimmed = n.trim();
                 if !trimmed.is_empty() {
-                    self.favorite_names.insert(new_address.to_string(), trimmed.chars().take(100).collect());
+                    self.favorite_names
+                        .insert(new_address.to_string(), trimmed.chars().take(100).collect());
                 } else {
                     self.favorite_names.remove(new_address);
                 }
@@ -377,7 +440,8 @@ impl Settings {
         if let Some(n) = name {
             let trimmed = n.trim();
             if !trimmed.is_empty() {
-                self.favorite_names.insert(address.to_string(), trimmed.chars().take(100).collect());
+                self.favorite_names
+                    .insert(address.to_string(), trimmed.chars().take(100).collect());
                 return;
             }
         }
@@ -680,6 +744,43 @@ mod tests {
     }
 
     #[test]
+    fn corrupt_settings_restores_from_backup_and_quarantines() {
+        let dir = tempdir();
+        let s = Settings {
+            guest_name: "SavedPlayer".into(),
+            compat_mode: true,
+            ..Settings::default()
+        };
+        // First save creates settings.json
+        s.save(&dir).unwrap();
+        // Second save creates settings.json.bak
+        let s2 = Settings {
+            guest_name: "UpdatedPlayer".into(),
+            compat_mode: true,
+            ..Settings::default()
+        };
+        s2.save(&dir).unwrap();
+
+        assert!(Settings::backup_path(&dir).exists());
+
+        // Corrupt main settings.json
+        std::fs::write(Settings::path(&dir), b"CORRUPTED_JSON_DATA_GARBAGE").unwrap();
+
+        // Load should recover from backup
+        let loaded = Settings::load(&dir);
+        assert_eq!(loaded.guest_name, "SavedPlayer");
+
+        // The corrupt file should have been moved/quarantined
+        let files = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+            .collect::<Vec<_>>();
+        assert!(files
+            .iter()
+            .any(|f| f.starts_with("settings.json.corrupt-")));
+    }
+
+    #[test]
     fn guest_name_is_cleaned() {
         let s = Settings {
             guest_name: "  \u{7}  ".into(),
@@ -956,7 +1057,9 @@ mod tests {
         let mut s = Settings::default();
         s.set_server_note("ss14s://corvax.example", "  Главный инженер на смене  ");
         assert_eq!(
-            s.server_notes.get("ss14s://corvax.example").map(String::as_str),
+            s.server_notes
+                .get("ss14s://corvax.example")
+                .map(String::as_str),
             Some("Главный инженер на смене")
         );
 
@@ -965,7 +1068,10 @@ mod tests {
         assert!(!s.server_notes.contains_key("ss14s://corvax.example"));
 
         // Sanitization trims, drops empty/invalid addresses and limits length
-        s.server_notes.insert("  ss14s://test.org  ".into(), "  Заметка \0 с нулём  ".into());
+        s.server_notes.insert(
+            "  ss14s://test.org  ".into(),
+            "  Заметка \0 с нулём  ".into(),
+        );
         s.server_notes.insert("   ".into(), "валидный текст".into());
         let san = s.sanitized();
         assert_eq!(
@@ -997,15 +1103,21 @@ mod tests {
         // Edit favorite a -> a2 with new name
         s.edit_favorite("a", "a2", Some("Alpha 2".into()));
         assert_eq!(s.favorites, ["b", "a2", "c"]);
-        assert_eq!(s.favorite_names.get("a2").map(String::as_str), Some("Alpha 2"));
+        assert_eq!(
+            s.favorite_names.get("a2").map(String::as_str),
+            Some("Alpha 2")
+        );
 
         // Sanitization of favorite names and launcher UI scale
-        s.favorite_names.insert("  ss14s://fav.org  ".into(), "  Имя \0 с нулём  ".into());
+        s.favorite_names
+            .insert("  ss14s://fav.org  ".into(), "  Имя \0 с нулём  ".into());
         s.favorite_names.insert("   ".into(), "имя".into());
         s.launcher_ui_scale = 300;
         let san = s.sanitized();
         assert_eq!(
-            san.favorite_names.get("ss14s://fav.org").map(String::as_str),
+            san.favorite_names
+                .get("ss14s://fav.org")
+                .map(String::as_str),
             Some("Имя  с нулём")
         );
         assert!(!san.favorite_names.contains_key("   "));

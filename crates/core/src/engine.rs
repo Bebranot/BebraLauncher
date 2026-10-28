@@ -76,7 +76,11 @@ pub struct ResolvedEngine {
     pub sig: String,
 }
 
-async fn fetch_manifest(client: &Client, urls: &UrlFallbackSet, suffix: &str) -> Result<EngineIndex> {
+async fn fetch_manifest(
+    client: &Client,
+    urls: &UrlFallbackSet,
+    suffix: &str,
+) -> Result<EngineIndex> {
     let resp = urls.join(suffix).get(client).await?;
     if !resp.status().is_success() {
         return Err(Error::HttpStatus {
@@ -93,7 +97,11 @@ impl EngineIndex {
         match fetch_manifest(client, urls, "manifest.json").await {
             Ok(idx) => Ok(idx),
             Err(e) => {
-                if urls.urls().iter().any(|u| u.contains("spacestationmultiverse")) {
+                if urls
+                    .urls()
+                    .iter()
+                    .any(|u| u.contains("spacestationmultiverse"))
+                {
                     fetch_manifest(client, urls, "ssmv-engine-manifest").await
                 } else {
                     Err(e)
@@ -240,9 +248,12 @@ pub async fn install_engine(
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let part = dirs
-        .engines()
-        .join(format!("{}.zip.{}-{}.part", resolved.version, std::process::id(), nanos));
+    let part = dirs.engines().join(format!(
+        "{}.zip.{}-{}.part",
+        resolved.version,
+        std::process::id(),
+        nanos
+    ));
     let result = download_and_check(client, &resolved, &want_sha, key, &part, progress).await;
     if let Err(e) = result {
         let _ = std::fs::remove_file(&part);

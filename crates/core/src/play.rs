@@ -36,6 +36,10 @@ pub enum PlayError {
     InfoUnreachable { url: String, source: Error },
     #[error("the server gave no build information")]
     NoBuild,
+    #[error("a Wizards' Den account is required to join this server")]
+    AuthRequired,
+    #[error("not enough free disk space to install the game")]
+    DiskFull,
     #[error("failed to install game files: {0}")]
     Files(Error),
     #[error("failed to install the engine: {0}")]
@@ -50,6 +54,8 @@ impl PlayError {
         match self {
             Self::InfoUnreachable { .. } => "info_unreachable",
             Self::NoBuild => "no_build",
+            Self::AuthRequired => "auth_required",
+            Self::DiskFull => "disk_full",
             Self::Files(_) => "files",
             Self::Engine(_) => "engine",
             Self::Other(_) => "other",
@@ -60,7 +66,7 @@ impl PlayError {
     pub fn detail(&self) -> String {
         match self {
             Self::InfoUnreachable { url, source } => format!("{url}: {source}"),
-            Self::NoBuild => String::new(),
+            Self::NoBuild | Self::AuthRequired | Self::DiskFull => String::new(),
             Self::Files(e) | Self::Engine(e) | Self::Other(e) => e.to_string(),
         }
     }
@@ -130,6 +136,17 @@ pub async fn prepare(
                 source,
             })?
     };
+
+    // Preflight checks: verify auth requirement and free disk space
+    // before starting heavy content downloads.
+    if info.auth.mode == AuthMode::Required && req.account.is_none() {
+        return Err(PlayError::AuthRequired);
+    }
+    if let Some(free_bytes) = free_disk_space_bytes(dirs.root()) {
+        if free_bytes < 500 * 1024 * 1024 {
+            return Err(PlayError::DiskFull);
+        }
+    }
     let mut build = info.build.clone().ok_or(PlayError::NoBuild)?;
     if req.via_hub {
         build.apply_self_hosting(&req.addr);
@@ -260,4 +277,36 @@ pub async fn prepare(
         mode: content.mode,
         cleanup,
     })
+}
+
+#[cfg(windows)]
+fn free_disk_space_bytes(path: &std::path::Path) -> Option<u64> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+
+    let mut path_u16: Vec<u16> = path.as_os_str().encode_wide().collect();
+    path_u16.push(0);
+
+    let mut free_bytes_available: u64 = 0;
+    let mut total_bytes: u64 = 0;
+    let mut total_free_bytes: u64 = 0;
+
+    unsafe {
+        let ok = GetDiskFreeSpaceExW(
+            path_u16.as_ptr(),
+            &mut free_bytes_available,
+            &mut total_bytes,
+            &mut total_free_bytes,
+        );
+        if ok != 0 {
+            Some(free_bytes_available)
+        } else {
+            None
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn free_disk_space_bytes(_path: &std::path::Path) -> Option<u64> {
+    None
 }

@@ -109,12 +109,65 @@ export function matchesFilters(s: ServerRow, f: FilterState): boolean {
 }
 
 /** Free-text search over what the player sees of a server. Supports multi-term queries. */
+export function normalizeSearch(str: string): string {
+  return str.toLowerCase().replace(/ё/g, "е");
+}
+
+export function searchVariants(term: string): string[] {
+  const variants = new Set<string>();
+  variants.add(term);
+
+  // RU -> EN
+  const ruToEnMap: Record<string, string> = {
+    а: "a", б: "b", в: "v", г: "g", д: "d", е: "e", ё: "e", ж: "zh",
+    з: "z", и: "i", й: "y", к: "k", л: "l", м: "m", н: "n", о: "o",
+    п: "p", р: "r", с: "s", т: "t", у: "u", ф: "f", х: "kh", ц: "ts",
+    ч: "ch", ш: "sh", щ: "shch", ъ: "", ы: "y", ь: "", э: "e", ю: "yu", я: "ya",
+  };
+  const enDirect = term.split("").map((c) => ruToEnMap[c] ?? c).join("");
+  variants.add(enDirect);
+  variants.add(enDirect.replace(/k/g, "c"));
+
+  const enX = term.replace(/кс/g, "x").split("").map((c) => ruToEnMap[c] ?? c).join("");
+  variants.add(enX);
+  variants.add(enX.replace(/k/g, "c"));
+
+  // EN -> RU
+  const ruBase = term
+    .replace(/shch/g, "щ")
+    .replace(/ch/g, "ч")
+    .replace(/sh/g, "ш")
+    .replace(/zh/g, "ж")
+    .replace(/kh/g, "х")
+    .replace(/ts/g, "ц")
+    .replace(/yu/g, "ю")
+    .replace(/ya/g, "я")
+    .replace(/ye/g, "е")
+    .replace(/x/g, "кс");
+
+  const enToRuMap: Record<string, string> = {
+    a: "а", b: "б", c: "к", d: "д", e: "е", f: "ф", g: "г", h: "х",
+    i: "и", j: "дж", k: "к", l: "л", m: "м", n: "н", o: "о", p: "п",
+    q: "к", r: "р", s: "с", t: "т", u: "у", v: "в", w: "в",
+    y: "й", z: "з",
+  };
+  const ruDirect = ruBase.split("").map((c) => enToRuMap[c] ?? c).join("");
+  variants.add(ruDirect);
+
+  return Array.from(variants).filter((v) => v.length > 0);
+}
+
 export function matchesSearch(s: ServerRow, query: string, note?: string | null): boolean {
-  const q = query.trim().toLowerCase();
+  const q = normalizeSearch(query.trim());
   if (!q) return true;
-  const hay = `${s.name ?? ""} ${s.address} ${s.tags.join(" ")} ${s.map ?? ""} ${s.preset ?? ""} ${note ?? ""}`.toLowerCase();
+  const hay = normalizeSearch(
+    `${s.name ?? ""} ${s.address} ${s.tags.join(" ")} ${s.map ?? ""} ${s.preset ?? ""} ${note ?? ""}`,
+  );
   const terms = q.split(/\s+/).filter(Boolean);
-  return terms.every((term) => hay.includes(term));
+  return terms.every((term) => {
+    const vars = searchVariants(term);
+    return vars.some((v) => hay.includes(v));
+  });
 }
 
 // ---------------------------------------------------------------- sorting

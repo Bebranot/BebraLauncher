@@ -66,6 +66,7 @@ pub enum PlayEvent {
 pub struct GameState {
     preparing: Mutex<Option<Arc<Notify>>>,
     running: Mutex<std::collections::HashSet<u32>>,
+    token_refresh_lock: tokio::sync::Mutex<()>,
 }
 
 impl GameState {
@@ -192,7 +193,7 @@ pub fn start(app: AppHandle, game: Arc<GameState>, params: PlayParams) -> Result
             let prepared = rt.block_on(async {
                 tokio::select! {
                     () = cancel.notified() => Err(None),
-                    r = prepare(&app, &params) => r.map_err(Some),
+                    r = prepare(&app, &game_clone, &params) => r.map_err(Some),
                 }
             });
 
@@ -248,14 +249,18 @@ impl PlayEvent {
     }
 }
 
-async fn prepare(app: &AppHandle, params: &PlayParams) -> Result<play::PreparedGame, Failure> {
+async fn prepare(
+    app: &AppHandle,
+    game: &GameState,
+    params: &PlayParams,
+) -> Result<play::PreparedGame, Failure> {
     let emit = |event: PlayEvent| {
         let _ = app.emit(EVENT, event);
     };
 
     emit(PlayEvent::Stage { stage: "account" });
     let account = match params.account {
-        Some(id) => Some(resolve_account(&params.client, id).await?),
+        Some(id) => Some(resolve_account(game, &params.client, id).await?),
         None => None,
     };
 
@@ -365,7 +370,14 @@ fn stage_name(stage: Stage) -> &'static str {
 }
 
 /// The saved account, with its login checked (and renewed if it is about to expire).
-async fn resolve_account(client: &Client, id: Uuid) -> Result<StoredAccount, Failure> {
+/// Uses single-flight locking to prevent race conditions during parallel game launches.
+async fn resolve_account(
+    game: &GameState,
+    client: &Client,
+    id: Uuid,
+) -> Result<StoredAccount, Failure> {
+    let _guard = game.token_refresh_lock.lock().await;
+
     let store = CredentialStore::default();
     let saved = store
         .list()
@@ -465,13 +477,30 @@ fn run_game(
     game.register_running(pid);
     crate::applog::line(&format!("game started, pid {pid}"));
     remember_game(app, params);
+
+    let session = crate::sessions::GameSession {
+        id: session_id,
+        pid,
+        image_path: prepared_game.command.program.to_string_lossy().to_string(),
+        address: params.history_key.clone(),
+        server_name: params.server_name.clone(),
+        account: params.account.map(|a| a.to_string()),
+        plays_as: prepared_game.plays_as.clone(),
+        log_path: out_log.clone(),
+        started_at_secs: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+    };
+    crate::sessions::record_start(dirs.root(), session);
+
     emit(PlayEvent::Running {
         pid,
         plays_as: prepared_game.plays_as,
         address: params.history_key.clone(),
     });
     if params.close_on_play {
-        crate::applog::line("close_on_play enabled: exiting launcher");
+        crate::applog::line("close_on_play enabled: session saved, exiting launcher");
         app.exit(0);
         return;
     }
@@ -482,6 +511,7 @@ fn run_game(
     let started = std::time::Instant::now();
     let code = child.wait().ok().and_then(|s| s.code());
     let remaining = game.unregister_running(pid);
+    let _ = crate::sessions::record_end(dirs.root(), pid);
     record_play_time(app, &params.history_key, started.elapsed().as_secs());
     crate::applog::line(&format!(
         "game pid {pid} exited, code {code:?}, after {} s (remaining active: {remaining})",

@@ -322,6 +322,7 @@ export const api = {
   getLinksRegistered: () => invoke<boolean>("get_links_registered"),
   setLinksRegistered: (enabled: boolean) => invoke<boolean>("set_links_registered", { enabled }),
   storageInfo: () => invoke<StorageRow>("storage_info"),
+  runningClients: () => invoke<RunningClient[]>("list_running_clients"),
   cleanStorage: () => invoke<CleanRow>("clean_storage"),
   cleanStorageAll: () => invoke<CleanRow>("clean_storage_all"),
   updateStatus: () => invoke<UpdateStatus>("update_status"),

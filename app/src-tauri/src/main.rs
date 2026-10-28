@@ -8,6 +8,7 @@ mod game;
 mod news;
 mod redial;
 mod selfupdate;
+mod sessions;
 mod settings;
 mod system;
 
@@ -39,17 +40,22 @@ fn main() {
         "start BebraLauncher {}",
         env!("CARGO_PKG_VERSION")
     ));
-    let settings = Settings::load(dirs.root());
+    let mut settings = Settings::load(dirs.root());
+    let recovered_running = sessions::recover_sessions(dirs.root(), &mut settings);
     let client = http::build_client_with_proxy(Some(&settings.proxy)).unwrap_or_else(|e| {
         // A broken proxy setting must not keep the launcher from starting.
         applog::line(&format!("proxy ignored: {e}"));
         http::build_client().expect("failed to set up the http client")
     });
+    let game = Arc::new(GameState::default());
+    for s in &recovered_running {
+        game.register_running(s.pid);
+    }
     let state = AppState {
         client,
         settings: Mutex::new(settings),
         dirs,
-        game: Arc::default(),
+        game,
         news: Mutex::new(None),
         update: selfupdate::UpdateState::default(),
     };
@@ -98,6 +104,7 @@ fn main() {
             commands::get_links_registered,
             commands::set_links_registered,
             commands::storage_info,
+            commands::list_running_clients,
             commands::clean_storage,
             commands::clean_storage_all,
             commands::play,

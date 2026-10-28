@@ -136,7 +136,7 @@
       <div class="cell center sub">{server.map ?? ""}</div>
     {/if}
     {#if columns.ping}
-      <div class="cell center ping {pingClass(ping)}">
+      <div class="cell center ping {pingClass(ping)}" title={ping == null ? t("server.noPing") : t("server.pingTooltip", { ms: ping })}>
         {#if ping != null}<i class="dot"></i>{/if}
         {ping == null ? t("server.noPing") : t("server.ping", { ms: ping })}
       </div>
@@ -205,7 +205,19 @@
 
       {#if server.tags.length > 0}
         <div class="tags">
-          {#each server.tags as tag}<span class="tag">{tagText(tag)}</span>{/each}
+          {#each server.tags as tag}
+            <button
+              type="button"
+              class="tag btn-tag"
+              title={t("filters.clickToFilter")}
+              onclick={(e) => {
+                e.stopPropagation();
+                app.toggleTagFilter(tag);
+              }}
+            >
+              {tagText(tag)}
+            </button>
+          {/each}
         </div>
       {/if}
 
@@ -435,6 +447,16 @@
     background: var(--tint-hover);
     border-radius: 999px;
     color: var(--sub);
+  }
+  .btn-tag {
+    cursor: pointer;
+    border: 1px solid transparent;
+    transition: all 0.15s ease;
+  }
+  .btn-tag:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: var(--tint-active);
   }
   .actions {
     display: flex;

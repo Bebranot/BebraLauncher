@@ -37,6 +37,7 @@ export const en: Dictionary = {
   "col.mode": "Mode",
   "col.map": "Map",
   "col.ping": "Ping",
+  "col.pingTooltip": "HTTP response time (/status RTT)",
   "col.time": "Round",
   "col.players": "Players",
   "server.connect": "Connect",
@@ -55,6 +56,7 @@ export const en: Dictionary = {
   "server.copyAddress": "Copy address",
   "server.copied": "Copied",
   "server.ping": "{ms} ms",
+  "server.pingTooltip": "HTTP RTT: {ms} ms",
   "server.noPing": "—",
   "server.favoriteMark": "Favorite",
   "server.note": "Note",
@@ -95,6 +97,7 @@ export const en: Dictionary = {
   "filters.min": "Minimum:",
   "filters.max": "Maximum:",
   "filters.reset": "Reset filters",
+  "filters.clickToFilter": "Filter by this tag",
 
   "news.recent": "Recent news:",
   "news.loading": "Fetching news…",
@@ -125,6 +128,7 @@ export const en: Dictionary = {
   "fail.account_expired": "The login has expired: log in again.",
   "fail.account_missing": "The account was not found: log in again.",
   "fail.auth_required": "The server needs a Wizards' Den account: log in at the top right.",
+  "fail.disk_full": "Not enough free disk space to download the game (at least 500 MB required).",
   "fail.loader_missing": "The game loader (SS14.Loader.exe) was not found. Reinstall the launcher.",
   "fail.start": "Could not start the game.",
   "fail.other": "Could not start the game.",
@@ -272,7 +276,7 @@ export const en: Dictionary = {
   "opt.col.players": "Players",
   "opt.col.map": "Map",
   "opt.col.mode": "Mode",
-  "opt.col.ping": "Ping",
+  "opt.col.ping": "Ping (HTTP)",
 
   "opt.packs": "Text packs",
   "opt.packsDesc":

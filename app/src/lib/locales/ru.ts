@@ -37,6 +37,7 @@ export const ru = {
   "col.mode": "Режим",
   "col.map": "Карта",
   "col.ping": "Пинг",
+  "col.pingTooltip": "Время ответа HTTP-запроса (/status RTT)",
   "col.time": "Раунд",
   "col.players": "Игроки",
   "server.connect": "Подключиться",
@@ -55,6 +56,7 @@ export const ru = {
   "server.copyAddress": "Копировать адрес",
   "server.copied": "Скопировано",
   "server.ping": "{ms} мс",
+  "server.pingTooltip": "HTTP RTT: {ms} мс",
   "server.noPing": "—",
   "server.favoriteMark": "Избранное",
   "server.note": "Заметка",
@@ -95,6 +97,7 @@ export const ru = {
   "filters.min": "Минимум:",
   "filters.max": "Максимум:",
   "filters.reset": "Сбросить фильтры",
+  "filters.clickToFilter": "Фильтровать по этому тегу",
 
   "news.recent": "Последние новости:",
   "news.loading": "Получение новостей…",
@@ -125,6 +128,7 @@ export const ru = {
   "fail.account_expired": "Вход в аккаунт истёк: войдите заново.",
   "fail.account_missing": "Аккаунт не найден: войдите заново.",
   "fail.auth_required": "Серверу нужен аккаунт Wizards' Den: войдите в аккаунт справа вверху.",
+  "fail.disk_full": "Недостаточно места на диске для загрузки (требуется не менее 500 МБ).",
   "fail.loader_missing": "Не найден загрузчик игры (SS14.Loader.exe). Переустановите лаунчер.",
   "fail.start": "Не удалось запустить игру.",
   "fail.other": "Не удалось запустить игру.",
@@ -272,7 +276,7 @@ export const ru = {
   "opt.col.players": "Игроки",
   "opt.col.map": "Карта",
   "opt.col.mode": "Режим",
-  "opt.col.ping": "Пинг",
+  "opt.col.ping": "Пинг (HTTP)",
 
   "opt.packs": "Текстовые пакеты",
   "opt.packsDesc":

@@ -341,7 +341,10 @@ pub fn build_command(spec: &LaunchSpec) -> LaunchCommand {
         env.push(("ROBUST_AUTH_USERID".into(), a.user_id.clone()));
         env.push(("ROBUST_AUTH_PUBKEY".into(), a.server_public_key.clone()));
         env.push(("ROBUST_AUTH_SERVER".into(), a.auth_server_url.clone()));
-        env.push(("ROBUST_AUTH_SERVERS".into(), format!("unset@{}", a.auth_server_url)));
+        env.push((
+            "ROBUST_AUTH_SERVERS".into(),
+            format!("unset@{}", a.auth_server_url),
+        ));
     }
     if let Some(zip) = &spec.overlay_zip {
         env.push(("SS14_LOADER_OVERLAY_ZIP".into(), zip.display().to_string()));
@@ -904,9 +907,15 @@ mod tests {
             Some("1")
         );
         assert_eq!(env_of(&cmd, "BEBRA_OPTIMIZE").as_deref(), Some("1"));
-        assert!(cmd.args.contains(&"res.prototype_reload_watch=false".to_string()));
-        assert!(cmd.args.contains(&"res.texturepreloadingenabled=true".to_string()));
-        assert!(cmd.args.contains(&"res.texture_preload_cache=true".to_string()));
+        assert!(cmd
+            .args
+            .contains(&"res.prototype_reload_watch=false".to_string()));
+        assert!(cmd
+            .args
+            .contains(&"res.texturepreloadingenabled=true".to_string()));
+        assert!(cmd
+            .args
+            .contains(&"res.texture_preload_cache=true".to_string()));
     }
 
     #[test]
@@ -924,10 +933,14 @@ mod tests {
         assert_eq!(cmd.priority, ProcessPriority::High);
         assert!(cmd.args.contains(&"light.soft_shadows=false".to_string()));
         assert!(cmd.args.contains(&"light.blur=false".to_string()));
-        assert!(cmd.args.contains(&"light.resolution_scale=0.35".to_string()));
+        assert!(cmd
+            .args
+            .contains(&"light.resolution_scale=0.35".to_string()));
         assert!(cmd.args.contains(&"display.vsync=false".to_string()));
         assert!(cmd.args.contains(&"display.max_fps=0".to_string()));
-        assert!(cmd.args.contains(&"res.check_bad_file_extensions=false".to_string()));
+        assert!(cmd
+            .args
+            .contains(&"res.check_bad_file_extensions=false".to_string()));
     }
 
     #[test]
@@ -945,7 +958,9 @@ mod tests {
         assert_eq!(cmd.priority, ProcessPriority::High);
         assert!(cmd.args.contains(&"display.vsync=false".to_string()));
         assert!(cmd.args.contains(&"display.max_fps=0".to_string()));
-        assert!(cmd.args.contains(&"display.input_buffer_size=16".to_string()));
+        assert!(cmd
+            .args
+            .contains(&"display.input_buffer_size=16".to_string()));
     }
 
     #[test]
@@ -964,12 +979,18 @@ mod tests {
         assert!(cmd.args.contains(&"light.soft_shadows=false".to_string()));
         assert!(cmd.args.contains(&"light.blur=false".to_string()));
         assert!(cmd.args.contains(&"light.resolution_scale=0.2".to_string()));
-        assert!(cmd.args.contains(&"light.max_shadowcasting_lights=8".to_string()));
+        assert!(cmd
+            .args
+            .contains(&"light.max_shadowcasting_lights=8".to_string()));
         assert!(cmd.args.contains(&"light.max_light_count=256".to_string()));
-        assert!(cmd.args.contains(&"light.max_occluder_count=256".to_string()));
+        assert!(cmd
+            .args
+            .contains(&"light.max_occluder_count=256".to_string()));
         assert!(cmd.args.contains(&"res.rsi_atlas_size=4096".to_string()));
         assert!(cmd.args.contains(&"midi.parallelism=1".to_string()));
-        assert!(cmd.args.contains(&"display.post_shader_render_target_pool_max_size=1048576".to_string()));
+        assert!(cmd
+            .args
+            .contains(&"display.post_shader_render_target_pool_max_size=1048576".to_string()));
         assert_eq!(env_of(&cmd, "DOTNET_gcServer").as_deref(), Some("1"));
         assert_eq!(env_of(&cmd, "BEBRA_OPTIMIZE").as_deref(), Some("1"));
     }

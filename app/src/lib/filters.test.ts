@@ -148,6 +148,19 @@ describe("search", () => {
     expect(matchesSearch(s, "инженер", "Мейн: Инженер")).toBe(true);
     expect(matchesSearch(s, "капитан", "Мейн: Инженер")).toBe(false);
   });
+
+  it("supports fuzzy transliteration RU <-> EN and 'ё' folding", () => {
+    const s1 = row({ name: "Corvax Solaris", address: "ss14s://corvax.net" });
+    expect(matchesSearch(s1, "корвакс")).toBe(true);
+    expect(matchesSearch(s1, "соларис")).toBe(true);
+
+    const s2 = row({ name: "Бебра Станция", address: "ss14s://bebra.space" });
+    expect(matchesSearch(s2, "bebra")).toBe(true);
+
+    const s3 = row({ name: "Зелёный Чай", address: "ss14s://tea.org" });
+    expect(matchesSearch(s3, "зеленый")).toBe(true);
+    expect(matchesSearch(s3, "зелёный")).toBe(true);
+  });
 });
 
 describe("sorting", () => {

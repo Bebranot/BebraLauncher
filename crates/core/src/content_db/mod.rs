@@ -368,7 +368,8 @@ impl ContentDb {
         let mut hash_to_id: HashMap<Hash256, i64> = HashMap::with_capacity(manifest.entries.len());
         {
             let mut stmt = self.conn.prepare("SELECT Hash, Id FROM Content")?;
-            let rows = stmt.query_map([], |r| Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, i64>(1)?)))?;
+            let rows =
+                stmt.query_map([], |r| Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, i64>(1)?)))?;
             for r in rows {
                 let (hash_bytes, id) = r?;
                 if let Ok(hash) = hash_bytes.try_into() {

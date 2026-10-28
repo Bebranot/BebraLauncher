@@ -37,6 +37,7 @@ export const de: Dictionary = {
   "col.mode": "Modus",
   "col.map": "Karte",
   "col.ping": "Ping",
+  "col.pingTooltip": "HTTP-Antwortzeit (/status RTT)",
   "col.time": "Runde",
   "col.players": "Spieler",
   "server.connect": "Verbinden",
@@ -55,6 +56,7 @@ export const de: Dictionary = {
   "server.copyAddress": "Adresse kopieren",
   "server.copied": "Kopiert",
   "server.ping": "{ms} ms",
+  "server.pingTooltip": "HTTP RTT: {ms} ms",
   "server.noPing": "—",
   "server.favoriteMark": "Favorit",
   "server.note": "Notiz",
@@ -95,6 +97,7 @@ export const de: Dictionary = {
   "filters.min": "Minimum:",
   "filters.max": "Maximum:",
   "filters.reset": "Filter zurücksetzen",
+  "filters.clickToFilter": "Nach diesem Tag filtern",
 
   "news.recent": "Aktuelle Neuigkeiten:",
   "news.loading": "Neuigkeiten werden geladen…",
@@ -125,6 +128,7 @@ export const de: Dictionary = {
   "fail.account_expired": "Die Anmeldung ist abgelaufen: bitte erneut anmelden.",
   "fail.account_missing": "Das Konto wurde nicht gefunden: bitte erneut anmelden.",
   "fail.auth_required": "Der Server benötigt ein Wizards'-Den-Konto: melden Sie sich oben rechts an.",
+  "fail.disk_full": "Nicht genügend freier Speicherplatz zum Herunterladen (mindestens 500 MB erforderlich).",
   "fail.loader_missing": "Der Spiel-Loader (SS14.Loader.exe) wurde nicht gefunden. Installieren Sie den Launcher neu.",
   "fail.start": "Das Spiel konnte nicht gestartet werden.",
   "fail.other": "Das Spiel konnte nicht gestartet werden.",
@@ -272,7 +276,7 @@ export const de: Dictionary = {
   "opt.col.players": "Spieler",
   "opt.col.map": "Karte",
   "opt.col.mode": "Modus",
-  "opt.col.ping": "Ping",
+  "opt.col.ping": "Ping (HTTP)",
 
   "opt.packs": "Textpakete",
   "opt.packsDesc":

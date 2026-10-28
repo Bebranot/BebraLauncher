@@ -24,6 +24,7 @@ import {
   matchesFilters,
   matchesSearch,
   parseFilters,
+  primaryLanguage,
   sortServers,
   type FilterState,
   type Sort,
@@ -63,7 +64,6 @@ export type NewsState =
   | { state: "ready"; items: NewsItem[] }
   | { state: "failed"; error: string };
 
-const REFRESH_MS = 60_000;
 /** Most servers pinged for the ping column in one go. */
 const PING_VISIBLE = 60;
 const SAVE_DELAY_MS = 300;
@@ -161,6 +161,7 @@ class Store {
   backgroundsLoading = $state(false);
 
   private autoRefreshTimer: ReturnType<typeof setInterval> | null = null;
+  private lastServersRefresh = 0;
   private saveTimer: ReturnType<typeof setTimeout> | undefined;
   private editedSinceSave = false;
   private noticeTimer: ReturnType<typeof setTimeout> | undefined;
@@ -212,6 +213,42 @@ class Store {
     return this.runningClients.some((c) => c.address === address);
   }
 
+  toggleTagFilter(tag: string) {
+    const lower = tag.toLowerCase();
+    if (lower.startsWith("lang:")) {
+      const val = primaryLanguage(lower.slice(5));
+      const cur = this.filters.languages;
+      this.filters = {
+        ...this.filters,
+        languages: cur.includes(val) ? cur.filter((x) => x !== val) : [...cur, val],
+      };
+      this.filtersOpen = true;
+    } else if (lower.startsWith("region:")) {
+      const val = lower.slice(7);
+      const cur = this.filters.regions;
+      this.filters = {
+        ...this.filters,
+        regions: cur.includes(val) ? cur.filter((x) => x !== val) : [...cur, val],
+      };
+      this.filtersOpen = true;
+    } else if (lower.startsWith("rp:")) {
+      const val = lower.slice(3);
+      const cur = this.filters.rp;
+      this.filters = {
+        ...this.filters,
+        rp: cur.includes(val) ? cur.filter((x) => x !== val) : [...cur, val],
+      };
+      this.filtersOpen = true;
+    } else if (lower === "18+") {
+      const cur = this.filters.age;
+      this.filters = {
+        ...this.filters,
+        age: cur.includes("yes") ? [] : ["yes"],
+      };
+      this.filtersOpen = true;
+    }
+  }
+
   /** The row for an address: from the hub, from its own answer, or a bare one. */
   rowFor(address: string, name: string | null = null): ServerRow {
     const favName = this.favoriteNameOf(address);
@@ -241,6 +278,7 @@ class Store {
     this.pickDefaultAccount();
     void this.checkIntelWarning();
     void this.loadBackgrounds();
+    void this.loadRunningClients();
 
     // Something to look at while the hub answers.
     const cached = await api.cachedServers().catch(() => []);
@@ -251,11 +289,21 @@ class Store {
     void this.refreshServers();
 
     setInterval(() => (this.now = Date.now()), 1000);
-    setInterval(() => {
-      if (document.visibilityState === "visible" && !this.serversLoading) {
-        void this.refreshServers();
-      }
-    }, REFRESH_MS);
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "visible") {
+          const intervalSec = this.settings?.auto_refresh_interval ?? 0;
+          if (
+            intervalSec > 0 &&
+            Date.now() - this.lastServersRefresh >= intervalSec * 1000 &&
+            !this.serversLoading &&
+            this.play.phase !== "preparing"
+          ) {
+            void this.refreshServers();
+          }
+        }
+      });
+    }
 
     // Remember tab, filters and sorting between runs.
     $effect.root(() => {
@@ -307,6 +355,10 @@ class Store {
     }
     void this.loadActiveBackground();
     this.restartAutoRefresh();
+  }
+
+  async loadRunningClients() {
+    this.runningClients = await api.runningClients().catch(() => []);
   }
 
   async loadBackgrounds() {
@@ -385,7 +437,12 @@ class Store {
     const intervalSec = this.settings?.auto_refresh_interval ?? 0;
     if (intervalSec > 0) {
       this.autoRefreshTimer = setInterval(() => {
-        if (document.visibilityState === "visible" && !this.serversLoading && this.tab === "servers") {
+        if (
+          document.visibilityState === "visible" &&
+          !this.serversLoading &&
+          this.tab === "servers" &&
+          this.play.phase !== "preparing"
+        ) {
           void this.refreshServers();
         }
       }, intervalSec * 1000);
@@ -455,6 +512,7 @@ class Store {
   }
 
   async refreshServers() {
+    this.lastServersRefresh = Date.now();
     this.serversLoading = true;
     try {
       this.servers = await api.listServers();
