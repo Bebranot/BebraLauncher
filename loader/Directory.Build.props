@@ -5,5 +5,7 @@
     <LangVersion>latest</LangVersion>
     <!-- Same as the official launcher: CET breaks some older but supported Windows versions. -->
     <CETCompat>false</CETCompat>
+    <!-- NuGet audit warnings about known vulnerabilities must break the build, not scroll by. -->
+    <WarningsAsErrors>$(WarningsAsErrors);NU1902;NU1903;NU1904</WarningsAsErrors>
   </PropertyGroup>
 </Project>

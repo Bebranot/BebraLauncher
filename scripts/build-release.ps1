@@ -11,19 +11,42 @@ $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 
 Write-Host '==> Loader (self-contained)'
+# Publish into an empty directory: tauri packs loader/out-sc as the app's `loader` resource, so
+# files left from an older build would silently end up in the installer.
+$loaderOut = "$root/loader/out-sc"
+if (Test-Path $loaderOut) {
+    Remove-Item $loaderOut -Recurse -Force
+}
 dotnet publish loader/SS14.Loader/SS14.Loader.csproj -c Release -r win-x64 --self-contained true `
-    -p:PublishSingleFile=false -o loader/out-sc
+    -p:PublishSingleFile=false -o $loaderOut
 if ($LASTEXITCODE -ne 0) { throw 'loader publish failed' }
+if (-not (Test-Path (Join-Path $loaderOut 'SS14.Loader.exe'))) {
+    throw "loader publish produced no SS14.Loader.exe in $loaderOut"
+}
 
 # Include VC++ CRT runtime DLLs so the client and native libraries (SDL3, OpenAL, etc.)
 # run cleanly on fresh Windows installations without requiring separate VC++ redist install.
-$vcDir = Get-ChildItem "C:\Program Files\Microsoft Visual Studio\*\*\VC\Redist\MSVC\*\x64\Microsoft.VC*.CRT" -ErrorAction SilentlyContinue | Select-Object -First 1
-if ($vcDir) {
-    Copy-Item "$($vcDir.FullName)\*.dll" -Destination "$root/loader/out-sc" -Force
+# The DLLs are taken only from the Visual Studio redistributable (never from System32: that
+# copies whatever the build machine happens to have). Missing redist means missing CRT in the
+# installer, which breaks the game for users, so it is an error, not a warning.
+$vcDirs = @()
+if ($env:BEBRA_VCRT_DIR) {
+    $vcDirs = @(Get-Item $env:BEBRA_VCRT_DIR -ErrorAction SilentlyContinue)
 } else {
-    $sys32 = "$env:SystemRoot\System32"
-    Copy-Item "$sys32\vcruntime140*.dll", "$sys32\msvcp140*.dll" -Destination "$root/loader/out-sc" -Force -ErrorAction SilentlyContinue
+    $vcDirs = @(Get-ChildItem "C:\Program Files\Microsoft Visual Studio\*\*\VC\Redist\MSVC\*\x64\Microsoft.VC*.CRT" -ErrorAction SilentlyContinue |
+        Sort-Object FullName -Descending)
 }
+if ($vcDirs.Count -eq 0 -or -not $vcDirs[0]) {
+    throw 'VC++ CRT redistributable not found (install the "Desktop development with C++" workload or set BEBRA_VCRT_DIR to the x64 CRT folder)'
+}
+$vcDir = $vcDirs[0].FullName
+foreach ($dll in @('vcruntime140.dll', 'msvcp140.dll')) {
+    if (-not (Test-Path (Join-Path $vcDir $dll))) {
+        throw "VC++ CRT folder $vcDir has no $dll"
+    }
+}
+Write-Host "==> CRT from $vcDir"
+Copy-Item "$vcDir\*.dll" -Destination $loaderOut -Force
 
 Write-Host '==> UI dependencies'
 Set-Location "$root/app"
@@ -31,8 +54,18 @@ pnpm.cmd install --frozen-lockfile
 if ($LASTEXITCODE -ne 0) { throw 'pnpm install failed' }
 
 Write-Host '==> App + installer'
+# Old bundles are removed first: otherwise an installer from a previous version could be found
+# (and later signed/published) instead of the one just built.
+$bundleDir = "$root/target/release/bundle"
+if (Test-Path $bundleDir) {
+    Remove-Item $bundleDir -Recurse -Force
+}
 pnpm.cmd tauri build --config src-tauri/tauri.release.json
 if ($LASTEXITCODE -ne 0) { throw 'tauri build failed' }
 
-$setup = Get-ChildItem "$root/target/release/bundle/nsis/*-setup.exe" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+$setups = @(Get-ChildItem "$root/target/release/bundle/nsis/*-setup.exe" -ErrorAction SilentlyContinue)
+if ($setups.Count -ne 1) {
+    throw "expected exactly one installer in target/release/bundle/nsis, found $($setups.Count)"
+}
+$setup = $setups[0]
 Write-Host "==> Done: $($setup.FullName) ($([math]::Round($setup.Length / 1MB, 1)) MB)"

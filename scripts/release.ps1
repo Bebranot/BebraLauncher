@@ -35,6 +35,19 @@ Write-Host "==> Release $version (tag $tag, Cargo $cargoVersion)"
 
 # ---- the changelog must have this version, and its text becomes the release text
 $changelog = Get-Content "$root/CHANGELOG.md" -Raw -Encoding UTF8
+
+# The section above all version sections is the unreleased one: a "## [...]" heading whose title
+# is not a version number. If it still has entries, the version was not bumped: publishing now
+# would either reuse an existing tag with old text or ship a release that silently drops those
+# entries (docs/CHANGELOG_RULES.md).
+$unreleased = [regex]::Match($changelog, '(?ms)^##\s*\[(?!\d+\.\d+)\p{L}[^\]]*\]\s*\r?\n(.*?)(?=^##\s*\[|\z)')
+if ($unreleased.Success) {
+    $pending = @($unreleased.Groups[1].Value -split '\r?\n' | Where-Object { $_ -match '\S' -and $_ -notmatch '^\s*#{2,3}\s' })
+    if ($pending.Count -gt 0) {
+        Fail "CHANGELOG.md still has $($pending.Count) line(s) in the unreleased section: rename it to the new version and bump the version first (docs/CHANGELOG_RULES.md)"
+    }
+}
+
 $escaped = [regex]::Escape($version)
 if ($changelog -notmatch "(?ms)^## \[$escaped\][^\r\n]*\r?\n(.*?)(?=^## \[|\z)") {
     Fail "CHANGELOG.md has no entry for $version (docs/CHANGELOG_RULES.md)"
@@ -74,8 +87,13 @@ if (-not $SkipTests) {
 # ---- build and sign
 Write-Host '==> Installer'
 & "$PSScriptRoot/build-release.ps1"
-$setup = Get-ChildItem "$root/target/release/bundle/nsis/*_${cargoVersion}_*-setup.exe" | Select-Object -First 1
-if (-not $setup) { Fail "no installer for $cargoVersion in target/release/bundle/nsis" }
+# Exactly one installer for this version, x64, no leftovers from a previous build: signing and
+# publishing the wrong file is worse than failing here.
+$setups = @(Get-ChildItem "$root/target/release/bundle/nsis/*_${cargoVersion}_x64-setup.exe" -ErrorAction SilentlyContinue)
+if ($setups.Count -ne 1) {
+    Fail "expected exactly one *_${cargoVersion}_x64-setup.exe in target/release/bundle/nsis, found $($setups.Count)"
+}
+$setup = $setups[0]
 
 Write-Host '==> Signing'
 cargo build -p bebra-cli --release

@@ -6,7 +6,8 @@
     <!-- Versions copied from the official launcher's Directory.Packages.props (the Loader subset). -->
     <PackageVersion Include="Lib.Harmony" Version="2.3.5" />
     <PackageVersion Include="Microsoft.Data.Sqlite.Core" Version="8.0.12" />
-    <PackageVersion Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.10" />
+    <!-- 2.1.10 was flagged by NuGet audit (NU1903, GHSA-2m69-gcr7-jv3q, HIGH); fixed in 2.1.12. -->
+    <PackageVersion Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.14" />
     <PackageVersion Include="NSec.Cryptography" Version="25.4.0" />
     <PackageVersion Include="libsodium" Version="1.0.20.1" />
     <PackageVersion Include="SharpZstd.Interop" Version="1.5.2-beta2" />

@@ -5,21 +5,31 @@ on:
     branches: [main]
   pull_request:
 
+# Nothing here writes to the repository: a compromised dependency or action must not be able
+# to push to main or to a release.
+permissions:
+  contents: read
+
 jobs:
   check:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
+      # Actions are pinned by commit SHA (the tag is only a comment): a moved tag cannot change
+      # what runs with our token.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          components: clippy, rustfmt
-      - uses: Swatinem/rust-cache@v2
+          persist-credentials: false
 
-      - uses: pnpm/action-setup@v4
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch
+        with:
+          toolchain: stable
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
           version: 10
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: pnpm
@@ -38,3 +48,47 @@ jobs:
           cargo fmt --all --check
           cargo clippy --workspace --all-targets -- -D warnings
           cargo test --workspace
+
+  loader:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
+        with:
+          dotnet-version: 10.0.x
+
+      # The Loader is the only way the game starts; a compile error here must fail CI.
+      # NU1902/NU1903/NU1904 are errors already (loader/Directory.Build.props), -warnaserror
+      # additionally stops the build on any other warning.
+      - name: Build Loader
+        run: dotnet build loader/SS14.Loader/SS14.Loader.csproj -c Release -warnaserror
+
+      # NuGet audit across direct and transitive packages. `dotnet package list` exits 0 even
+      # when it finds something, so the JSON is checked explicitly.
+      - name: Check packages for known vulnerabilities
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $raw = dotnet package list --project loader/SS14.Loader/SS14.Loader.csproj `
+              --vulnerable --include-transitive --format json
+          if ($LASTEXITCODE -ne 0) { throw 'dotnet package list failed' }
+          $report = $raw | ConvertFrom-Json
+          $found = @()
+          foreach ($project in @($report.projects)) {
+              foreach ($framework in @($project.frameworks)) {
+                  foreach ($package in @($framework.topLevelPackages) + @($framework.transitivePackages)) {
+                      if ($null -eq $package -or $null -eq $package.vulnerabilities) { continue }
+                      foreach ($vuln in @($package.vulnerabilities)) {
+                          $found += "$($package.id) $($package.resolvedVersion): $($vuln.severity) $($vuln.advisoryurl)"
+                      }
+                  }
+              }
+          }
+          if ($found.Count -gt 0) {
+              $found | ForEach-Object { Write-Host "VULNERABLE: $_" }
+              throw "$($found.Count) vulnerable package(s) in the Loader"
+          }
+          Write-Host 'No known vulnerable packages in the Loader.'
