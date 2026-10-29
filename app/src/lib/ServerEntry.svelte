@@ -8,7 +8,7 @@
     serverTitle,
   } from "./format";
   import Icon from "./Icon.svelte";
-  import { tagLabel } from "./filters";
+  import { tagLabel, rpKey } from "./filters";
   import { i18n, t } from "./i18n.svelte";
   import RoundTimer from "./RoundTimer.svelte";
   import { app } from "./store.svelte";
@@ -66,17 +66,11 @@
     if (expanded) void app.loadDetails(server.address);
   });
 
-  const RP_KEYS = {
-    none: "filters.rpNone",
-    low: "filters.rpLow",
-    med: "filters.rpMed",
-    high: "filters.rpHigh",
-  } as const;
-
   /** A tag as a person reads it: language by its own name, region and roleplay level translated. */
   function tagText(tag: string): string {
-    const rp = /^rp:(none|low|med|high)$/i.exec(tag);
-    if (rp) return `${t("filters.rp")}: ${t(RP_KEYS[rp[1].toLowerCase() as keyof typeof RP_KEYS])}`;
+    const rp = /^rp:(.+)$/i.exec(tag);
+    const key = rp ? rpKey(rp[1]) : null;
+    if (key) return `${t("filters.rp")}: ${t(key)}`;
     return tagLabel(tag, i18n.lang);
   }
 
@@ -158,7 +152,7 @@
       <button
         class="btn soft"
         class:accent={app.isRunning(server.address)}
-        disabled={app.busy}
+        disabled={app.isGameBusy}
         onclick={(e) => {
           e.stopPropagation();
           void app.connect(server);
@@ -453,7 +447,7 @@
   .btn-tag:hover {
     border-color: var(--accent);
     color: var(--accent);
-    background: var(--tint-active);
+    background: var(--tint-hover);
   }
   .actions {
     display: flex;

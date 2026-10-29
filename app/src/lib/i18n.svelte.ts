@@ -28,15 +28,28 @@ export const i18n = new I18n();
 export function interpolate(text: string, params?: Record<string, string | number>): string {
   if (!params) return text;
   return text.replace(/\{(\w+)\}/g, (whole, name: string) =>
-    name in params ? String(params[name]) : whole,
+    Object.hasOwn(params, name) ? String(params[name]) : whole,
   );
 }
 
 /** Translates a key. Reads `i18n.lang`, so templates update when the language changes. */
 export function t(key: Key, params?: Record<string, string | number>): string {
-  return interpolate(dictionaries[i18n.lang][key], params);
+  const dict = dictionaries[i18n.lang];
+  // A key the dictionary does not have (a missing translation, a key built at runtime) must
+  // show something readable, never `undefined` and never throw (P2-45).
+  const text = Object.hasOwn(dict, key)
+    ? dict[key]
+    : Object.hasOwn(ru, key)
+      ? ru[key]
+      : String(key);
+  return interpolate(String(text ?? key), params);
 }
 
 export function hasKey(key: string): key is Key {
-  return key in ru;
+  return Object.hasOwn(ru, key);
+}
+
+/** Keeps `<html lang>` in step with the interface language (screen readers, spell check). */
+export function applyDocumentLang() {
+  if (typeof document !== "undefined") document.documentElement.lang = i18n.lang;
 }

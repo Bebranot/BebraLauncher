@@ -123,6 +123,8 @@ function stubPage() {
 beforeEach(() => {
   stubPage();
   vi.clearAllMocks();
+  // Otherwise a `mockResolvedValue` from one test leaks into the next one.
+  mocks.api.takePendingActions.mockReset();
   mocks.api.onPlay.mockResolvedValue(() => {});
   mocks.api.onRedial.mockResolvedValue(() => {});
   mocks.api.onOpenLink.mockResolvedValue(() => {});
@@ -143,7 +145,7 @@ afterEach(() => {
 
 describe("cold-start events (P1-18)", () => {
   it("replays the kept events through the live handlers, oldest first", async () => {
-    mocks.api.takePendingActions.mockResolvedValue([
+    mocks.api.takePendingActions.mockResolvedValueOnce([
       { event: "play", payload: { kind: "exited", pid: 7, code: 3, log_tail: ["boom"] } },
       { event: "open-link", payload: "ss14s://cold.test:1212" },
       { event: "redial", payload: { address: "ss14s://cold.test:1212", reason: "restart" } },
@@ -162,7 +164,7 @@ describe("cold-start events (P1-18)", () => {
     expect(store.focusAddress).toBe("ss14s://cold.test:1212");
   });
 
-  it("does nothing when the buffer was already taken", async () => {
+  it("does not replay the buffer twice", async () => {
     mocks.api.takePendingActions.mockResolvedValueOnce([
       { event: "play", payload: { kind: "failed", code: "other", message: "cold" } },
     ]);
@@ -171,9 +173,9 @@ describe("cold-start events (P1-18)", () => {
     expect(store.play.phase).toBe("failed");
 
     store.dismissPlay();
-    mocks.api.takePendingActions.mockResolvedValueOnce([]);
+    // A second call joins the existing subscription: it must not take the buffer again.
     await store.subscribe();
-    expect(mocks.api.takePendingActions).toHaveBeenCalledTimes(2);
+    expect(mocks.api.takePendingActions).toHaveBeenCalledTimes(1);
     expect(store.play).toEqual({ phase: "idle" });
   });
 });

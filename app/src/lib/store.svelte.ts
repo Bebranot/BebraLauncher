@@ -25,15 +25,17 @@ import {
   emptyFilters,
   matchesFilters,
   matchesSearch,
+  normalizePlayerRange,
   normalizeRp,
   parseFilters,
   primaryLanguage,
+  pruneFilters,
   sortServers,
   type FilterState,
   type Sort,
   type SortKey,
 } from "./filters";
-import { i18n } from "./i18n.svelte";
+import { applyDocumentLang, i18n } from "./i18n.svelte";
 import { DEFAULT_CUSTOM, applyTheme } from "./themes";
 
 export type Tab = "favorites" | "servers" | "recent" | "news" | "updates" | "mods" | "options";
@@ -174,6 +176,9 @@ export class Store {
   serversError = $state<string | null>(null);
   /** The list on screen is the saved one: the hub has not answered yet (or at all). */
   serversFromCache = $state(false);
+  /** Startup or a data load failed in a way the player can retry (P2-65). */
+  initError = $state<string | null>(null);
+  loadError = $state<string | null>(null);
   /** Status of servers the hub does not list (favourites by address), from asking them. */
   extra = $state<Record<string, ServerRow>>({});
   /** Milliseconds per server address; null = asked, no answer. */
@@ -242,6 +247,14 @@ export class Store {
   private noticeTimer: ReturnType<typeof setTimeout> | undefined;
   private focusTimer: ReturnType<typeof setTimeout> | undefined;
   private pingTimer: ReturnType<typeof setTimeout> | undefined;
+  /** `init` runs once per page; a failed start can be retried (P2-65). */
+  private initializing: Promise<void> | null = null;
+  private initialized = false;
+  private subscribed = false;
+  private effectsStarted = false;
+  private envWatched = false;
+  /** Everything to undo on `dispose`: backend listeners, DOM listeners, the effect root. */
+  private disposers: (() => void)[] = [];
   /** Wallpaper ids already asked for; outside $state so asking does not restart the effect. */
   private thumbnailsRequested = new Set<string>();
   /** Which wallpaper is on screen, so an unrelated save does not read it from disk again. */
@@ -260,23 +273,32 @@ export class Store {
   readonly visible = $derived(
     sortServers(
       this.servers.filter(
-        (s) =>
-          matchesSearch(s, this.search, this.settings?.server_notes?.[s.address]) &&
-          matchesFilters(s, this.filters),
+        (s) => this.matchesRow(s) && matchesFilters(s, this.filters),
       ),
       this.sort,
       this.pings,
     ),
   );
 
+  /** The name the player gave a server: it is searched like the hub's own name (P2-47). */
+  private customNameOf(address: string): string | null {
+    return this.settings?.favorite_names?.[address] ?? null;
+  }
+
+  /** Search for one row, including the note and the favourite's custom name. */
+  private matchesRow(s: ServerRow): boolean {
+    return matchesSearch(
+      s,
+      this.search,
+      this.settings?.server_notes?.[s.address],
+      this.customNameOf(s.address),
+    );
+  }
+
   /** Which rows the ping column asks about. No pings inside, so asking does not change it (P1-37). */
   private readonly pingTargets = $derived(
     this.servers
-      .filter(
-        (s) =>
-          matchesSearch(s, this.search, this.settings?.server_notes?.[s.address]) &&
-          matchesFilters(s, this.filters),
-      )
+      .filter((s) => this.matchesRow(s) && matchesFilters(s, this.filters))
       .map((s) => s.address)
       .join(" "),
   );
@@ -301,13 +323,16 @@ export class Store {
   runningClients = $state<RunningClient[]>([]);
 
   readonly busy = $derived(this.play.phase === "preparing");
+  /** Anything but idle means the backend owns the machine: cleaning storage or starting a second
+   * game must wait (P2-61). */
+  readonly isGameBusy = $derived(this.play.phase !== "idle");
 
   isRunning(address: string): boolean {
     return this.runningClients.some((c) => c.address === address);
   }
 
   toggleTagFilter(tag: string) {
-    const lower = tag.toLowerCase();
+    const lower = tag.trim().toLowerCase();
     if (lower.startsWith("lang:")) {
       const val = primaryLanguage(lower.slice(5));
       const cur = this.filters.languages;
@@ -347,6 +372,25 @@ export class Store {
     }
   }
 
+  /** Sets one player limit; `min > max` is swapped instead of hiding the whole list (P2-46). */
+  setPlayerRange(which: "min" | "max", value: number | null) {
+    const next: FilterState =
+      which === "min"
+        ? { ...this.filters, minPlayers: value }
+        : { ...this.filters, maxPlayers: value };
+    this.filters = normalizePlayerRange(next);
+  }
+
+  /** Drops filter values the loaded list no longer offers, so no invisible filter stays on. */
+  private pruneFilters() {
+    if (this.servers.length === 0) return;
+    this.filters = pruneFilters(
+      this.filters,
+      availableValues(this.servers, "lang:", true),
+      availableValues(this.servers, "region:"),
+    );
+  }
+
   /** The row for an address: from the hub, from its own answer, or a bare one. */
   rowFor(address: string, name: string | null = null): ServerRow {
     const favName = this.favoriteNameOf(address);
@@ -358,15 +402,31 @@ export class Store {
     );
   }
 
-  async init() {
+  /** Starts the launcher once; a second call joins the first (P2-65). */
+  async init(): Promise<void> {
+    if (this.initialized) return;
+    if (this.initializing) return this.initializing;
+    this.initializing = this.start().finally(() => {
+      this.initializing = null;
+    });
+    return this.initializing;
+  }
+
+  private async start(): Promise<void> {
+    this.initError = null;
     const ui = loadUi();
     if (ui.tab) this.tab = ui.tab;
     if (ui.filters) this.filters = ui.filters;
     if (ui.sort) this.sort = ui.sort;
     if (ui.filtersOpen) this.filtersOpen = true;
 
-    // Listen first, so nothing the backend sends at startup (a redial) is missed.
-    await this.subscribe();
+    // Listen first, so nothing the backend sends at startup (a redial) is missed. A broken
+    // `listen` must not leave an empty launcher without a word: the error is shown with "retry".
+    try {
+      await this.subscribe();
+    } catch (e) {
+      this.initError = errorText(e);
+    }
     void api.updateStatus().then((s) => (this.update ??= s)).catch(() => {});
 
     await Promise.all([this.loadInfo(), this.loadSettings(), this.loadAccounts()]);
@@ -380,11 +440,31 @@ export class Store {
     if (cached.length > 0) {
       this.servers = cached;
       this.serversFromCache = true;
+      this.pruneFilters();
     }
     void this.refreshServers();
 
+    this.watchEnvironment();
+    this.watchPings();
+    this.initialized = true;
+  }
+
+  /** Retries what failed at startup or while loading the settings (P2-65). */
+  async retryInit(): Promise<void> {
+    this.initError = null;
+    this.loadError = null;
+    this.initialized = false;
+    await this.init();
+    await Promise.all([this.loadSettings(), this.loadAccounts()]);
+    this.pickDefaultAccount();
+  }
+
+  /** Document and window listeners, removed by `dispose`. */
+  private watchEnvironment() {
+    if (this.envWatched) return;
+    this.envWatched = true;
     if (typeof document !== "undefined") {
-      document.addEventListener("visibilitychange", () => {
+      const onVisibility = () => {
         if (document.visibilityState === "visible") {
           const intervalSec = this.settings?.auto_refresh_interval ?? 0;
           if (
@@ -399,15 +479,23 @@ export class Store {
           // Going away: the last edit must reach the file, not wait for the debounce (P1-34).
           this.flushSettingsNow();
         }
-      });
+      };
+      document.addEventListener("visibilitychange", onVisibility);
+      this.disposers.push(() => document.removeEventListener("visibilitychange", onVisibility));
     }
     if (typeof window !== "undefined") {
       // Closing the window (also `close_on_play`) skips the save timer otherwise (P1-34).
-      window.addEventListener("pagehide", () => this.flushSettingsNow());
+      const onHide = () => this.flushSettingsNow();
+      window.addEventListener("pagehide", onHide);
+      this.disposers.push(() => window.removeEventListener("pagehide", onHide));
     }
+  }
 
-    // Remember tab, filters and sorting between runs.
-    $effect.root(() => {
+  /** Remember tab, filters and sorting; keep the ping column fresh (P1-37). */
+  private watchPings() {
+    if (this.effectsStarted) return;
+    this.effectsStarted = true;
+    const root = $effect.root(() => {
       $effect(() => {
         const snapshot = $state.snapshot({
           tab: this.tab,
@@ -433,17 +521,43 @@ export class Store {
       // The store no longer owns a ticker (P1-39): `RoundTimer` ticks only for a running round.
       // `clock` above is the shared mechanism for any future timer that needs one.
     });
+    this.disposers.push(root);
+  }
+
+  /** Removes every subscription and timer the store owns. The page calls this on unload. */
+  dispose() {
+    for (const off of this.disposers.splice(0)) {
+      try {
+        off();
+      } catch {
+        // A listener that is already gone needs no care.
+      }
+    }
+    this.subscribed = false;
+    this.effectsStarted = false;
+    this.envWatched = false;
+    this.initialized = false;
+    if (this.autoRefreshTimer) clearInterval(this.autoRefreshTimer);
+    this.autoRefreshTimer = null;
+    clearTimeout(this.saveTimer);
+    clearTimeout(this.noticeTimer);
+    clearTimeout(this.focusTimer);
+    clearTimeout(this.pingTimer);
   }
 
   /**
    * Subscribes to the backend events, then replays what happened before the page could listen:
-   * a cold-start link, a redial, the first play events (P1-18).
+   * a cold-start link, a redial, the first play events (P1-18). Safe to call twice.
    */
   async subscribe() {
-    await api.onPlay((e) => this.onPlayEvent(e));
-    await api.onRedial((e) => this.onRedial(e));
-    await api.onOpenLink((address) => this.onOpenLink(address));
-    await api.onUpdate((s) => (this.update = s));
+    if (this.subscribed) return;
+    const offs: (() => void)[] = [];
+    offs.push(await api.onPlay((e) => this.onPlayEvent(e)));
+    offs.push(await api.onRedial((e) => this.onRedial(e)));
+    offs.push(await api.onOpenLink((address) => this.onOpenLink(address)));
+    offs.push(await api.onUpdate((s) => (this.update = s)));
+    this.disposers.push(...offs);
+    this.subscribed = true;
     // Tauri does not buffer events: what already happened is kept by the backend until asked.
     const pending = await api.takePendingActions().catch(() => []);
     for (const action of pending) this.replayPending(action);
@@ -469,16 +583,21 @@ export class Store {
   }
 
   async loadSettings() {
-    const loaded = await api.getSettings().catch(() => null);
-    if (!loaded) return;
-    if (this.settingsDirty || this.saveInFlight) {
-      // The backend knows favourites, history and the account; the player's unsaved edits must
-      // not be rolled back by that answer (P1-34).
-      this.settings = { ...loaded, ...this.unsaved };
-    } else {
-      this.settings = loaded;
+    try {
+      const loaded = await api.getSettings();
+      if (!loaded) return;
+      if (this.settingsDirty || this.saveInFlight) {
+        // The backend knows favourites, history and the account; the player's unsaved edits must
+        // not be rolled back by that answer (P1-34).
+        this.settings = { ...loaded, ...this.unsaved };
+      } else {
+        this.settings = loaded;
+      }
+      this.applySettings();
+    } catch (e) {
+      // Silent before P2-65: the window looked normal with no settings at all.
+      this.loadError = errorText(e);
     }
-    this.applySettings();
   }
 
   /** Puts the theme, font, language, wallpaper and refresh timer of the settings on screen. */
@@ -500,6 +619,7 @@ export class Store {
       bg_type: s?.bg_type ?? "space",
     });
     i18n.preference = s?.language ?? "auto";
+    applyDocumentLang();
     if (typeof document !== "undefined") {
       const scale = s?.launcher_ui_scale ?? 100;
       document.documentElement.style.zoom = String(scale / 100);
@@ -756,7 +876,13 @@ export class Store {
   }
 
   async loadAccounts() {
-    this.accounts = await api.listAccounts().catch(() => []);
+    try {
+      this.accounts = await api.listAccounts();
+    } catch (e) {
+      this.accounts = [];
+      this.loadError = errorText(e);
+      return;
+    }
     if (this.selectedAccount && !this.accounts.some((a) => a.user_id === this.selectedAccount)) {
       this.selectAccount(null);
     }
@@ -809,6 +935,7 @@ export class Store {
       this.serversError = null;
       this.serversFromCache = false;
       this.lastServersRefresh = Date.now();
+      this.pruneFilters();
     } catch (e) {
       if (generation === this.serversGeneration) {
         // Keep the old list on screen; just say the refresh failed.
@@ -882,8 +1009,13 @@ export class Store {
   // ------------------------------------------------------------ favourites
 
   async toggleFavorite(address: string) {
-    const favorites = await api.toggleFavorite(address).catch(() => null);
-    if (favorites && this.settings) this.settings = { ...this.settings, favorites };
+    try {
+      const favorites = await api.toggleFavorite(address);
+      if (this.settings) this.settings = { ...this.settings, favorites };
+    } catch (e) {
+      // A failing toggle must say so, not look like a click that did nothing (P2-65).
+      this.say(errorText(e));
+    }
   }
 
   async addFavorite(address: string): Promise<string | null> {
@@ -1125,9 +1257,7 @@ export class Store {
     const inList = this.servers.find((s) => s.address === address);
     this.tab = "servers";
     if (inList) {
-      const hidden =
-        !matchesSearch(inList, this.search, this.settings?.server_notes?.[address]) ||
-        !matchesFilters(inList, this.filters);
+      const hidden = !this.matchesRow(inList) || !matchesFilters(inList, this.filters);
       if (hidden) {
         this.search = "";
         this.filters = emptyFilters();

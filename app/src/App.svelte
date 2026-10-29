@@ -69,6 +69,7 @@
 
   onDestroy(() => {
     pageHost?.removeEventListener("scroll", onPageScroll, true);
+    app.dispose();
   });
 
   /** `/` or Ctrl+F: search the server list. */
@@ -123,8 +124,22 @@
       </button>
     </div>
   {/if}
+  {#if app.initError || app.loadError}
+    <div class="load-alert" role="alert">
+      <span class="load-text">
+        {t("app.loadFailed", { error: app.initError ?? app.loadError ?? "" })}
+      </span>
+      <button class="btn small" onclick={() => void app.retryInit()}>{t("app.retry")}</button>
+    </div>
+  {/if}
   <main bind:this={pageHost}>
-    <div class="page" bind:this={page}>
+    <div
+      class="page"
+      bind:this={page}
+      role="tabpanel"
+      id={`panel-${app.tab}`}
+      aria-labelledby={`tab-${app.tab}`}
+    >
       {#if app.tab === "favorites"}
         <FavoritesTab />
       {:else if app.tab === "servers"}
@@ -171,6 +186,23 @@
   .intel-text {
     flex: 1;
     line-height: 1.4;
+  }
+  .load-alert {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 16px;
+    background: color-mix(in srgb, var(--bad) 15%, transparent);
+    border-bottom: 1px solid color-mix(in srgb, var(--bad) 40%, transparent);
+    font-size: 13px;
+    color: var(--fg);
+    user-select: text;
+  }
+  .load-text {
+    flex: 1;
+    line-height: 1.4;
+    word-break: break-word;
   }
   main {
     flex: 1;

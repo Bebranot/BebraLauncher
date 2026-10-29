@@ -159,6 +159,8 @@ export interface PatchRow {
   name: string;
   file_size: number;
   enabled: boolean;
+  /** False when the file changed after installation: the launcher will not load it. */
+  verified: boolean;
 }
 
 export interface PackRow {

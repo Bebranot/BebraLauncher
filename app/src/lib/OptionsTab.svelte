@@ -226,6 +226,31 @@
     return url === OFFICIAL_HUB || url === OFFICIAL_HUB.slice(0, -1);
   }
 
+  function isLocalHost(name: string) {
+    return name === "localhost" || name === "127.0.0.1" || name === "[::1]" || name === "::1";
+  }
+
+  /**
+   * A hub address as it will be saved, or null. A hub is fetched by the backend, so plain
+   * `http` is only allowed for a local test hub (P2-44).
+   */
+  function normalizeHub(raw: string): string | null {
+    const text = raw.trim();
+    if (!text) return null;
+    let url: URL;
+    try {
+      url = new URL(text.endsWith("/") ? text : `${text}/`);
+    } catch {
+      return null;
+    }
+    const local = isLocalHost(url.hostname);
+    if (url.protocol !== "https:" && !(url.protocol === "http:" && local)) return null;
+    if (url.username || url.password) return null;
+    // `https://x` parses but is no address anybody can reach.
+    if (!local && !url.hostname.includes(".")) return null;
+    return url.toString();
+  }
+
   function toggleHub(index: number, enabled: boolean) {
     if (!s) return;
     const next = s.hubs.map((h, i) => (i === index ? { ...h, enabled } : h));
@@ -243,7 +268,11 @@
   function addPresetHub(url: string) {
     if (!s) return;
     hubError = null;
-    const normalized = url.endsWith("/") ? url : `${url}/`;
+    const normalized = normalizeHub(url);
+    if (!normalized) {
+      hubError = t("opt.hubsBadUrl");
+      return;
+    }
     if (hubs.some((h) => h.url.toLowerCase() === normalized.toLowerCase())) {
       hubError = t("opt.hubsDuplicate");
       return;
@@ -259,11 +288,11 @@
     const raw = newHubUrl.trim();
     if (!raw) return;
 
-    if (!/^https?:\/\/[^\s/$.?#].[^\s]*$/i.test(raw)) {
+    const normalized = normalizeHub(raw);
+    if (!normalized) {
       hubError = t("opt.hubsBadUrl");
       return;
     }
-    const normalized = raw.endsWith("/") ? raw : `${raw}/`;
     if (hubs.some((h) => h.url.toLowerCase() === normalized.toLowerCase())) {
       hubError = t("opt.hubsDuplicate");
       return;
@@ -517,17 +546,6 @@
 
 {#if s}
   <div class="tab" data-scroll>
-    {#if app.intelWarning}
-      <div class="intel-card">
-        <div class="intel-card-header">
-          <strong>{t("opt.intelWarningTitle")}</strong>
-        </div>
-        <p class="intel-card-desc">{t("opt.intelWarningDesc")}</p>
-        <button class="btn small" onclick={() => app.dismissIntelWarning()}>
-          {t("opt.intelWarningDismiss")}
-        </button>
-      </div>
-    {/if}
 
     <!-- ------------------------------------------------------------ general -->
     <section>
@@ -754,7 +772,7 @@
       {#if s.opt_profile !== "custom"}
         <div class="opt-toggle-row">
           <button class="btn secondary sm" onclick={() => (showOptDetails = !showOptDetails)}>
-            {showOptDetails ? "в–І " + t("opt.optDetails") : "в–ј " + t("opt.optDetails")}
+            {showOptDetails ? "▲ " + t("opt.optDetails") : "▼ " + t("opt.optDetails")}
           </button>
         </div>
       {/if}
@@ -847,7 +865,7 @@
         </div>
       </div>
 
-      {#if s.bg_type === "custom" || s.bg_type === "space"}
+    {#if s.bg_type === "custom" || s.bg_type === "space"}
         <div class="bg-controls">
           <label class="field range-field">
             <span>{t("opt.bgDim", { value: s.bg_dim })}</span>
@@ -894,10 +912,10 @@
               {uploadingBg ? "..." : "+ " + t("opt.bgUpload")}
             </button>
             <button class="btn" onclick={() => app.resetBackground()}>
-              в†© {t("opt.bgReset")}
+              ↺ {t("opt.bgReset")}
             </button>
             <button class="btn" onclick={() => api.openBackgroundsFolder()}>
-              рџ“Ѓ {t("opt.bgFolder")}
+              📁 {t("opt.bgFolder")}
             </button>
           </div>
 
@@ -936,7 +954,7 @@
                       pendingDeleteBg = bg;
                     }}
                   >
-                    вњ•
+                    ✕
                   </button>
                 </div>
               {/each}
@@ -983,7 +1001,7 @@
                 aria-label={t("opt.hubsRemove")}
                 onclick={() => removeHub(i)}
               >
-                вњ•
+                ✕
               </button>
             {/if}
           </li>
@@ -1036,7 +1054,7 @@
                   disabled={isAdded}
                   onclick={() => addPresetHub(rec.url)}
                 >
-                  {isAdded ? "вњ“" : t("opt.addHub")}
+                  {isAdded ? "✓" : t("opt.addHub")}
                 </button>
               </div>
             {/each}
@@ -1070,7 +1088,7 @@
                 <div>
                   <b>{pack.name}</b>
                   <span class="sub small">
-                    {pack.id}{#if pack.problems.length === 0} В· {t("pack.files", { count: pack.files })} В· {pack.cultures.map(nativeName).join(", ")}{/if}
+                    {pack.id}{#if pack.problems.length === 0} · {t("pack.files", { count: pack.files })} · {pack.cultures.map(nativeName).join(", ")}{/if}
                   </span>
                 </div>
                 {#if pack.description}<div class="sub small">{pack.description}</div>{/if}
@@ -1081,8 +1099,8 @@
                 {/if}
               </div>
               {#if pack.enabled}
-                <button class="btn icon open-r" title={t("pack.up")} aria-label={t("pack.up")} disabled={i === 0} onclick={() => movePack(pack.id, -1)}>в–І</button>
-                <button class="btn icon open-l" title={t("pack.down")} aria-label={t("pack.down")} disabled={i >= (s.enabled_packs.length - 1)} onclick={() => movePack(pack.id, 1)}>в–ј</button>
+                <button class="btn icon open-r" title={t("pack.up")} aria-label={t("pack.up")} disabled={i === 0} onclick={() => movePack(pack.id, -1)}>▲</button>
+                <button class="btn icon open-l" title={t("pack.down")} aria-label={t("pack.down")} disabled={i >= (s.enabled_packs.length - 1)} onclick={() => movePack(pack.id, 1)}>▼</button>
               {/if}
             </li>
           {/each}
@@ -1115,7 +1133,7 @@
               <div class="grow">
                 <div>
                   <b>{patch.name}</b>
-                  <span class="sub small">В· {formatBytes(patch.file_size)}</span>
+                  <span class="sub small">· {formatBytes(patch.file_size)}</span>
                 </div>
                 <div class="sub small code">{patch.id}</div>
               </div>
@@ -1145,10 +1163,10 @@
         </small>
       {/if}
       <div class="row">
-        <button class="btn" onclick={clean} disabled={cleaning || cleaningAll || app.busy}>
+        <button class="btn" onclick={clean} disabled={cleaning || cleaningAll || app.isGameBusy}>
           {cleaning ? t("opt.cleaning") : t("opt.clean")}
         </button>
-        <button class="btn" onclick={cleanAll} disabled={cleaning || cleaningAll || app.busy}>
+        <button class="btn" onclick={cleanAll} disabled={cleaning || cleaningAll || app.isGameBusy}>
           {cleaningAll ? t("opt.cleaning") : confirmCleanAll ? t("opt.cleanAllConfirm") : t("opt.cleanAll")}
         </button>
         <button class="btn" onclick={() => api.openLogsFolder()}>{t("opt.openLogs")}</button>
@@ -1221,7 +1239,7 @@
             <ul class="diag">
               {#each diag as r}
                 <li>
-                  <span class={r.ok ? "good" : "error"}>{r.ok ? "в—Џ" : "вњ•"}</span>
+                  <span class={r.ok ? "good" : "error"}>{r.ok ? "●" : "✕"}</span>
                   <b>{r.name}</b>
                   {#if r.ms !== null}<span class="sub">{r.ms} ms</span>{/if}
                   <span class="sub detail">{r.detail}</span>
@@ -1636,25 +1654,6 @@
   .delete-btn:hover {
     opacity: 1;
     background: var(--bad);
-  }
-  .intel-card {
-    margin-bottom: 16px;
-    padding: 12px 16px;
-    border-radius: var(--radius);
-    border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent);
-    background: color-mix(in srgb, var(--warn) 10%, transparent);
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-  }
-  .intel-card-header {
-    color: var(--warn);
-  }
-  .intel-card-desc {
-    margin: 0;
-    font-size: 13px;
-    line-height: 1.4;
-    user-select: text;
   }
   .recommended-hubs {
     margin-top: 14px;

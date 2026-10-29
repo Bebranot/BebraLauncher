@@ -57,7 +57,34 @@ export function parseFilters(value: unknown): FilterState {
   result.hideFull = v.hideFull === true;
   result.minPlayers = count(v.minPlayers);
   result.maxPlayers = count(v.maxPlayers);
-  return result;
+  // A saved `min > max` would hide every server and the panel would look innocent.
+  return normalizePlayerRange(result);
+}
+
+/**
+ * Swaps the player limits when min is above max: the two boxes stay in a sensible order instead
+ * of filtering everything out (P2-46).
+ */
+export function normalizePlayerRange(f: FilterState): FilterState {
+  const { minPlayers, maxPlayers } = f;
+  if (minPlayers !== null && maxPlayers !== null && minPlayers > maxPlayers) {
+    return { ...f, minPlayers: maxPlayers, maxPlayers: minPlayers };
+  }
+  return f;
+}
+
+/**
+ * Drops selected values that no server in the list offers any more (the hub changed) and keeps
+ * the values that still exist. An empty list means "there is nothing to prune from".
+ */
+export function pruneFilters(f: FilterState, languages: string[], regions: string[]): FilterState {
+  const known = (list: string[], available: string[]) =>
+    list.filter((v) => v === UNSPECIFIED || available.includes(v));
+  return {
+    ...f,
+    languages: known(f.languages, languages),
+    regions: known(f.regions, regions),
+  };
 }
 
 /** How many filters are switched on. */
@@ -134,7 +161,7 @@ function rpLevelsOf(tags: string[]): string[] {
 
 export function matchesFilters(s: ServerRow, f: FilterState): boolean {
   if (f.age.length === 1) {
-    const is18 = s.tags.includes("18+");
+    const is18 = s.tags.some((tag) => tag.trim().toLowerCase() === "18+");
     if ((f.age[0] === "yes") !== is18) return false;
   }
   const languages = tagValuesOf(s.tags, "lang:").map(primaryLanguage);
@@ -151,7 +178,12 @@ export function matchesFilters(s: ServerRow, f: FilterState): boolean {
 
 /** Free-text search over what the player sees of a server. Supports multi-term queries. */
 export function normalizeSearch(str: string): string {
-  return str.toLowerCase().replace(/ё/g, "е");
+  // `für` and `fur` must find each other: strip the diacritics after decomposing (P2-47).
+  return str
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .toLowerCase()
+    .replace(/ё/g, "е");
 }
 
 // Transliteration tables, once for the whole run: they used to be rebuilt for every term of
@@ -215,21 +247,27 @@ export function searchVariants(term: string): string[] {
 /** The searchable text of a row, normalized once per row and note (P1-38). */
 const hayCache = new WeakMap<ServerRow, { note: string; hay: string }>();
 
-function searchableText(s: ServerRow, note?: string | null): string {
-  const n = note ?? "";
+function searchableText(s: ServerRow, note?: string | null, extra?: string | null): string {
+  const n = `${note ?? ""}\u0000${extra ?? ""}`;
   const cached = hayCache.get(s);
   if (cached && cached.note === n) return cached.hay;
   const hay = normalizeSearch(
-    `${s.name ?? ""} ${s.address} ${s.tags.join(" ")} ${s.map ?? ""} ${s.preset ?? ""} ${n}`,
+    `${s.name ?? ""} ${s.address} ${s.tags.join(" ")} ${s.map ?? ""} ${s.preset ?? ""} ${note ?? ""} ${extra ?? ""}`,
   );
   hayCache.set(s, { note: n, hay });
   return hay;
 }
 
-export function matchesSearch(s: ServerRow, query: string, note?: string | null): boolean {
+/** `extra` is a name the player gave the server (a favourite's custom name), searched too (P2-47). */
+export function matchesSearch(
+  s: ServerRow,
+  query: string,
+  note?: string | null,
+  extra?: string | null,
+): boolean {
   const q = normalizeSearch(query.trim());
   if (!q) return true;
-  const hay = searchableText(s, note);
+  const hay = searchableText(s, note, extra);
   const terms = q.split(/\s+/).filter(Boolean);
   return terms.every((term) => {
     const vars = searchVariants(term);
@@ -397,8 +435,9 @@ const REGION_ALIASES: Record<string, string> = {
 /** The launcher's region for a region code from a server's tag, or null if there is none. */
 export function canonicalRegion(code: string): string | null {
   const c = code.trim().toLowerCase().replace(/-/g, "_");
-  if (c in REGIONS) return c;
-  return REGION_ALIASES[c] ?? null;
+  if (Object.hasOwn(REGIONS, c)) return c;
+  // `__proto__`, `constructor` and the like are not regions (P2-45).
+  return Object.hasOwn(REGION_ALIASES, c) ? REGION_ALIASES[c] : null;
 }
 
 /** The distinct launcher regions a server's tags put it in (codes nobody knows count for none). */
@@ -413,7 +452,23 @@ export function regionsOf(tags: string[]): string[] {
 
 /** The name of a region code in the given language; unknown codes are shown as they are. */
 export function regionName(code: string, lang: Lang): string {
-  return REGIONS[code]?.[lang] ?? code;
+  return Object.hasOwn(REGIONS, code) ? REGIONS[code][lang] : code;
+}
+
+/** The dictionary key of a roleplay level; `null` for anything the panel does not offer. */
+export function rpKey(level: string): "filters.rpNone" | "filters.rpLow" | "filters.rpMed" | "filters.rpHigh" | null {
+  switch (level) {
+    case "none":
+      return "filters.rpNone";
+    case "low":
+      return "filters.rpLow";
+    case "med":
+      return "filters.rpMed";
+    case "high":
+      return "filters.rpHigh";
+    default:
+      return null;
+  }
 }
 
 /** A language by its own name ("Русский"), never as a code; unknown codes as they are. */

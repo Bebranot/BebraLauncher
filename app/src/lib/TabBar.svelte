@@ -11,16 +11,38 @@
     ["mods", "tab.mods"],
     ["options", "tab.options"],
   ];
+
+  let buttons = $state<HTMLButtonElement[]>([]);
+
+  /** Left/Right/Home/End move between the tabs, as a tab list is expected to (P2-55). */
+  function onkeydown(e: KeyboardEvent, index: number) {
+    const last = TABS.length - 1;
+    let next = index;
+    if (e.key === "ArrowRight") next = index === last ? 0 : index + 1;
+    else if (e.key === "ArrowLeft") next = index === 0 ? last : index - 1;
+    else if (e.key === "Home") next = 0;
+    else if (e.key === "End") next = last;
+    else return;
+    e.preventDefault();
+    app.tab = TABS[next][0];
+    // Roving tabindex: the selected tab is the only stop, so focus follows the selection.
+    queueMicrotask(() => buttons[next]?.focus());
+  }
 </script>
 
 <!-- At the bottom of the window, like in the official launcher. -->
-<div class="nav" role="tablist">
-  {#each TABS as [id, label]}
+<div class="nav" role="tablist" aria-label={t("tab.listLabel")}>
+  {#each TABS as [id, label], i (id)}
     <button
+      bind:this={buttons[i]}
+      id={`tab-${id}`}
       role="tab"
       aria-selected={app.tab === id}
+      aria-controls={`panel-${id}`}
+      tabindex={app.tab === id ? 0 : -1}
       class:selected={app.tab === id}
       onclick={() => (app.tab = id)}
+      onkeydown={(e) => onkeydown(e, i)}
     >
       {t(label)}
       {#if id === "updates" && app.updateAvailable}<i class="dot" aria-hidden="true"></i>{/if}

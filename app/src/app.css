@@ -399,6 +399,11 @@ progress:indeterminate {
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
 }
+/* Inside a button or a line of text (P2-60). */
+.spinner.small {
+  width: 14px;
+  height: 14px;
+}
 
 @keyframes spin {
   to {

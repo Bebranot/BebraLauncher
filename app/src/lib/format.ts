@@ -5,23 +5,49 @@ export function serverTitle(s: ServerRow): string {
   return s.name?.trim() || s.address;
 }
 
+const DATE_LOCALE = { ru: "ru-RU", en: "en-GB", uk: "uk-UA", de: "de-DE" } as const;
+
+/** A number in the interface language: `1.5` in English, `1,5` in Russian (P2-48). */
+export function formatNumber(value: number, digits = 0): string {
+  try {
+    return new Intl.NumberFormat(DATE_LOCALE[i18n.lang], {
+      minimumFractionDigits: digits,
+      maximumFractionDigits: digits,
+    }).format(value);
+  } catch {
+    return digits > 0 ? value.toFixed(digits) : String(value);
+  }
+}
+
 /** "1 h 05 min" for a number of minutes. */
 export function formatMinutes(minutes: number): string {
-  if (minutes < 60) return `${minutes} ${t("unit.min")}`;
-  return `${Math.floor(minutes / 60)} ${t("unit.hour")} ${String(minutes % 60).padStart(2, "0")} ${t("unit.min")}`;
+  // A fractional or negative count must not print `-3` or `2.5`: round to whole minutes.
+  const total = Math.max(0, Math.round(Number.isFinite(minutes) ? minutes : 0));
+  if (total < 60) return `${total} ${t("unit.min")}`;
+  return `${Math.floor(total / 60)} ${t("unit.hour")} ${String(total % 60).padStart(2, "0")} ${t("unit.min")}`;
 }
 
 /** Time played, from seconds. Under a minute counts as one minute: zero would look like a bug. */
 export function formatPlayed(seconds: number): string {
-  return formatMinutes(Math.max(1, Math.round(seconds / 60)));
+  return formatMinutes(Math.max(1, Math.round((Number.isFinite(seconds) ? seconds : 0) / 60)));
 }
 
 /** `h:mm:ss`, for a running round. */
 export function formatClock(totalSeconds: number): string {
-  const s = Math.max(0, Math.floor(totalSeconds));
+  const s = Math.max(0, Math.floor(Number.isFinite(totalSeconds) ? totalSeconds : 0));
   const h = Math.floor(s / 3600);
   const m = Math.floor((s % 3600) / 60);
   return `${h}:${String(m).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+}
+
+/**
+ * `Date.parse` of a time without a zone follows the machine's zone (the backend sends UTC);
+ * say UTC explicitly so the round time is the same everywhere (P2-48).
+ */
+export function parseTime(text: string): number {
+  const trimmed = text.trim();
+  const hasZone = /(?:[zZ]|[+-]\d{2}:?\d{2})$/.test(trimmed);
+  return Date.parse(hasZone ? trimmed : `${trimmed}Z`);
 }
 
 /**
@@ -35,9 +61,13 @@ export function roundText(s: ServerRow, now = Date.now()): string | null {
     case 2:
       return t("run.ended");
     case 1: {
-      const start = s.round_start_time ? Date.parse(s.round_start_time) : NaN;
-      if (Number.isNaN(start) || start > now) return null;
-      return formatClock((now - start) / 1000);
+      const start = s.round_start_time ? parseTime(s.round_start_time) : NaN;
+      if (Number.isNaN(start)) return null;
+      const seconds = (now - start) / 1000;
+      // A clock a few seconds ahead of ours is not an empty cell: show 0:00:00. Hours in the
+      // future is not clock skew but bad data, and the cell stays empty.
+      if (seconds < -300) return null;
+      return formatClock(Math.max(0, seconds));
     }
     default:
       return null;
@@ -75,25 +105,36 @@ export function gridTemplate(c: Columns): string {
   return parts.join(" ");
 }
 
+const BYTE_UNITS: Key[] = ["unit.B", "unit.KB", "unit.MB", "unit.GB", "unit.TB", "unit.PB"];
+
+/** Bytes in the units people read, up to petabytes; garbage or a negative size shows 0 B. */
 export function formatBytes(n: number): string {
-  if (n < 1024) return `${n} ${t("unit.B")}`;
-  const units: Key[] = ["unit.KB", "unit.MB", "unit.GB"];
-  let v = n / 1024;
+  if (!Number.isFinite(n) || n <= 0) return `0 ${t("unit.B")}`;
+  if (n < 1024) return `${Math.round(n)} ${t("unit.B")}`;
+  let v = n;
   let i = 0;
-  while (v >= 1024 && i < units.length - 1) {
+  while (v >= 1024 && i < BYTE_UNITS.length - 1) {
     v /= 1024;
     i++;
   }
-  return `${v.toFixed(v < 10 ? 1 : 0)} ${t(units[i])}`;
+  return `${formatNumber(v, v < 10 ? 1 : 0)} ${t(BYTE_UNITS[i])}`;
 }
 
 export function stageText(stage: PlayStage): string {
   return t(`stage.${stage}` as Key);
 }
 
-const DATE_LOCALE = { ru: "ru-RU", en: "en-GB", uk: "uk-UA", de: "de-DE" } as const;
-
+/** A date in the interface language, not in the machine's locale (P2-48). */
 export function formatDate(iso: string): string {
-  const d = Date.parse(iso);
+  const d = typeof iso === "number" ? iso : parseTime(iso);
   return Number.isNaN(d) ? iso : new Date(d).toLocaleDateString(DATE_LOCALE[i18n.lang]);
+}
+
+/** A time of day in the interface language (the update check time). */
+export function formatTime(ms: number): string {
+  const d = Number.isFinite(ms) ? ms : Date.now();
+  return new Date(d).toLocaleTimeString(DATE_LOCALE[i18n.lang], {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }

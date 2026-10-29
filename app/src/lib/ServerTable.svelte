@@ -47,15 +47,16 @@
 </script>
 
 {#snippet head(key: SortKey, label: string, center: boolean, title?: string)}
-  <button
-    class="cell hbtn"
+  <div
+    class="cell hcell"
     class:center
-    {title}
-    disabled={!sortable}
-    onclick={() => sortBy(key)}
+    role="columnheader"
+    aria-sort={sortable && app.sort.key === key ? (app.sort.desc ? "descending" : "ascending") : "none"}
   >
-    {label}{#if sortable && app.sort.key === key}<span class="arrow">{app.sort.desc ? "▼" : "▲"}</span>{/if}
-  </button>
+    <button class="hbtn" class:center {title} disabled={!sortable} onclick={() => sortBy(key)}>
+      {label}{#if sortable && app.sort.key === key}<span class="arrow" aria-hidden="true">{app.sort.desc ? "?" : "?"}</span>{/if}
+    </button>
+  </div>
 {/snippet}
 
 <div class="table" bind:this={host}>
@@ -106,7 +107,13 @@
   .cell.center {
     text-align: center;
   }
+  .hcell {
+    padding: 0;
+  }
+
   .hbtn {
+    width: 100%;
+    padding: 8px 10px;
     appearance: none;
     background: none;
     border: 0;

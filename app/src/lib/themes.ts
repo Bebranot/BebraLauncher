@@ -301,6 +301,43 @@ const withAlpha = (c: Rgba, a: number): Rgba => ({ ...c, a });
 const opaque = (c: Rgba): Rgba => withAlpha(c, 255);
 const WHITE: Rgba = { r: 255, g: 255, b: 255, a: 255 };
 
+/** WCAG relative luminance of a colour. */
+export function luminance(c: Rgba): number {
+  const channel = (v: number) => {
+    const s = v / 255;
+    return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+  };
+  return 0.2126 * channel(c.r) + 0.7152 * channel(c.g) + 0.0722 * channel(c.b);
+}
+
+/** WCAG contrast of two `#RRGGBB` colours; 1 for unparsable input. */
+export function contrastOf(a: string, b: string): number {
+  const ca = parseColor(a);
+  const cb = parseColor(b);
+  if (!ca || !cb) return 1;
+  const la = luminance(ca);
+  const lb = luminance(cb);
+  return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
+}
+
+/** Minimum contrast for body text (WCAG AA). */
+export const MIN_CONTRAST = 4.5;
+
+/**
+ * A secondary text colour that stays readable on every surface it is used on: mixed towards
+ * the foreground until it reaches `min` contrast against all the given backgrounds (P2-49).
+ */
+function readable(text: string, backgrounds: string[], foreground: Rgba, min = MIN_CONTRAST): string {
+  const start = parseColor(text);
+  if (!start) return toCss(foreground);
+  for (let step = 0; step <= 1.0001; step += 0.02) {
+    const candidate = mix(start, foreground, step);
+    const hex = toCss(candidate);
+    if (backgrounds.every((bg) => contrastOf(hex, bg) >= min)) return hex;
+  }
+  return toCss(foreground);
+}
+
 function color(text: string, fallback: string): Rgba {
   return parseColor(text) ?? (parseColor(fallback) as Rgba);
 }
@@ -317,16 +354,21 @@ export function deriveCustom(custom: CustomColors): Tokens {
   const buttonHover = mix(controlMid, accent, 0.18);
   const borderHigh = mix(controlHigh, foreground, 0.28);
   const separator = withAlpha(mix(borderHigh, background, 0.4), 0xaa);
+  const bgCss = toCss(background);
+  const popupCss = toCss(popup);
+  // Secondary text must stay readable on the page and in popups (P2-49).
+  const muted = readable(toCss(mix(foreground, background, 0.58)), [bgCss, popupCss], foreground);
+  const sub = readable(toCss(mix(foreground, background, 0.46)), [bgCss, popupCss], foreground);
 
   return {
-    background: toCss(background),
-    popup: toCss(popup),
+    background: bgCss,
+    popup: popupCss,
     foreground: toCss(foreground),
-    muted: toCss(mix(foreground, background, 0.58)),
+    muted,
     controlMid: toCss(controlMid),
     controlHigh: toCss(controlHigh),
     accent: toCss(accent),
-    sub: toCss(mix(foreground, background, 0.46)),
+    sub,
     stripeEdge: toCss(mix(background, popup, 0.45)),
     buttonHover: toCss(buttonHover),
     tabSelected: toCss(withAlpha(accent, 0xcc)),
@@ -344,15 +386,17 @@ function fromPalette(p: Palette): Tokens {
   const css = (s: string) => toCss(parseColor(s) as Rgba);
   const background = parseColor(p.background) as Rgba;
   const foreground = parseColor(p.foreground) as Rgba;
+  const surfaces = [p.background, p.popup];
   return {
     background: css(p.background),
     popup: css(p.popup),
     foreground: css(p.foreground),
-    muted: css(p.muted),
+    // The palettes kept their historical greys; lift them where they were too faint (P2-49).
+    muted: readable(css(p.muted), surfaces, foreground),
     controlMid: css(p.controlMid),
     controlHigh: css(p.controlHigh),
     accent: css(p.accent),
-    sub: css(p.sub),
+    sub: readable(css(p.sub), surfaces, foreground),
     stripeEdge: css(p.stripeEdge),
     buttonHover: css(p.buttonHover),
     tabSelected: css(p.tabSelected),
@@ -373,11 +417,13 @@ export function isThemeId(id: string): id is ThemeId {
 /** The colours of a theme. Unknown ids give the default dark theme. */
 export function tokensFor(theme: string, custom: CustomColors): Tokens {
   if (theme === "custom") return deriveCustom(custom);
-  if (theme in DERIVED) {
+  if (Object.hasOwn(DERIVED, theme)) {
     const c = DERIVED[theme as keyof typeof DERIVED];
     return deriveCustom({ ...DEFAULT_CUSTOM, ...c });
   }
-  const palette = PALETTES[theme as PaletteId] ?? PALETTES.dark;
+  const palette = Object.hasOwn(PALETTES, theme)
+    ? PALETTES[theme as PaletteId]
+    : PALETTES.dark;
   return fromPalette(palette);
 }
 
@@ -498,7 +544,9 @@ export function importCustom(text: string, current: CustomColors): CustomColors 
       ? v.trim().toUpperCase()
       : current[key];
   };
-  const known = (Object.keys(DEFAULT_CUSTOM) as (keyof CustomColors)[]).some((k) => k in record);
+  const known = (Object.keys(DEFAULT_CUSTOM) as (keyof CustomColors)[]).some((k) =>
+    Object.hasOwn(record, k),
+  );
   if (!known) return null;
   return {
     background: pick("background"),

@@ -1,14 +1,9 @@
 <script lang="ts">
-  import { UNSPECIFIED, emptyFilters, languageName, regionName } from "./filters";
+  import { UNSPECIFIED, emptyFilters, languageName, regionName, rpKey } from "./filters";
   import { i18n, t, type Key } from "./i18n.svelte";
   import { app } from "./store.svelte";
 
-  const RP: [string, Key][] = [
-    ["none", "filters.rpNone"],
-    ["low", "filters.rpLow"],
-    ["med", "filters.rpMed"],
-    ["high", "filters.rpHigh"],
-  ];
+  const RP: string[] = ["none", "low", "med", "high"];
 
   /** Ticks or unticks a value of a category. */
   function flip(list: string[], value: string, on: boolean): string[] {
@@ -22,6 +17,13 @@
 </script>
 
 <div class="panel">
+  <!-- Resetting belongs to the whole panel, not to the players section (P2-54). -->
+  <div class="panel-head">
+    <h3>{t("filters.title")}</h3>
+    <button class="link reset" onclick={() => (app.filters = emptyFilters())}>
+      {t("filters.reset")}
+    </button>
+  </div>
   <div class="grid">
     <section>
       <h3>{t("filters.language")}</h3>
@@ -55,14 +57,14 @@
 
     <section>
       <h3>{t("filters.rp")}</h3>
-      {#each [...RP, [UNSPECIFIED, "filters.unspecified"] as [string, Key]] as [value, label] (value)}
+      {#each [...RP, UNSPECIFIED] as value (value)}
         <label>
           <input
             type="checkbox"
             checked={app.filters.rp.includes(value)}
             onchange={(e) => (app.filters.rp = flip(app.filters.rp, value, e.currentTarget.checked))}
           />
-          {t(label)}
+          {value === UNSPECIFIED ? t("filters.unspecified") : t(rpKey(value) ?? ("filters.rpNone" as Key))}
         </label>
       {/each}
 
@@ -89,27 +91,26 @@
         <input type="checkbox" bind:checked={app.filters.hideFull} />
         {t("filters.hideFull")}
       </label>
-      <div class="num">
+      <label class="num">
         <span class="sub">{t("filters.min")}</span>
         <input
           type="number"
           min="0"
+          aria-label={t("filters.min")}
           value={app.filters.minPlayers ?? ""}
-          oninput={(e) => (app.filters.minPlayers = count(e.currentTarget.value))}
+          oninput={(e) => app.setPlayerRange("min", count(e.currentTarget.value))}
         />
-      </div>
-      <div class="num">
+      </label>
+      <label class="num">
         <span class="sub">{t("filters.max")}</span>
         <input
           type="number"
           min="0"
+          aria-label={t("filters.max")}
           value={app.filters.maxPlayers ?? ""}
-          oninput={(e) => (app.filters.maxPlayers = count(e.currentTarget.value))}
+          oninput={(e) => app.setPlayerRange("max", count(e.currentTarget.value))}
         />
-      </div>
-      <button class="link reset" onclick={() => (app.filters = emptyFilters())}>
-        {t("filters.reset")}
-      </button>
+      </label>
     </section>
   </div>
 </div>
@@ -123,6 +124,13 @@
     height: 100%;
     padding: 12px 16px 14px;
     animation: fade-in 0.14s ease-out;
+  }
+  .panel-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 8px;
   }
   h3 {
     margin-bottom: 4px;
@@ -153,14 +161,12 @@
     cursor: pointer;
   }
   .num {
-    display: flex;
     align-items: center;
-    gap: 8px;
   }
   .num input {
     width: 80px;
   }
   .reset {
-    margin-top: 8px;
+    font-size: 12px;
   }
 </style>

@@ -10,9 +10,13 @@
 
   let patches = $state<PatchRow[]>([]);
   let loading = $state(false);
+  let loadError = $state<string | null>(null);
   let search = $state("");
   let fileInput = $state<HTMLInputElement>();
   let installing = $state(false);
+
+  /** A `.dll` is read whole into a base64 string; a huge file would hang the window first. */
+  const MAX_PATCH_BYTES = 32 * 1024 * 1024;
 
   const enabledCount = $derived(
     patches.filter((p) => s?.enabled_patches?.includes(p.id)).length,
@@ -35,9 +39,11 @@
 
   async function loadPatches() {
     loading = true;
+    loadError = null;
     try {
       patches = await api.listPatches();
     } catch (e) {
+      loadError = errorText(e);
       app.say(errorText(e));
     } finally {
       loading = false;
@@ -70,6 +76,13 @@
     const target = e.target as HTMLInputElement;
     const file = target.files?.[0];
     if (!file) return;
+
+    // Check before `readAsDataURL`: a 500 MB file would be read into memory for nothing.
+    if (file.size > MAX_PATCH_BYTES) {
+      target.value = "";
+      app.say(t("mods.fileTooLarge", { size: formatBytes(MAX_PATCH_BYTES) }));
+      return;
+    }
 
     installing = true;
     try {
@@ -119,7 +132,7 @@
           <button
             class="icon-btn-clear"
             onclick={() => (search = "")}
-            aria-label="Clear search"
+            aria-label={t("servers.clearSearch")}
           >
             <Icon name="close" size={14} />
           </button>
@@ -162,13 +175,41 @@
         <span class="badge count">
           {t("mods.enabledCount", { enabled: enabledCount, total: patches.length })}
         </span>
+        {#if enabledCount > 0}
+          <button
+            class="btn small"
+            onclick={() => app.updateSettings({ enabled_patches: [] })}
+          >
+            {t("mods.disableAll")}
+          </button>
+        {/if}
       </div>
+      <!-- Executable code, not a translation pack: say so before it is used (P1-2). -->
+      <div class="code-warning" role="note">
+        <Icon name="note" size={16} />
+        <span>{t("mods.codeWarning")}</span>
+      </div>
+      {#if enabledCount > 0}
+        <div class="code-warning active" role="status">
+          <span>{t("mods.activeWarning", { count: enabledCount })}</span>
+        </div>
+      {/if}
     {/if}
   </header>
 
   <!-- Mod list or Empty state -->
-  <main class="mods-body">
-    {#if patches.length === 0}
+  <div class="mods-body">
+    {#if loading && patches.length === 0}
+      <div class="empty-state" role="status" aria-live="polite">
+        <span class="spinner"></span>
+        <p class="sub">{t("mods.loading")}</p>
+      </div>
+    {:else if loadError && patches.length === 0}
+      <div class="empty-state">
+        <p class="error">{t("mods.loadFailed", { error: loadError })}</p>
+        <button class="btn small" onclick={loadPatches}>{t("mods.retry")}</button>
+      </div>
+    {:else if patches.length === 0}
       <div class="empty-state">
         <div class="empty-icon">
           <Icon name="note" size={40} />
@@ -202,6 +243,8 @@
               <label class="switch-wrap">
                 <input
                   type="checkbox"
+                  role="switch"
+                  aria-label={patch.name}
                   checked={isEnabled}
                   onchange={(e) => togglePatch(patch, e.currentTarget.checked)}
                 />
@@ -215,6 +258,9 @@
                 <span class="mod-size">{formatBytes(patch.file_size)}</span>
               </div>
               <div class="mod-filename">{patch.id}</div>
+              {#if !patch.verified}
+                <div class="mod-changed">{t("mods.changed")}</div>
+              {/if}
             </div>
 
             <div class="mod-status">
@@ -252,7 +298,7 @@
         <li>{t("mods.helpStep5")}</li>
       </ol>
     </section>
-  </main>
+  </div>
 </div>
 
 <style>
@@ -266,6 +312,30 @@
     padding: 24px 32px;
     gap: 20px;
     overflow-y: auto;
+  }
+
+  .code-warning {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 10px 12px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: var(--tint);
+    color: var(--sub);
+    font-size: 12px;
+    line-height: 1.45;
+  }
+
+  .code-warning.active {
+    color: var(--fg);
+    border-color: var(--accent);
+  }
+
+  .mod-changed {
+    margin-top: 4px;
+    font-size: 11px;
+    color: var(--bad);
   }
 
   .mods-header {
@@ -357,9 +427,9 @@
     align-items: center;
     text-align: center;
     padding: 48px 24px;
-    background: var(--panel);
+    background: var(--tint);
     border: 1px dashed var(--line);
-    border-radius: var(--radius-lg);
+    border-radius: var(--radius);
     gap: 12px;
   }
 
@@ -392,7 +462,7 @@
     align-items: center;
     gap: 16px;
     padding: 12px 16px;
-    background: var(--panel);
+    background: var(--tint);
     border: 1px solid var(--line);
     border-radius: var(--radius);
     transition:
@@ -406,7 +476,7 @@
 
   .mod-card.enabled {
     border-color: color-mix(in srgb, var(--accent) 50%, var(--line));
-    background: color-mix(in srgb, var(--accent) 4%, var(--panel));
+    background: color-mix(in srgb, var(--accent) 4%, var(--tint));
   }
 
   /* Switch styling */
@@ -451,6 +521,12 @@
 
   .switch-wrap input:checked + .slider:before {
     transform: translateX(16px);
+  }
+
+  /* The box itself is invisible: the ring has to go on the track (P2-51). */
+  .switch-wrap input:focus-visible + .slider {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
   }
 
   .mod-info {
@@ -529,7 +605,7 @@
 
   /* Guide card */
   .guide-card {
-    background: var(--panel);
+    background: var(--tint);
     border: 1px solid var(--line);
     border-radius: var(--radius);
     padding: 16px 20px;

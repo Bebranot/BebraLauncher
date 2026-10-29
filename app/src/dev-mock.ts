@@ -167,6 +167,8 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 let cancelled = false;
 
 let mockPid = 1000;
+/** Clients the mock "runs": `list_running_clients` and the header badge use them (P2-63). */
+const running = new Map<number, { pid: number; playsAs: string; address?: string }>();
 async function fakePlay(address?: string) {
   cancelled = false;
   const ev = (e: object) => emit("play", e);
@@ -183,11 +185,43 @@ async function fakePlay(address?: string) {
   await ev({ kind: "stage", stage: "starting" });
   await sleep(600);
   const pid = mockPid++;
-  await ev({ kind: "running", pid, plays_as: "serjo13", address });
+  // The game plays as the selected account, like the real backend (P2-63).
+  const playsAs =
+    accounts.find((x) => x.user_id === settings.last_account)?.username ??
+    settings.guest_name ??
+    "Guest";
+  running.set(pid, { pid, playsAs, address });
+  await ev({ kind: "running", pid, plays_as: playsAs, address });
 }
 
 let tokenSet = false;
 let found = false;
+let currentUpdate: ReturnType<typeof updateStatus> | null = null;
+
+/** The wallpapers on disk: a saved one must appear in the gallery at once (P2-63). */
+let backgrounds = [{ id: "sample_station.png", name: "sample_station", file_size: 1_240_000 }];
+
+/** The mock session: credentials are accepted unless the name asks for a second factor. */
+function fakeLogin(a: Record<string, unknown>) {
+  const username = String(a.username ?? accounts[0]?.username ?? "");
+  if (!a.password) return { status: "denied", code: "invalid_credentials", errors: [] };
+  if (username === "tfa" && !a.tfaCode) {
+    return { status: "denied", code: "tfa_required", errors: [] };
+  }
+  if (username === "tfa" && a.tfaCode !== "123456") {
+    return { status: "denied", code: "tfa_invalid", errors: [] };
+  }
+  const account =
+    accounts.find((x) => x.username === username) ??
+    {
+      user_id: `mock-${accounts.length + 1}`,
+      username: username || "Guest",
+      expire_time: "2027-01-01T00:00:00Z",
+      state: "valid" as const,
+    };
+  if (!accounts.some((x) => x.user_id === account.user_id)) accounts = [...accounts, account];
+  return { status: "ok", account };
+}
 const updateStatus = (phase = "idle", done = 0) => ({
   phase,
   current: "0.2.000",
@@ -208,16 +242,20 @@ const updateStatus = (phase = "idle", done = 0) => ({
 
 /** A check that finds a new version, downloads it and gets ready (the real flow, faster). */
 async function fakeUpdate() {
-  await emit("update", updateStatus("checking"));
+  currentUpdate = updateStatus("checking");
+  await emit("update", currentUpdate);
   await sleep(700);
   found = true;
-  await emit("update", updateStatus("idle"));
+  currentUpdate = updateStatus("idle");
+  await emit("update", currentUpdate);
   await sleep(500);
   for (let done = 0; done <= 36_000_000; done += 3_600_000) {
-    await emit("update", updateStatus("downloading", done));
+    currentUpdate = updateStatus("downloading", done);
+    await emit("update", currentUpdate);
     await sleep(200);
   }
-  await emit("update", updateStatus("ready", 36_000_000));
+  currentUpdate = updateStatus("ready", 36_000_000);
+  await emit("update", currentUpdate);
 }
 
 const CHANGELOG = `# Журнал изменений
@@ -394,15 +432,20 @@ export function installMock() {
           return { id, name: id.replace(/\.dll$/i, ""), file_size: 32_000, enabled: true };
         }
         case "list_backgrounds":
-          return [
-            { id: "sample_station.png", name: "sample_station", file_size: 1_240_000 },
-          ];
-        case "save_background":
-          return { id: (a.name as string) || "custom.png", name: (a.name as string) || "custom", file_size: 500_000 };
+          return backgrounds;
+        case "save_background": {
+          const id = (a.name as string) || "custom.png";
+          const entry = { id, name: id.replace(/\.[^.]+$/, ""), file_size: 500_000 };
+          if (!backgrounds.some((x) => x.id === id)) backgrounds = [...backgrounds, entry];
+          return entry;
+        }
         case "get_background":
           return "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='800' height='600'><rect width='800' height='600' fill='%231a2234'/><text x='50%25' y='50%25' fill='%23fff' font-family='sans-serif' font-size='24' text-anchor='middle'>Custom Wallpaper Preview</text></svg>";
-        case "delete_background":
+        case "delete_background": {
+          const id = a.name as string;
+          backgrounds = backgrounds.filter((x) => x.id !== id);
           return null;
+        }
         case "open_backgrounds_folder":
         case "open_patches_folder":
         case "open_packs_folder":
@@ -427,7 +470,7 @@ export function installMock() {
             total: storageUsed,
           };
         case "list_running_clients":
-          return [];
+          return [...running.values()];
         case "clean_storage": {
           const freed = storageUsed * 0.4;
           storageUsed -= freed;
@@ -459,12 +502,14 @@ export function installMock() {
           })();
           return null;
         case "update_status":
-          return updateStatus();
+          return (currentUpdate ??= updateStatus());
         case "check_update":
           void fakeUpdate();
-          return { ...updateStatus(), phase: "checking" };
+          currentUpdate = { ...updateStatus(), phase: "checking" };
+          return currentUpdate;
         case "download_update":
-          return updateStatus();
+          void fakeUpdate();
+          return (currentUpdate ??= updateStatus("downloading"));
         case "install_update":
           return null;
         case "update_token_state":
@@ -475,7 +520,7 @@ export function installMock() {
         case "changelog":
           return CHANGELOG;
         case "login":
-          return { status: "denied", code: "invalid_credentials", errors: [] };
+          return fakeLogin(a);
         case "logout":
           accounts = accounts.filter((x) => x.user_id !== a.userId);
           return true;
@@ -485,6 +530,8 @@ export function installMock() {
         case "cancel_play":
           cancelled = true;
           return null;
+        default:
+          throw new Error("unmocked " + cmd);
       }
     },
     { shouldMockEvents: true },

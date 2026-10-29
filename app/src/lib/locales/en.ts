@@ -1,6 +1,16 @@
 import type { Dictionary } from "./ru";
 
 export const en: Dictionary = {
+  "unit.TB": "TB",
+  "unit.PB": "PB",
+  "tab.listLabel": "Sections",
+  "mods.fileTooLarge": "The file is too large (limit {mb} MB).",
+  "mods.loading": "Loading mods...",
+  "mods.loadFailed": "Could not load mods: {error}",
+  "mods.retry": "Retry",
+  "app.loadFailed": "Could not load data: {error}",
+  "app.retry": "Retry",
+
   "header.discord": "Discord",
   "header.website": "Website",
   "header.version": "Version {version}",
@@ -305,6 +315,10 @@ export const en: Dictionary = {
   "mods.install": "Install Mod (.dll)",
   "mods.empty": "No mods installed. Place a .dll assembly in the mods folder or click 'Install Mod'.",
   "mods.enabledCount": "Active: {enabled} of {total}",
+  "mods.codeWarning": "Mods are third-party code that runs inside the game. The launcher checks that the file has not changed since installation, but does not sign it: a server may treat mods as cheating.",
+  "mods.activeWarning": "Patches are active: {count}. Use ?Disable all? to launch without them.",
+  "mods.disableAll": "Disable all",
+  "mods.changed": "File changed after installation ? not loaded",
   "mods.toggleOn": "Enabled",
   "mods.toggleOff": "Disabled",
   "mods.delete": "Delete",
