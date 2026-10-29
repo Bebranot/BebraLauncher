@@ -260,19 +260,38 @@ pub async fn install_engine(
         return Err(e);
     }
 
-    // Move into place; the signature file goes last, it marks the install as complete.
-    if !zip.is_file() {
-        if let Err(e) = std::fs::rename(&part, &zip) {
-            if !zip.is_file() {
-                let _ = std::fs::remove_file(&part);
-                return Err(e.into());
-            }
-            let _ = std::fs::remove_file(&part);
-        }
-    } else {
-        let _ = std::fs::remove_file(&part);
+    // Replace whatever is in place: a broken zip must never win over a freshly verified download.
+    // The old file is moved aside first, so a failed rename can put it back.
+    let old_zip = dirs.engines().join(format!(
+        "{}.zip.old-{}-{}",
+        resolved.version,
+        std::process::id(),
+        nanos
+    ));
+    if zip.is_file() {
+        let _ = std::fs::rename(&zip, &old_zip);
     }
-    std::fs::write(&sig, &resolved.sig)?;
+    if let Err(e) = std::fs::rename(&part, &zip) {
+        if old_zip.is_file() {
+            let _ = std::fs::rename(&old_zip, &zip);
+        }
+        let _ = std::fs::remove_file(&part);
+        return Err(e.into());
+    }
+    let _ = std::fs::remove_file(&old_zip);
+
+    // The signature goes last and is also written atomically: it marks the install as complete.
+    let sig_part = dirs.engines().join(format!(
+        "{}.sig.{}-{}.part",
+        resolved.version,
+        std::process::id(),
+        nanos
+    ));
+    std::fs::write(&sig_part, &resolved.sig)?;
+    if sig.is_file() {
+        let _ = std::fs::remove_file(&sig);
+    }
+    std::fs::rename(&sig_part, &sig)?;
     Ok(InstalledEngine {
         version: resolved.version,
         zip_path: zip,
@@ -452,6 +471,49 @@ mod tests {
         let found = installed(&dirs, "9.9.9").unwrap().unwrap();
         assert_eq!(found.sig_hex, sig);
         assert!(installed(&dirs, "1.0.0").unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn broken_installed_zip_is_replaced_with_verified_download() {
+        let zip = b"PK real engine zip".repeat(100);
+        let sk = test_key();
+        let sig = sign_hex(&sk, &zip);
+        let base = start_with_index(&zip, "9.9.9", &sig).await;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = DataDirs::at(tmp.path());
+        dirs.ensure().unwrap();
+        // A corrupt copy from an earlier run, with a signature that does not match it.
+        std::fs::write(dirs.engines().join("9.9.9.zip"), b"garbage").unwrap();
+        std::fs::write(dirs.engines().join("9.9.9.sig"), "00").unwrap();
+
+        let installed_engine = install_engine(
+            &build_client().unwrap(),
+            &UrlFallbackSet::new([base]),
+            &dirs,
+            "9.9.9",
+            &sk.verifying_key(),
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert!(installed_engine.downloaded);
+        assert_eq!(std::fs::read(&installed_engine.zip_path).unwrap(), zip);
+        assert_eq!(installed_engine.sig_hex, sig);
+        assert_eq!(
+            std::fs::read_to_string(dirs.engines().join("9.9.9.sig"))
+                .unwrap()
+                .trim(),
+            sig
+        );
+        assert!(!dirs.engines().join("9.9.9.zip.part").exists());
+        assert!(
+            std::fs::read_dir(dirs.engines())
+                .unwrap()
+                .all(|e| !e.unwrap().file_name().to_string_lossy().contains(".old-")),
+            "no stale backup is left behind"
+        );
     }
 
     #[tokio::test]
