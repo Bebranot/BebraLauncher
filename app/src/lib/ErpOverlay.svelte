@@ -1,11 +1,17 @@
 <script lang="ts">
   import { clock, promo } from "./rofl.svelte";
+  import { app } from "./store.svelte";
 
   const DEADLINE = 5 * 60;
 
   let left = $state(DEADLINE);
   let picked = $state<string | null>(null);
   let input = $state<HTMLInputElement>();
+
+  // Never cover a real connection or download: the joke closes itself.
+  $effect(() => {
+    if (app.isGameBusy && promo.open) promo.open = false;
+  });
 
   // Counts the five minutes down while the window is open.
   $effect(() => {
@@ -63,7 +69,8 @@
   .backdrop {
     position: fixed;
     inset: 0;
-    z-index: 40;
+    /* Below ConnectingOverlay (30): a joke must not cover real progress or Cancel. */
+    z-index: 20;
     display: grid;
     place-items: center;
     padding: 14px;
@@ -133,12 +140,12 @@
   }
   .joke {
     margin: 10px 0 0;
-    font-size: 11px;
-    color: #b36a6a;
+    font-size: 13px;
+    color: var(--sub);
   }
   .close {
-    font-size: 11px;
-    color: #b36a6a;
+    font-size: 13px;
+    color: var(--sub);
   }
   @keyframes blink {
     50% {

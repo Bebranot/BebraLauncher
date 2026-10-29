@@ -287,8 +287,6 @@ export const api = {
     invoke<string[]>("edit_favorite", {
       oldAddress: old_address,
       newAddress: new_address,
-      old_address,
-      new_address,
       name: name ?? null,
     }),
   setFavoriteName: (address: string, name?: string | null) =>
@@ -353,5 +351,17 @@ export const api = {
 
 /** Errors from commands arrive as plain strings. */
 export function errorText(e: unknown): string {
-  return typeof e === "string" ? e : e instanceof Error ? e.message : String(e);
+  if (typeof e === "string") return e;
+  if (e instanceof Error) return e.message;
+  if (e && typeof e === "object") {
+    const message = (e as { message?: unknown }).message;
+    if (typeof message === "string" && message) return message;
+    try {
+      const json = JSON.stringify(e);
+      if (json && json !== "{}") return json;
+    } catch {
+      // A value that cannot be serialised falls back to the line below.
+    }
+  }
+  return String(e);
 }

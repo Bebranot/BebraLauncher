@@ -211,6 +211,16 @@
   const bgBlur = $derived(app.settings?.bg_blur ?? 0);
   const customImg = $derived(app.customBgUrl);
 
+  /** A data URL that is safe to put into a CSS `url()`: a settings file can be edited by hand. */
+  const safeBgUrl = $derived.by(() => {
+    const value = customImg;
+    if (typeof value !== "string" || !value.startsWith("data:image/")) return null;
+    if (/["'()\s]/.test(value)) return null;
+    return `url("${value}")`;
+  });
+  const dim = $derived(Number.isFinite(bgDim) ? Math.min(100, Math.max(0, bgDim)) : 0);
+  const blur = $derived(Number.isFinite(bgBlur) ? Math.min(30, Math.max(0, bgBlur)) : 0);
+
   $effect(() => {
     if (bgType === "space" && !document.hidden) {
       startLoop();
@@ -223,19 +233,19 @@
 <div class="bg-root" aria-hidden="true">
   {#if bgType === "space"}
     <canvas bind:this={canvas} class="space-canvas"></canvas>
-  {:else if bgType === "custom" && customImg}
+  {:else if bgType === "custom" && safeBgUrl}
     <div
       class="custom-bg"
-      style:background-image="url('{customImg}')"
-      style:filter={bgBlur > 0 ? `blur(${bgBlur}px)` : "none"}
-      style:transform={bgBlur > 0 ? "scale(1.06)" : "none"}
+      style:background-image={safeBgUrl}
+      style:filter={blur > 0 ? `blur(${blur}px)` : "none"}
+      style:transform={blur > 0 ? "scale(1.06)" : "none"}
     ></div>
   {/if}
 
-  {#if bgType === "custom" && bgDim > 0}
-    <div class="dim-layer" style:background-color="rgba(0, 0, 0, {bgDim / 100})"></div>
-  {:else if bgType === "space" && bgDim > 0}
-    <div class="dim-layer" style:background-color="rgba(0, 0, 0, {(bgDim * 0.4) / 100})"></div>
+  {#if bgType === "custom" && dim > 0}
+    <div class="dim-layer" style:background-color="rgba(0, 0, 0, {dim / 100})"></div>
+  {:else if bgType === "space" && dim > 0}
+    <div class="dim-layer" style:background-color="rgba(0, 0, 0, {(dim * 0.4) / 100})"></div>
   {/if}
 </div>
 
