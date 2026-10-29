@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use bebra_core::accounts::{
@@ -138,9 +139,71 @@ enum Command {
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() -> std::process::ExitCode {
+    match run().await {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("error: {e:#}");
+            std::process::ExitCode::from(exit_code(&e))
+        }
+    }
+}
+
+/// Exit codes, so scripts can tell classes of failure apart:
+///
+/// - `0` success
+/// - `1` everything else (bad arguments, a bad address, a damaged file, ...)
+/// - `2` network/HTTP failure (no connection, timeout, 5xx, ...)
+/// - `3` the saved account needs attention (expired login, login refused)
+///
+/// Anything that used to be "non-zero means failure" still works.
+fn exit_code(err: &anyhow::Error) -> u8 {
+    let has_core = |pred: fn(&bebra_core::Error) -> bool| {
+        err.chain()
+            .any(|c| c.downcast_ref::<bebra_core::Error>().is_some_and(pred))
+    };
+    if has_core(|e| {
+        matches!(
+            e,
+            bebra_core::Error::Http(_) | bebra_core::Error::HttpStatus { .. }
+        )
+    }) {
+        return 2;
+    }
+    if err
+        .chain()
+        .any(|c| c.downcast_ref::<AccountRequired>().is_some())
+    {
+        return 3;
+    }
+    1
+}
+
+/// "The saved account must be fixed by the player": a class of its own for the exit code.
+#[derive(Debug)]
+struct AccountRequired(String);
+
+impl std::fmt::Display for AccountRequired {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for AccountRequired {}
+
+fn account_required(message: impl Into<String>) -> anyhow::Error {
+    anyhow::Error::new(AccountRequired(message.into()))
+}
+
+/// Built only by the commands that actually talk to the network: `storage`, `running`,
+/// `update-keygen` and `update-sign` must work offline (and must not fail because a proxy setting
+/// is broken).
+fn http_client() -> Result<http::Client> {
+    http::build_client().context("could not set up the HTTP client")
+}
+
+async fn run() -> Result<()> {
     let cli = Cli::parse();
-    let client = http::build_client()?;
 
     match cli.command {
         Command::Servers {
@@ -148,6 +211,7 @@ async fn main() -> Result<()> {
             limit,
             json,
         } => {
+            let client = http_client()?;
             let mut list = HubClient::official(client)
                 .list_servers()
                 .await
@@ -180,6 +244,7 @@ async fn main() -> Result<()> {
         }
         Command::Status { address } => {
             let addr = ServerAddr::parse(&address)?;
+            let client = http_client()?;
             let status = server::fetch_status(&client, &addr)
                 .await
                 .with_context(|| format!("{} did not answer /status", addr.status_url()))?;
@@ -187,6 +252,7 @@ async fn main() -> Result<()> {
         }
         Command::Info { address, via_hub } => {
             let addr = ServerAddr::parse(&address)?;
+            let client = http_client()?;
             let info = if via_hub {
                 HubClient::official(client)
                     .server_info(addr.as_str())
@@ -204,6 +270,7 @@ async fn main() -> Result<()> {
             via_hub,
         } => {
             let addr = ServerAddr::parse(&address)?;
+            let client = http_client()?;
             let dirs = match data_dir {
                 Some(p) => DataDirs::at(p),
                 None => DataDirs::default_windows()?,
@@ -223,6 +290,9 @@ async fn main() -> Result<()> {
             if via_hub {
                 build.apply_self_hosting(&addr);
             }
+            // The engine the server asks for decides where builds come from and which key signs
+            // them; assuming Robust here would break servers on another engine.
+            let sources = updater::Sources::for_engine(build.engine_type())?;
             println!(
                 "build: fork {}, version {}, engine {}, {:?}",
                 build.fork_id,
@@ -262,7 +332,7 @@ async fn main() -> Result<()> {
                 &client,
                 &db,
                 &dirs,
-                &updater::Sources::official()?,
+                &sources,
                 content.version_id,
                 Some(&|p| printer.show(p)),
             )
@@ -294,9 +364,18 @@ async fn main() -> Result<()> {
                 );
             }
         }
-        Command::Login { username, user_id } => login_command(&client, username, user_id).await?,
-        Command::Accounts { check } => accounts_command(&client, check).await?,
-        Command::Logout { account } => logout_command(&client, &account).await?,
+        Command::Login { username, user_id } => {
+            let client = http_client()?;
+            login_command(&client, username, user_id).await?;
+        }
+        Command::Accounts { check } => {
+            let client = http_client()?;
+            accounts_command(&client, check).await?;
+        }
+        Command::Logout { account } => {
+            let client = http_client()?;
+            logout_command(&client, &account).await?;
+        }
         Command::UpdateKeygen { out } => {
             anyhow::ensure!(
                 !out.exists(),
@@ -308,11 +387,20 @@ async fn main() -> Result<()> {
             if let Some(dir) = out.parent() {
                 std::fs::create_dir_all(dir)?;
             }
-            std::fs::write(&out, format!("{}\n", hex::encode_upper(seed)))?;
+            // Written in one rename so an interrupted keygen never leaves half a key (and never
+            // leaves a useable-looking file with a truncated seed).
+            bebra_core::fsutil::write_atomic(
+                &out,
+                format!("{}\n", hex::encode_upper(seed)).as_bytes(),
+            )?;
             let key = ed25519_dalek::SigningKey::from_bytes(&seed);
             eprintln!(
                 "private key saved to {} (keep it secret, back it up)",
                 out.display()
+            );
+            eprintln!(
+                "warning: the file inherits the ACL of its folder; keep it outside the repository \
+                 and in a folder only your Windows account can read"
             );
             println!("{}", bebra_core::signature::to_pem(&key.verifying_key()));
         }
@@ -334,6 +422,7 @@ async fn main() -> Result<()> {
             );
         }
         Command::UpdateCheck { repo } => {
+            let client = http_client()?;
             let repo = repo.unwrap_or_else(|| self_update::DEFAULT_REPO.to_string());
             let token = std::env::var("GITHUB_TOKEN")
                 .ok()
@@ -423,6 +512,7 @@ async fn main() -> Result<()> {
             dry_run,
         } => {
             let addr = ServerAddr::parse(&address)?;
+            let client = http_client()?;
             let dirs = match data_dir {
                 Some(p) => DataDirs::at(p),
                 None => DataDirs::default_windows()?,
@@ -454,6 +544,41 @@ async fn main() -> Result<()> {
                 optimization: bebra_core::launch::OptimizationConfig::default(),
             };
             let printer = ProgressPrinter::new("files");
+            if dry_run {
+                // Nothing may be downloaded for a dry run: stop before any installation.
+                let plan = play::plan(&client, &dirs, &req).await?;
+                println!("server: {}", req.addr.normalized());
+                println!(
+                    "build: fork {}, version {}, engine {} ({})",
+                    plan.info
+                        .build
+                        .as_ref()
+                        .map(|b| b.fork_id.as_str())
+                        .unwrap_or(""),
+                    plan.fork_version,
+                    plan.engine_version,
+                    plan.engine_type
+                );
+                if plan.sends_account {
+                    println!("would play as {} (with a saved account)", plan.plays_as);
+                } else {
+                    println!("would play as a guest ({})", plan.plays_as);
+                    if !no_connect && plan.info.auth.mode == AuthMode::Required {
+                        eprintln!(
+                            "note: this server requires an account; playing as a guest will be refused"
+                        );
+                    }
+                }
+                match &plan.connect_url {
+                    Some(url) => println!("would connect to {url}"),
+                    None => println!("would start at the main menu"),
+                }
+                println!(
+                    "dry run: nothing was downloaded and no client was started (loader: {})",
+                    req.loader_exe.display()
+                );
+                return Ok(());
+            }
             let engine_printer = ProgressPrinter::new("engine");
             let game = play::prepare(&client, &dirs, &req, &|stage, p| match (stage, p) {
                 (play::Stage::Info, _) => {}
@@ -477,13 +602,13 @@ async fn main() -> Result<()> {
             }
             let cmd = game.command;
             println!("{}", cmd.describe());
-            if dry_run {
-                return Ok(());
-            }
 
+            // One file per launcher run: two clients started at once must not share (and truncate)
+            // the same log.
+            let tag = format!("{}-{}", std::process::id(), unique_log_suffix());
             let (out_log, err_log) = (
-                dirs.logs().join("client.stdout.log"),
-                dirs.logs().join("client.stderr.log"),
+                dirs.logs().join(format!("client.{tag}.stdout.log")),
+                dirs.logs().join(format!("client.{tag}.stderr.log")),
             );
             let mut child = launch::spawn(&cmd, &out_log, &err_log)?;
             println!(
@@ -561,11 +686,13 @@ async fn login_command(
                 for e in &errors {
                     eprintln!("  {e}");
                 }
-                anyhow::bail!("login refused ({code:?})");
+                return Err(account_required(format!("login refused ({code:?})")));
             }
         }
     }
-    anyhow::bail!("login refused: the two-factor code was not accepted")
+    Err(account_required(
+        "login refused: the two-factor code was not accepted",
+    ))
 }
 
 fn describe_freshness(acc: &StoredAccount, now: OffsetDateTime) -> &'static str {
@@ -585,15 +712,25 @@ async fn accounts_command(client: &http::Client, check: bool) -> Result<()> {
     }
     let auth = AuthClient::official(client.clone());
     let now = OffsetDateTime::now_utc();
+    let mut made_request = false;
     for acc in list {
-        let status = if check {
-            match accounts::ensure_fresh(&auth, &store, acc.clone(), now, true).await {
-                Ok((_, AccountStatus::Available)) => "accepted by the server".to_string(),
-                Ok((_, AccountStatus::Expired)) => "no longer accepted: log in again".to_string(),
+        let status = if !check {
+            describe_freshness(&acc, now).to_string()
+        } else if accounts::freshness(acc.expire_time, now) == Freshness::Expired {
+            // Already expired by time: no point asking the server.
+            "expired: log in again".to_string()
+        } else {
+            // `ping` only asks whether the token still works. Refreshing here would rotate and
+            // re-save the token just to throw the answer away.
+            if made_request {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+            made_request = true;
+            match auth.check(&acc.token).await {
+                Ok(true) => "accepted by the server".to_string(),
+                Ok(false) => "no longer accepted: log in again".to_string(),
                 Err(e) => format!("could not check ({e})"),
             }
-        } else {
-            describe_freshness(&acc, now).to_string()
         };
         println!(
             "{}  {}  until {}  {status}",
@@ -641,11 +778,10 @@ async fn pick_account(auth: &AuthClient, selector: Option<&str>) -> Result<Optio
     let now = OffsetDateTime::now_utc();
     match accounts::ensure_fresh(auth, &store, chosen.clone(), now, true).await {
         Ok((acc, AccountStatus::Available)) => Ok(Some(acc)),
-        Ok((acc, AccountStatus::Expired)) => anyhow::bail!(
+        Ok((acc, AccountStatus::Expired)) => Err(account_required(format!(
             "the login of {} has expired: run `bebra login --user-id {}`",
-            acc.username,
-            acc.user_id
-        ),
+            acc.username, acc.user_id
+        ))),
         Err(e) if accounts::freshness(chosen.expire_time, now) != Freshness::Expired => {
             // The auth server can't be reached right now; the saved token may still work.
             eprintln!(
@@ -656,6 +792,14 @@ async fn pick_account(auth: &AuthClient, selector: Option<&str>) -> Result<Optio
         }
         Err(e) => Err(e.into()),
     }
+}
+
+/// Nanoseconds since the epoch, to tell apart two runs started by the same process id.
+fn unique_log_suffix() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0)
 }
 
 fn human_size(bytes: u64) -> String {
@@ -733,4 +877,38 @@ fn print_row(address: &str, s: &ServerStatus) {
         "{:>3}/{:<3}  {:<45} {}",
         s.players, s.soft_max_players, address, name
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exit_codes_distinguish_the_three_classes() {
+        let network = anyhow::Error::new(bebra_core::Error::HttpStatus {
+            status: 503,
+            url: "https://example/".into(),
+        });
+        assert_eq!(exit_code(&network), 2);
+
+        let account = account_required("log in again");
+        assert_eq!(exit_code(&account), 3);
+
+        let other = anyhow::Error::new(bebra_core::Error::Other("bad file".into()));
+        assert_eq!(exit_code(&other), 1);
+        assert_eq!(exit_code(&anyhow::anyhow!("boom")), 1);
+    }
+
+    #[test]
+    fn exit_codes_see_through_context_layers() {
+        let network = anyhow::Error::new(bebra_core::Error::HttpStatus {
+            status: 500,
+            url: "https://example/".into(),
+        })
+        .context("failed to install game files");
+        assert_eq!(exit_code(&network), 2);
+
+        let account = account_required("expired").context("cannot launch");
+        assert_eq!(exit_code(&account), 3);
+    }
 }

@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 /// A Wizards' Den login token. `Debug` hides the value, there is no `Display`; the only way to
 /// read it is [`Token::expose`], so every use of the real value is easy to find.
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Token(String);
 
@@ -16,6 +16,40 @@ impl Token {
     /// The real token. Use only to send it where it belongs (the auth server, the game client).
     pub fn expose(&self) -> &str {
         &self.0
+    }
+}
+
+/// Compares without stopping at the first differing byte, so the time taken does not reveal how
+/// much of a guessed token was correct. The length is not secret (tokens have a fixed shape).
+///
+/// No extra dependency: `subtle`/`zeroize` are not direct dependencies of this crate.
+impl PartialEq for Token {
+    fn eq(&self, other: &Self) -> bool {
+        let (a, b) = (self.0.as_bytes(), other.0.as_bytes());
+        if a.len() != b.len() {
+            return false;
+        }
+        let mut diff = 0u8;
+        for (x, y) in a.iter().zip(b) {
+            diff |= x ^ y;
+        }
+        diff == 0
+    }
+}
+
+impl Eq for Token {}
+
+/// Clears the string's bytes before freeing them. This is a best-effort manual wipe: copies made
+/// on the way (the `String` a caller built, allocator internals) are not covered. A real
+/// `zeroize` implementation needs the dependency added to `bebra-core`.
+impl Drop for Token {
+    fn drop(&mut self) {
+        // SAFETY: the bytes are valid for writing, we own the buffer, and it is cleared right
+        // after; `String`'s invariants only require valid UTF-8, and an empty string is valid.
+        unsafe {
+            self.0.as_mut_vec().fill(0);
+        }
+        self.0.clear();
     }
 }
 
@@ -44,5 +78,14 @@ mod tests {
         assert_eq!(serde_json::to_string(&t).unwrap(), "\"abc\"");
         let back: Token = serde_json::from_str("\"abc\"").unwrap();
         assert_eq!(back, t);
+    }
+
+    #[test]
+    fn equality_is_by_value_including_length() {
+        assert_eq!(Token::new("abc"), Token::new("abc"));
+        assert_ne!(Token::new("abc"), Token::new("abd"));
+        assert_ne!(Token::new("abc"), Token::new("abcd"));
+        assert_ne!(Token::new(""), Token::new("a"));
+        assert_eq!(Token::new(""), Token::new(""));
     }
 }

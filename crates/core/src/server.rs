@@ -21,10 +21,52 @@ where
     Ok(Option::<T>::deserialize(d)?.unwrap_or_default())
 }
 
+/// Reads a number that may come as an integer, a float (`12.0`) or a string (`"12"`).
+/// A value of the wrong shape becomes `None` instead of making the whole response unreadable.
+fn flexible_i64<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<Option<i64>, D::Error> {
+    use serde_json::Value;
+
+    Ok(match Option::<Value>::deserialize(d)? {
+        None | Some(Value::Null) | Some(Value::Bool(_)) => None,
+        Some(Value::Number(n)) => n.as_i64().or_else(|| n.as_f64().map(|f| f as i64)),
+        Some(Value::String(s)) => {
+            let s = s.trim();
+            s.parse::<i64>()
+                .ok()
+                .or_else(|| s.parse::<f64>().ok().map(|f| f as i64))
+        }
+        Some(Value::Array(_) | Value::Object(_)) => None,
+    })
+}
+
 /// Counts are clamped to be non-negative, like the official launcher does.
 fn count<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<i32, D::Error> {
-    let v = Option::<i64>::deserialize(d)?.unwrap_or(0);
+    let v = flexible_i64(d)?.unwrap_or(0);
     Ok(v.clamp(0, i32::MAX as i64) as i32)
+}
+
+/// `run_level` may be a number or a name (`InRound`, `in_round`, ...).
+fn run_level<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<Option<i32>, D::Error> {
+    use serde_json::Value;
+
+    let raw = Option::<Value>::deserialize(d)?;
+    Ok(match raw {
+        Some(Value::String(s)) => {
+            let text = s.trim().to_ascii_lowercase();
+            let named = text.replace(['_', '-'], "");
+            match named.as_str() {
+                "preroundlobby" | "lobby" => Some(0),
+                "inround" => Some(1),
+                "postround" => Some(2),
+                _ => text.parse::<f64>().ok().map(|f| f as i32),
+            }
+        }
+        Some(Value::Number(n)) => n
+            .as_i64()
+            .or_else(|| n.as_f64().map(|f| f as i64))
+            .map(|v| v as i32),
+        _ => None,
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,7 +89,7 @@ pub struct ServerStatus {
     /// ISO-8601 UTC.
     #[serde(default)]
     pub round_start_time: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "run_level")]
     pub run_level: Option<i32>,
     #[serde(default, deserialize_with = "null_default")]
     pub tags: Vec<String>,
@@ -75,20 +117,39 @@ impl ServerStatus {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// How the server wants accounts to be handled. A mode we don't know yet must not make the whole
+/// `/info` unreadable, so it falls back to [`AuthMode::Optional`] (the account is sent if there is
+/// one, and a guest is never refused locally).
+///
+/// A separate `Unknown` variant is not used on purpose: `app/src-tauri` matches this enum without a
+/// wildcard, and adding a variant there would break that crate. See docs/CODE_REVIEW.md P2-14.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
 pub enum AuthMode {
-    #[serde(alias = "optional")]
+    #[default]
     Optional,
-    #[serde(alias = "required")]
     Required,
-    #[serde(alias = "disabled")]
     Disabled,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+impl<'de> Deserialize<'de> for AuthMode {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        // The server's enum is read case-insensitively by the official launcher; do the same.
+        let s = String::deserialize(d)?;
+        Ok(match s.trim().to_ascii_lowercase().as_str() {
+            "required" => Self::Required,
+            "disabled" => Self::Disabled,
+            _ => Self::Optional,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AuthInfo {
+    #[serde(default)]
     pub mode: AuthMode,
-    /// Base64 libsodium sealed-box key, passed through to the client.
+    /// Base64 libsodium sealed-box key, passed through to the client. Not needed when auth is
+    /// disabled (and some self-hosted servers leave it out).
+    #[serde(default)]
     pub public_key: String,
 }
 
@@ -177,6 +238,24 @@ pub struct PrivacyPolicy {
     pub version: String,
 }
 
+impl PrivacyPolicy {
+    /// What the player agreed to: the pair the settings file should remember.
+    pub fn acceptance(&self) -> (String, String) {
+        (self.identifier.clone(), self.version.clone())
+    }
+
+    /// Has this exact policy (identifier *and* version) already been accepted?
+    ///
+    /// The launcher must not connect before the link has been shown and accepted; a changed
+    /// version means the player has to agree again. Storing the accepted pairs is the caller's
+    /// job (the app keeps them in its settings).
+    pub fn is_accepted(&self, accepted: &[(String, String)]) -> bool {
+        accepted
+            .iter()
+            .any(|(id, version)| id == &self.identifier && version == &self.version)
+    }
+}
+
 /// `/info` response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerInfo {
@@ -184,6 +263,7 @@ pub struct ServerInfo {
     pub connect_address: Option<String>,
     #[serde(default)]
     pub build: Option<BuildInfo>,
+    #[serde(default)]
     pub auth: AuthInfo,
     #[serde(default)]
     pub desc: Option<String>,
@@ -195,11 +275,14 @@ pub struct ServerInfo {
 
 impl ServerInfo {
     /// UDP address the game client should connect to.
+    ///
+    /// A `connect_address` from `/info` is validated first (`udp://host:port`): a server must not
+    /// be able to send the client somewhere that is not a game socket. A bad value is ignored.
     pub fn connect_url(&self, addr: &ServerAddr) -> String {
-        match self.connect_address.as_deref() {
-            Some(c) if !c.is_empty() => c.to_string(),
-            _ => addr.default_connect_url(),
-        }
+        self.connect_address
+            .as_deref()
+            .and_then(crate::addr::normalize_connect_address)
+            .unwrap_or_else(|| addr.default_connect_url())
     }
 }
 
@@ -221,24 +304,6 @@ async fn get_json<T: serde::de::DeserializeOwned>(
 /// `GET {api}/status`.
 pub async fn fetch_status(client: &Client, addr: &ServerAddr) -> Result<ServerStatus> {
     get_json(client, &addr.status_url(), STATUS_TIMEOUT).await
-}
-
-/// Measures round-trip latency in milliseconds to the server's status endpoint.
-pub async fn ping_server(client: &Client, addr: &ServerAddr) -> Result<u64> {
-    let start = std::time::Instant::now();
-    let resp = client
-        .get(addr.status_url())
-        .timeout(STATUS_TIMEOUT)
-        .send()
-        .await?;
-    if resp.status().is_success() {
-        Ok(start.elapsed().as_millis() as u64)
-    } else {
-        Err(Error::HttpStatus {
-            status: resp.status().as_u16(),
-            url: addr.status_url(),
-        })
-    }
 }
 
 /// `/info` as requested right before connecting: no query, self-hosting rules applied.
@@ -486,6 +551,95 @@ mod tests {
         };
         b.apply_self_hosting(&addr);
         assert_eq!(b.download_url(), Some("https://cdn/x.zip"));
+    }
+
+    #[test]
+    fn unknown_auth_mode_does_not_sink_the_response() {
+        let info: ServerInfo =
+            serde_json::from_str(r#"{"auth":{"mode":"SomeFutureMode","public_key":"k"}}"#).unwrap();
+        assert_eq!(info.auth.mode, AuthMode::Optional);
+
+        let lower: ServerInfo = serde_json::from_str(r#"{"auth":{"mode":"DISABLED"}}"#).unwrap();
+        assert_eq!(lower.auth.mode, AuthMode::Disabled);
+        assert_eq!(
+            lower.auth.public_key, "",
+            "public_key is optional when auth is disabled"
+        );
+
+        let no_auth: ServerInfo = serde_json::from_str(r#"{"desc":"x"}"#).unwrap();
+        assert_eq!(no_auth.auth.mode, AuthMode::Optional);
+    }
+
+    #[test]
+    fn numbers_may_be_floats_or_strings() {
+        let s: ServerStatus = serde_json::from_str(
+            r#"{"players":12.0,"soft_max_players":"100","run_level":"InRound"}"#,
+        )
+        .unwrap();
+        assert_eq!(s.players, 12);
+        assert_eq!(s.soft_max_players, 100);
+        assert_eq!(s.run_level_kind(), Some(RunLevel::InRound));
+
+        let named: ServerStatus = serde_json::from_str(r#"{"run_level":"post-round"}"#).unwrap();
+        assert_eq!(named.run_level_kind(), Some(RunLevel::PostRound));
+
+        // Unusable shapes must not turn the whole response into a parsing error.
+        let weird: ServerStatus =
+            serde_json::from_str(r#"{"players":"many","run_level":true}"#).unwrap();
+        assert_eq!(weird.players, 0);
+        assert_eq!(weird.run_level, None);
+    }
+
+    #[test]
+    fn connect_address_must_be_a_udp_game_address() {
+        let addr = ServerAddr::parse("ss14://example.com:1213").unwrap();
+        for bad in [
+            "https://example.com:1213/",
+            "udp://example.com/",
+            "udp://user:pass@example.com:1213/",
+            "not an address",
+        ] {
+            let info: ServerInfo = serde_json::from_str(&format!(
+                r#"{{"auth":{{"mode":"Optional"}},"connect_address":"{bad}"}}"#
+            ))
+            .unwrap();
+            assert_eq!(
+                info.connect_url(&addr),
+                "udp://example.com:1213/",
+                "{bad} must be ignored"
+            );
+        }
+
+        let info: ServerInfo = serde_json::from_str(
+            r#"{"auth":{"mode":"Optional"},"connect_address":"UDP://GAME.EXAMPLE:1214"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            info.connect_url(&addr),
+            "udp://game.example:1214/",
+            "a valid address is normalized"
+        );
+    }
+
+    #[test]
+    fn privacy_policy_acceptance_tracks_the_version() {
+        let policy = PrivacyPolicy {
+            link: "https://example.com/privacy".into(),
+            identifier: "example".into(),
+            version: "2".into(),
+        };
+        assert!(!policy.is_accepted(&[]));
+        let mut accepted = vec![("example".to_string(), "1".to_string())];
+        assert!(
+            !policy.is_accepted(&accepted),
+            "an older version is not enough"
+        );
+        accepted.push(policy.acceptance());
+        assert!(policy.is_accepted(&accepted));
+        assert_eq!(
+            policy.acceptance(),
+            ("example".to_string(), "2".to_string())
+        );
     }
 
     #[tokio::test]

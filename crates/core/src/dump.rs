@@ -30,18 +30,57 @@ fn safe_relative(path: &str) -> Option<PathBuf> {
     Some(out)
 }
 
+/// Most files one dump may write. A real game has a few thousand; a hostile or broken build
+/// should not fill the disk.
+pub const MAX_DUMP_FILES: usize = 20_000;
+/// Most bytes one dump may write, uncompressed.
+pub const MAX_DUMP_BYTES: u64 = 256 * 1024 * 1024;
+
+/// Removes a temporary dump folder unless the dump was moved into place.
+struct TempDir<'a> {
+    path: &'a Path,
+    armed: bool,
+}
+
+impl Drop for TempDir<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = std::fs::remove_dir_all(self.path);
+        }
+    }
+}
+
 /// Writes the `Locale/**/*.ftl` files of the newest installed version to `out_dir/Locale/…`,
 /// replacing an earlier dump. Errors if no version is installed.
+///
+/// The new dump is built in `Locale.tmp` and only moved over `Locale` when it is complete, so an
+/// error in the middle (or a crash) leaves the previous dump untouched.
 pub fn dump_locale(db: &ContentDb, out_dir: &Path) -> Result<LocaleDump> {
+    dump_locale_with_limits(db, out_dir, MAX_DUMP_FILES, MAX_DUMP_BYTES)
+}
+
+/// [`dump_locale`] with explicit limits, so a test need not write 256 MB.
+fn dump_locale_with_limits(
+    db: &ContentDb,
+    out_dir: &Path,
+    max_files: usize,
+    max_bytes: u64,
+) -> Result<LocaleDump> {
     let version = db.list_versions()?.into_iter().next().ok_or_else(|| {
         Error::Other("no game version is installed yet: connect to a server once".into())
     })?;
 
     let target = out_dir.join("Locale");
-    if target.exists() {
-        std::fs::remove_dir_all(&target)?;
+    let tmp = out_dir.join("Locale.tmp");
+    // A leftover from an earlier crash is ours to remove.
+    if tmp.exists() {
+        std::fs::remove_dir_all(&tmp)?;
     }
-    std::fs::create_dir_all(&target)?;
+    std::fs::create_dir_all(&tmp)?;
+    let mut guard = TempDir {
+        path: &tmp,
+        armed: true,
+    };
 
     let mut files = 0usize;
     let mut bytes = 0u64;
@@ -53,10 +92,25 @@ pub fn dump_locale(db: &ContentDb, out_dir: &Path) -> Result<LocaleDump> {
         let Some(relative) = safe_relative(path) else {
             continue;
         };
+        // `relative` starts with `Locale/`; the dump folder itself is the one being built.
+        let Some(relative) = relative.strip_prefix("Locale").ok() else {
+            continue;
+        };
         let Some(data) = db.read_file(version.id, path)? else {
             continue;
         };
-        let dest = out_dir.join(relative);
+        if files + 1 > max_files {
+            return Err(Error::Other(format!(
+                "the game has more than {max_files} Locale files: refusing to dump them"
+            )));
+        }
+        if bytes + data.len() as u64 > max_bytes {
+            return Err(Error::Other(format!(
+                "the Locale files are larger than {} MB: refusing to dump them",
+                max_bytes >> 20
+            )));
+        }
+        let dest = tmp.join(relative);
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -64,6 +118,24 @@ pub fn dump_locale(db: &ContentDb, out_dir: &Path) -> Result<LocaleDump> {
         files += 1;
         bytes += data.len() as u64;
     }
+
+    // Swap the finished dump in. The old one is moved aside first, so a failed rename can put it
+    // back and never leaves the player without a dump.
+    let old = out_dir.join("Locale.old");
+    if old.exists() {
+        std::fs::remove_dir_all(&old)?;
+    }
+    if target.exists() {
+        std::fs::rename(&target, &old)?;
+    }
+    if let Err(e) = std::fs::rename(&tmp, &target) {
+        if old.exists() {
+            let _ = std::fs::rename(&old, &target);
+        }
+        return Err(e.into());
+    }
+    guard.armed = false;
+    let _ = std::fs::remove_dir_all(&old);
 
     Ok(LocaleDump {
         version_id: version.id,
@@ -132,6 +204,47 @@ mod tests {
         std::fs::write(out.join("Locale/en-US/stale.ftl"), b"x").unwrap();
         dump_locale(&db, &out).unwrap();
         assert!(!out.join("Locale/en-US/stale.ftl").exists());
+    }
+
+    #[test]
+    fn a_dump_over_the_limit_keeps_the_previous_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = ContentDb::open(&tmp.path().join("content.db")).unwrap();
+        install(&db, "old", &[("Locale/en-US/a.ftl", b"hello = Hello")]);
+        let out = tmp.path().join("dump");
+        dump_locale(&db, &out).unwrap();
+        let before = std::fs::read_to_string(out.join("Locale/en-US/a.ftl")).unwrap();
+
+        // A newer build with more files than the limit allows.
+        install(
+            &db,
+            "new",
+            &[
+                ("Locale/en-US/a.ftl", b"hello = Hi"),
+                ("Locale/en-US/b.ftl", b"menu = Menu"),
+                ("Locale/en-US/c.ftl", b"bye = Bye"),
+            ],
+        );
+        assert!(dump_locale_with_limits(&db, &out, 2, MAX_DUMP_BYTES).is_err());
+        assert_eq!(
+            std::fs::read_to_string(out.join("Locale/en-US/a.ftl")).unwrap(),
+            before,
+            "the old dump is untouched"
+        );
+        assert!(!out.join("Locale.tmp").exists(), "no half-written dump");
+
+        // The same for the byte limit.
+        let too_small = MAX_DUMP_BYTES.min(5);
+        assert!(dump_locale_with_limits(&db, &out, MAX_DUMP_FILES, too_small).is_err());
+        assert_eq!(
+            std::fs::read_to_string(out.join("Locale/en-US/a.ftl")).unwrap(),
+            before
+        );
+
+        // Within the limits it replaces the old dump.
+        let ok = dump_locale_with_limits(&db, &out, 3, MAX_DUMP_BYTES).unwrap();
+        assert_eq!(ok.files, 3);
+        assert!(out.join("Locale/en-US/c.ftl").is_file());
     }
 
     #[test]

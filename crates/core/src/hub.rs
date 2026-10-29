@@ -2,7 +2,8 @@
 
 use std::time::Duration;
 
-use reqwest::Client;
+use reqwest::header::RETRY_AFTER;
+use reqwest::{Client, Response, StatusCode};
 use serde::{Deserialize, Serialize};
 use url::form_urlencoded;
 
@@ -18,17 +19,34 @@ pub const HUB_URLS: [&str; 2] = [OFFICIAL_HUB_URL, OFFICIAL_FALLBACK_HUB_URL];
 /// The server list request is cancelled after this long.
 pub const LIST_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// The server list is large, but not unlimited.
+pub const MAX_HUB_LIST_BYTES: usize = 8 * 1024 * 1024;
+/// Entries past this many are ignored (the busiest servers sort to the top anyway).
+pub const MAX_HUB_SERVERS: usize = 5000;
+
+/// Longest we are willing to wait for a `429 Too Many Requests` to pass.
+const MAX_RETRY_WAIT: Duration = Duration::from_secs(10);
+/// How many times a `429` is retried before the error is returned.
+const RETRY_ATTEMPTS: usize = 2;
+
 /// One entry of `GET {hub}api/servers`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HubServerEntry {
     /// `ss14://` or `ss14s://` address; the hub identifies servers by this exact string.
     pub address: String,
-    #[serde(rename = "statusData")]
+    /// `statusData` is `null` for a server that has not reported yet; that is not an error.
+    #[serde(rename = "statusData", default, deserialize_with = "status_or_default")]
     pub status: ServerStatus,
     #[serde(default, rename = "inferredTags", deserialize_with = "null_to_empty")]
     pub inferred_tags: Vec<String>,
     #[serde(default)]
     pub hub_url: Option<String>,
+}
+
+fn status_or_default<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> std::result::Result<ServerStatus, D::Error> {
+    Ok(Option::<ServerStatus>::deserialize(d)?.unwrap_or_default())
 }
 
 fn null_to_empty<'de, D: serde::Deserializer<'de>>(
@@ -54,12 +72,45 @@ impl HubClient {
     }
 
     pub async fn list_servers(&self) -> Result<Vec<HubServerEntry>> {
+        Ok(self.list_servers_counted().await?.0)
+    }
+
+    /// Like [`list_servers`](Self::list_servers), but also reports how many entries were skipped
+    /// because they could not be read. One broken entry must not hide the other 300 servers.
+    pub async fn list_servers_counted(&self) -> Result<(Vec<HubServerEntry>, usize)> {
         let set = self.hub.join("api/servers");
-        let resp = tokio::time::timeout(LIST_TIMEOUT, set.get(&self.client))
-            .await
-            .map_err(|_| Error::Other("hub server list request timed out".into()))??;
+        let resp = self.list_response(&set).await?;
         check_status(&resp)?;
-        read_json_limited(resp, MAX_JSON_BYTES, LIST_TIMEOUT).await
+        let raw: Vec<serde_json::Value> =
+            read_json_limited(resp, MAX_HUB_LIST_BYTES, LIST_TIMEOUT).await?;
+
+        let mut entries = Vec::new();
+        let mut skipped = 0;
+        for (index, value) in raw.into_iter().enumerate() {
+            if index >= MAX_HUB_SERVERS {
+                skipped += 1;
+                continue;
+            }
+            match serde_json::from_value(value) {
+                Ok(entry) => entries.push(entry),
+                Err(_) => skipped += 1,
+            }
+        }
+        Ok((entries, skipped))
+    }
+
+    /// Asks for the list and honors `Retry-After` on `429 Too Many Requests`.
+    async fn list_response(&self, set: &UrlFallbackSet) -> Result<Response> {
+        for attempt in 0..=RETRY_ATTEMPTS {
+            let resp = tokio::time::timeout(LIST_TIMEOUT, set.get(&self.client))
+                .await
+                .map_err(|_| Error::Other("hub server list request timed out".into()))??;
+            if resp.status() != StatusCode::TOO_MANY_REQUESTS || attempt == RETRY_ATTEMPTS {
+                return Ok(resp);
+            }
+            tokio::time::sleep(retry_delay(&resp)).await;
+        }
+        unreachable!("the loop always returns")
     }
 
     /// `/info` of a hub-listed server, proxied by the hub (`address` exactly as listed).
@@ -157,13 +208,8 @@ pub async fn list_servers_from_hubs(
                 success_count += 1;
                 for mut entry in entries {
                     entry.hub_url = Some(hub_url.clone());
-                    if let Some(ref name) = entry.status.name {
-                        for tag in crate::server::infer_tags(name, &entry.status.tags) {
-                            if !entry.status.tags.contains(&tag) {
-                                entry.status.tags.push(tag);
-                            }
-                        }
-                    }
+                    // One place infers tags from the name (`server::all_tags`), not three.
+                    entry.status.tags = entry.status.all_tags();
                     match all_entries.entry(entry.address.clone()) {
                         std::collections::hash_map::Entry::Vacant(v) => {
                             v.insert(entry);
@@ -219,6 +265,22 @@ pub async fn list_servers_from_hubs(
             .then_with(|| a.address.cmp(&b.address))
     });
     Ok(result)
+}
+
+/// `Retry-After` as seconds, capped so a hub cannot stall us for hours. Malformed values are
+/// ignored and a short default is used.
+fn retry_delay(resp: &Response) -> Duration {
+    let asked = resp
+        .headers()
+        .get(RETRY_AFTER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(parse_retry_after);
+    asked.unwrap_or(Duration::from_secs(1)).min(MAX_RETRY_WAIT)
+}
+
+fn parse_retry_after(value: &str) -> Option<Duration> {
+    let seconds: u64 = value.trim().parse().ok()?;
+    Some(Duration::from_secs(seconds))
 }
 
 fn check_status(resp: &reqwest::Response) -> Result<()> {
@@ -308,6 +370,65 @@ mod tests {
             Some("https://hub.corvax.fun/".into())
         );
         assert_eq!(normalize_hub_url("invalid"), None);
+    }
+
+    #[tokio::test]
+    async fn one_broken_entry_does_not_hide_the_list() {
+        use crate::http::build_client;
+        use crate::test_util::serve;
+
+        let body = br#"[
+            {"address":"ss14://a.example","statusData":{"name":"A","players":3}},
+            {"address":"ss14://b.example","statusData":null},
+            {"statusData":{"name":"no address"}},
+            "not an object"
+        ]"#
+        .to_vec();
+        let (base, _) = serve(move |_| (200, vec![], body.clone())).await;
+        let hub = HubClient::new(
+            build_client().unwrap(),
+            UrlFallbackSet::try_new([base]).unwrap(),
+        );
+        let (list, skipped) = hub.list_servers_counted().await.unwrap();
+        assert_eq!(list.len(), 2, "a null statusData still makes a usable row");
+        assert_eq!(list[1].address, "ss14://b.example");
+        assert_eq!(list[1].status.players, 0);
+        assert_eq!(skipped, 2);
+    }
+
+    #[tokio::test]
+    async fn a_429_is_retried_after_retry_after() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        use crate::http::build_client;
+        use crate::test_util::serve;
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counter = calls.clone();
+        let (base, _) = serve(move |_| {
+            if counter.fetch_add(1, Ordering::SeqCst) == 0 {
+                (429, vec![("Retry-After", "0".to_string())], vec![])
+            } else {
+                (200, vec![], b"[]".to_vec())
+            }
+        })
+        .await;
+        let hub = HubClient::new(
+            build_client().unwrap(),
+            UrlFallbackSet::try_new([base]).unwrap(),
+        );
+        assert!(hub.list_servers().await.unwrap().is_empty());
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn retry_after_is_parsed_and_capped() {
+        assert_eq!(parse_retry_after("3"), Some(Duration::from_secs(3)));
+        assert_eq!(parse_retry_after("  0 "), Some(Duration::ZERO));
+        assert_eq!(parse_retry_after("Wed, 21 Oct 2015 07:28:00 GMT"), None);
+        assert_eq!(parse_retry_after("soon"), None);
+        assert!(MAX_RETRY_WAIT <= Duration::from_secs(10));
     }
 
     #[tokio::test]

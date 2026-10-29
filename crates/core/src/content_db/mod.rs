@@ -37,6 +37,14 @@ const MIGRATIONS: &[(&str, &str)] = &[
 const COMPRESSION_SAVINGS_THRESHOLD: usize = 10;
 const ZSTD_LEVEL: i32 = 3;
 
+/// How many hashes go into one `WHERE Hash IN (...)` query. Keeps the number of SQL variables
+/// well under SQLite's limit and the memory needed for a 700k-blob database low.
+const HASH_BATCH: usize = 500;
+
+/// `PRAGMA user_version` of a database created by this launcher. A database without it that
+/// already holds data was made by something else and must not be wiped by a destructive migration.
+const OUR_USER_VERSION: i64 = 1;
+
 /// How `Content.Data` is stored.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Compression {
@@ -181,6 +189,14 @@ impl ContentDb {
             if applied.contains(*name) {
                 continue;
             }
+            if *name == "0001_Blake2B" && !Self::can_wipe(&tx)? {
+                return Err(Error::Other(
+                    "content.db was not created by this launcher and cannot be upgraded without \
+                     losing its data: close the launcher, move that file away and start again \
+                     (the game content is downloaded anew)"
+                        .into(),
+                ));
+            }
             tx.execute_batch(sql)?;
             tx.execute(
                 "INSERT INTO SchemaVersions(ScriptName, Applied) VALUES (?1, datetime('now'))",
@@ -191,19 +207,42 @@ impl ContentDb {
         Ok(())
     }
 
-    /// Runs `f` in one transaction: commit on `Ok`, roll back on `Err`. Must not be nested.
+    /// May a destructive migration run? Only on a database we created (marked with
+    /// [`OUR_USER_VERSION`]) or on an empty one: a non-empty database without our mark was
+    /// restored from somewhere or belongs to another launcher, and wiping it would lose data.
+    fn can_wipe(tx: &rusqlite::Transaction<'_>) -> Result<bool> {
+        let user_version: i64 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        if user_version >= OUR_USER_VERSION {
+            return Ok(true);
+        }
+        let versions: i64 =
+            tx.query_row("SELECT COUNT(*) FROM ContentVersion", [], |r| r.get(0))?;
+        let blobs: i64 = tx.query_row("SELECT COUNT(*) FROM Content", [], |r| r.get(0))?;
+        Ok(versions == 0 && blobs == 0)
+    }
+
+    /// Runs `f` in one transaction: commit on `Ok`, roll back on `Err` or on a panic. Must not be
+    /// nested.
     pub fn transaction<T>(&self, f: impl FnOnce(&Self) -> Result<T>) -> Result<T> {
         self.begin()?;
-        match f(self) {
-            Ok(v) => {
-                self.commit()?;
-                Ok(v)
-            }
-            Err(e) => {
-                let _ = self.rollback();
-                Err(e)
-            }
-        }
+        // Without RAII a panic inside `f` would leave `BEGIN IMMEDIATE` open on this connection,
+        // poisoning every later write in the process.
+        let guard = TxGuard {
+            conn: &self.conn,
+            finished: false,
+        };
+        let value = f(self)?;
+        self.commit()?;
+        guard.finish();
+        Ok(value)
+    }
+
+    /// Flushes the WAL into the database file without blocking readers. Best effort: a running
+    /// game or another launcher may hold the file, and then SQLite reports "busy" instead.
+    pub fn checkpoint_passive(&self) -> Result<()> {
+        self.conn
+            .query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |_| Ok(()))?;
+        Ok(())
     }
 
     /// Manual transaction control. Never keep one open across a network await: collect the blobs
@@ -236,11 +275,26 @@ impl ContentDb {
     }
 
     pub fn link_interrupted_blob(&self, download_id: i64, content_id: i64) -> Result<()> {
+        // A cleanup in another process may have removed the parent row while we were downloading.
+        // That is not an error: the blob is stored and verified, the next attempt just may not
+        // find it protected and downloads it again.
         self.conn.execute(
-            "INSERT OR IGNORE INTO InterruptedDownloadContent(InterruptedDownloadId, ContentId) VALUES (?1, ?2)",
+            "INSERT OR IGNORE INTO InterruptedDownloadContent(InterruptedDownloadId, ContentId)
+             SELECT ?1, ?2 WHERE EXISTS (SELECT 1 FROM InterruptedDownload WHERE Id = ?1)",
             [download_id, content_id],
         )?;
         Ok(())
+    }
+
+    /// Marks the download as still active. Cleanup only drops rows whose heartbeat is old enough,
+    /// so a second launcher downloading at the same time keeps its blobs. Returns whether the row
+    /// still exists (a cleanup may have removed it meanwhile).
+    pub fn touch_interrupted_download(&self, download_id: i64) -> Result<bool> {
+        let changed = self.conn.execute(
+            "UPDATE InterruptedDownload SET Added = datetime('now') WHERE Id = ?1",
+            [download_id],
+        )?;
+        Ok(changed > 0)
     }
 
     pub fn finish_download(&self, download_id: i64) -> Result<()> {
@@ -264,21 +318,37 @@ impl ContentDb {
             .optional()?)
     }
 
+    /// The id and stored size of a blob, if we have it.
+    fn find_content(&self, hash: &Hash256) -> Result<Option<(i64, i64)>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT Id, Size FROM Content WHERE Hash = ?1",
+                [hash.as_slice()],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?)
+    }
+
     /// Indices of manifest entries whose blob we don't have yet. A blob that appears under several
     /// paths is listed once (at its first index).
+    ///
+    /// Hashes are looked up in batches (see [`HASH_BATCH`]) instead of loading the whole, possibly
+    /// enormous `Content` table into memory.
     pub fn missing_entries(&self, manifest: &Manifest) -> Result<Vec<usize>> {
-        let mut stmt = self.conn.prepare("SELECT Hash FROM Content")?;
-        let rows = stmt.query_map([], |r| r.get::<_, Vec<u8>>(0))?;
-        let mut existing: HashSet<Hash256> = HashSet::new();
-        for r in rows {
-            let bytes = r?;
-            if let Ok(hash) = bytes.try_into() {
-                existing.insert(hash);
+        // Distinct hashes in the order they first appear.
+        let mut wanted: Vec<Hash256> = Vec::new();
+        let mut seen: HashSet<Hash256> = HashSet::with_capacity(manifest.entries.len());
+        for entry in &manifest.entries {
+            if seen.insert(entry.hash) {
+                wanted.push(entry.hash);
             }
         }
 
-        let mut queued: HashSet<Hash256> = HashSet::new();
+        let existing = self.existing_hashes(&wanted)?;
+
         let mut missing = Vec::new();
+        let mut queued: HashSet<Hash256> = HashSet::new();
         for (i, entry) in manifest.entries.iter().enumerate() {
             if queued.contains(&entry.hash) {
                 continue;
@@ -291,6 +361,28 @@ impl ContentDb {
         Ok(missing)
     }
 
+    /// Which of `hashes` are in the database, asked in batches of [`HASH_BATCH`].
+    fn existing_hashes(&self, hashes: &[Hash256]) -> Result<HashSet<Hash256>> {
+        let mut found = HashSet::with_capacity(hashes.len().min(4096));
+        for chunk in hashes.chunks(HASH_BATCH) {
+            let placeholders = std::iter::repeat_n("?", chunk.len())
+                .collect::<Vec<_>>()
+                .join(",");
+            let sql = format!("SELECT Hash FROM Content WHERE Hash IN ({placeholders})");
+            let mut stmt = self.conn.prepare(&sql)?;
+            let rows = stmt.query_map(
+                rusqlite::params_from_iter(chunk.iter().map(|h| h.as_slice())),
+                |r| r.get::<_, Vec<u8>>(0),
+            )?;
+            for row in rows {
+                if let Ok(hash) = row?.try_into() {
+                    found.insert(hash);
+                }
+            }
+        }
+        Ok(found)
+    }
+
     /// Stores a file after checking that it really has `hash`. Compresses with zstd when that saves
     /// enough space. Returns the content id and whether a new row was created.
     pub fn store_blob(&self, hash: &Hash256, data: &[u8]) -> Result<(i64, bool)> {
@@ -301,16 +393,26 @@ impl ContentDb {
     /// Inserts an already verified and compressed blob. Short and CPU-free, so it is safe to call
     /// inside a short write transaction.
     pub fn store_prepared_blob(&self, blob: &PreparedBlob) -> Result<(i64, bool)> {
-        if let Some(id) = self.find_content_id(&blob.hash)? {
+        if let Some((id, size)) = self.find_content(&blob.hash)? {
+            // The hash covers the bytes, so a row with another size is corrupt rather than stale.
+            if size != blob.size as i64 {
+                return Err(Error::Other(format!(
+                    "content db row {id} for this hash has size {size}, expected {}",
+                    blob.size
+                )));
+            }
             return Ok((id, false));
         }
         let id = self.insert_content(&blob.hash, blob.size, blob.compression, &blob.data)?;
         Ok((id, true))
     }
 
-    /// Stores a zstd-compressed file as delivered by the server. The caller must already have
-    /// decompressed it and checked `hash` and `size`.
-    pub fn store_precompressed_blob(
+    /// Stores a zstd-compressed file as delivered by the server.
+    ///
+    /// **Unchecked:** `hash` and `size` are taken on trust — nothing is decompressed or hashed
+    /// here, because the caller has already done both (see [`crate::download`]). Use
+    /// [`ContentDb::store_blob`] or [`ContentDb::store_prepared_blob`] when that is not the case.
+    pub fn store_precompressed_blob_unchecked(
         &self,
         hash: &Hash256,
         size: usize,
@@ -415,19 +517,18 @@ impl ContentDb {
     }
 
     /// Links every file of the manifest to the version. All blobs must already be stored.
+    ///
+    /// Only the hashes this manifest needs are looked up, in batches, so a large `Content` table
+    /// never has to be read whole.
     pub fn fill_manifest(&self, version_id: i64, manifest: &Manifest) -> Result<()> {
-        let mut hash_to_id: HashMap<Hash256, i64> = HashMap::with_capacity(manifest.entries.len());
-        {
-            let mut stmt = self.conn.prepare("SELECT Hash, Id FROM Content")?;
-            let rows =
-                stmt.query_map([], |r| Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, i64>(1)?)))?;
-            for r in rows {
-                let (hash_bytes, id) = r?;
-                if let Ok(hash) = hash_bytes.try_into() {
-                    hash_to_id.insert(hash, id);
-                }
+        let mut wanted: Vec<Hash256> = Vec::new();
+        let mut seen: HashSet<Hash256> = HashSet::with_capacity(manifest.entries.len());
+        for entry in &manifest.entries {
+            if seen.insert(entry.hash) {
+                wanted.push(entry.hash);
             }
         }
+        let hash_to_id = self.ids_for_hashes(&wanted)?;
 
         let mut insert = self.conn.prepare(
             "INSERT INTO ContentManifest(VersionId, Path, ContentId) VALUES (?1, ?2, ?3)",
@@ -440,6 +541,29 @@ impl ContentDb {
             insert.execute(params![version_id, entry.path, content_id])?;
         }
         Ok(())
+    }
+
+    /// `hash -> Content.Id` for the hashes we have, asked in batches of [`HASH_BATCH`].
+    fn ids_for_hashes(&self, hashes: &[Hash256]) -> Result<HashMap<Hash256, i64>> {
+        let mut found = HashMap::with_capacity(hashes.len().min(4096));
+        for chunk in hashes.chunks(HASH_BATCH) {
+            let placeholders = std::iter::repeat_n("?", chunk.len())
+                .collect::<Vec<_>>()
+                .join(",");
+            let sql = format!("SELECT Hash, Id FROM Content WHERE Hash IN ({placeholders})");
+            let mut stmt = self.conn.prepare(&sql)?;
+            let rows = stmt.query_map(
+                rusqlite::params_from_iter(chunk.iter().map(|h| h.as_slice())),
+                |r| Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, i64>(1)?)),
+            )?;
+            for row in rows {
+                let (hash_bytes, id) = row?;
+                if let Ok(hash) = hash_bytes.try_into() {
+                    found.insert(hash, id);
+                }
+            }
+        }
+        Ok(found)
     }
 
     /// Count of files in a version without deserializing full paths and hashes.
@@ -536,6 +660,8 @@ impl ContentDb {
         ))
     }
 
+    /// Adds the version of one module. Repeating the same call is harmless (another launcher
+    /// process or a second preparation may do it too): the first recorded version wins.
     pub fn add_engine_dependency(
         &self,
         version_id: i64,
@@ -543,7 +669,8 @@ impl ContentDb {
         module_version: &str,
     ) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO ContentEngineDependency(VersionId, ModuleName, ModuleVersion) VALUES (?1, ?2, ?3)",
+            "INSERT OR IGNORE INTO ContentEngineDependency(VersionId, ModuleName, ModuleVersion)
+             VALUES (?1, ?2, ?3)",
             params![version_id, module, module_version],
         )?;
         Ok(())
@@ -569,10 +696,15 @@ impl ContentDb {
 
     /// Do we already have this build? (docs/protocol.md, section 2, step 2.)
     /// The manifest hash is the source of truth, then the zip hash, then fork and version.
-    /// With several candidates, one that matches fork, version and engine exactly comes first.
+    /// With several candidates, one that matches fork, version and engine exactly comes first;
+    /// ties are broken by `LastUsed` and `Id`, so the answer never depends on SQLite's mood.
+    ///
+    /// `IS` rather than `=`: a row with `ForkId`/`ForkVersion` NULL would make `=` return NULL,
+    /// and SQLite sorts NULL first — the "not matching" row would come out ahead.
     pub fn find_version(&self, build: &BuildInfo) -> Result<Option<ContentVersion>> {
         const ENGINE_OF: &str = "(SELECT ModuleVersion FROM ContentEngineDependency ced \
                                  WHERE ced.VersionId = cv.Id AND ModuleName = 'Robust')";
+        const TO_END: &str = "cv.LastUsed DESC, cv.Id DESC";
         let cols = "cv.Id, cv.Hash, cv.ForkId, cv.ForkVersion, cv.LastUsed, cv.ZipHash";
 
         let found = if let Some(h) = build.manifest_hash() {
@@ -581,7 +713,8 @@ impl ContentDb {
                 .query_row(
                     &format!(
                         "SELECT {cols} FROM ContentVersion cv WHERE cv.Hash = ?1
-                         ORDER BY cv.ForkVersion = ?2 AND cv.ForkId = ?3 AND {ENGINE_OF} = ?4 DESC"
+                         ORDER BY (cv.ForkVersion IS ?2 AND cv.ForkId IS ?3) DESC,
+                                  ({ENGINE_OF} IS ?4) DESC, {TO_END}"
                     ),
                     params![
                         hash.as_slice(),
@@ -598,7 +731,8 @@ impl ContentDb {
                 .query_row(
                     &format!(
                         "SELECT {cols} FROM ContentVersion cv WHERE cv.ZipHash = ?1
-                         ORDER BY cv.ForkVersion = ?2 AND cv.ForkId = ?3 AND {ENGINE_OF} = ?4 DESC"
+                         ORDER BY (cv.ForkVersion IS ?2 AND cv.ForkId IS ?3) DESC,
+                                  ({ENGINE_OF} IS ?4) DESC, {TO_END}"
                     ),
                     params![
                         hash.as_slice(),
@@ -613,8 +747,8 @@ impl ContentDb {
             self.conn
                 .query_row(
                     &format!(
-                        "SELECT {cols} FROM ContentVersion cv WHERE cv.ForkId = ?1 AND cv.ForkVersion = ?2
-                         ORDER BY {ENGINE_OF} = ?3 DESC"
+                        "SELECT {cols} FROM ContentVersion cv WHERE cv.ForkId IS ?1 AND cv.ForkVersion IS ?2
+                         ORDER BY ({ENGINE_OF} IS ?3) DESC, {TO_END}"
                     ),
                     params![build.fork_id, build.version, build.engine_version],
                     row_to_version,
@@ -639,6 +773,29 @@ fn row_to_version(r: &rusqlite::Row<'_>) -> rusqlite::Result<ContentVersion> {
         last_used: r.get(4)?,
         zip_hash: r.get(5)?,
     })
+}
+
+/// Rolls back a transaction that was dropped without a commit, including when the closure inside
+/// [`ContentDb::transaction`] panics. Without it `BEGIN IMMEDIATE` would stay open on the
+/// connection and every later write in the process would fail.
+struct TxGuard<'a> {
+    conn: &'a Connection,
+    finished: bool,
+}
+
+impl TxGuard<'_> {
+    /// The transaction was committed: the guard must not roll anything back.
+    fn finish(mut self) {
+        self.finished = true;
+    }
+}
+
+impl Drop for TxGuard<'_> {
+    fn drop(&mut self) {
+        if !self.finished {
+            let _ = self.conn.execute_batch("ROLLBACK");
+        }
+    }
 }
 
 #[cfg(test)]

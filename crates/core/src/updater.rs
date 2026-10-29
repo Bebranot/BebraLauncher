@@ -161,6 +161,17 @@ pub async fn prepare_launch(
         Some(yaml) => ResourceManifest::parse(&yaml)?,
         None => ResourceManifest::default(),
     };
+    // `Robust` is the engine itself; a build that lists it as a module would have its module row
+    // collide with the engine row and install "the engine" as an overlay folder.
+    if let Some(bad) = resource
+        .modules
+        .iter()
+        .find(|m| m.eq_ignore_ascii_case("Robust"))
+    {
+        return Err(Error::Other(format!(
+            "manifest.yml lists the engine {bad:?} as an engine module"
+        )));
+    }
 
     // The module index is only fetched when some module is involved.
     let mut index: Option<ModuleIndex> = None;
@@ -173,10 +184,11 @@ pub async fn prepare_launch(
         if index.is_none() {
             index = Some(ModuleIndex::fetch(client, &sources.builds).await?);
         }
-        let version = index
-            .as_ref()
-            .expect("fetched above")
-            .version_for_engine(module, &engine_requested)?;
+        let version = index.as_ref().expect("fetched above").version_for_engine(
+            module,
+            &engine_requested,
+            crate::engine::preferred_rids(),
+        )?;
         db.add_engine_dependency(version_id, module, &version)?;
     }
 
@@ -315,6 +327,10 @@ async fn install_manifest(
         db.finish_download(download_id)?;
         Ok(id)
     })?;
+
+    // Blobs arrived in many small batches, so the WAL may be large. Give it back to the main file
+    // without blocking a game that may be reading the database.
+    let _ = db.checkpoint_passive();
 
     Ok(InstalledContent {
         version_id,
@@ -930,6 +946,22 @@ mod prepare_tests {
         .unwrap();
         assert!(again.modules[0].downloaded);
         assert!(again.modules[0].dir.join("webview.exe").is_file());
+    }
+
+    #[tokio::test]
+    async fn the_engine_cannot_be_listed_as_a_module() {
+        let c = cdn("modules:\n  - Robust\n").await;
+        let db = ContentDb::open_in_memory().unwrap();
+        let client = build_client().unwrap();
+        let content = install_content(&client, &db, &c.build, &c.dirs.scratch(), None)
+            .await
+            .unwrap();
+        let err = prepare_launch(&client, &db, &c.dirs, &c.sources, content.version_id, None)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("engine"), "{err}");
+        // Nothing was recorded as a module.
+        assert_eq!(db.engine_dependencies(content.version_id).unwrap().len(), 1);
     }
 
     #[tokio::test]

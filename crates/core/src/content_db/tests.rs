@@ -165,7 +165,7 @@ fn precompressed_blob_roundtrips() {
     let data = vec![7u8; 5000];
     let packed = zstd::bulk::compress(&data, 3).unwrap();
     let id = db
-        .store_precompressed_blob(&blake2b256(&data), data.len(), &packed)
+        .store_precompressed_blob_unchecked(&blake2b256(&data), data.len(), &packed)
         .unwrap();
     assert_eq!(compression_of(&db, id), Compression::ZStd as i64);
     assert_eq!(db.read_blob(id).unwrap(), data);
@@ -237,9 +237,13 @@ fn engine_dependencies_roundtrip() {
             ("Robust.Client.WebView".to_string(), "0.99.0".to_string())
         ]
     );
-    assert!(
-        db.add_engine_dependency(v, "Robust", "1.0").is_err(),
-        "one version per module"
+    // Repeating a dependency (another process, a second preparation) must not fail...
+    db.add_engine_dependency(v, "Robust", "1.0").unwrap();
+    // ...and must not silently rewrite what was recorded first.
+    assert_eq!(db.engine_dependencies(v).unwrap().len(), 2);
+    assert_eq!(
+        db.engine_dependencies(v).unwrap()[0],
+        ("Robust".to_string(), "277.0.0".to_string())
     );
 }
 
@@ -334,6 +338,195 @@ fn transaction_rolls_back_on_error() {
         .query_row("SELECT COUNT(*) FROM ContentVersion", [], |r| r.get(0))
         .unwrap();
     assert_eq!(count, 1);
+}
+
+#[test]
+fn transaction_rolls_back_on_panic() {
+    let db = ContentDb::open_in_memory().unwrap();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _: Result<()> = db.transaction(|db| {
+            db.create_version("fork", "panicked")?;
+            panic!("boom");
+        });
+    }));
+    assert!(result.is_err());
+    // The connection is usable again, and the half-done work is gone.
+    db.transaction(|db| db.create_version("fork", "after").map(|_| ()))
+        .unwrap();
+    let versions: Vec<String> = db
+        .connection()
+        .prepare("SELECT ForkVersion FROM ContentVersion")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<std::result::Result<_, _>>()
+        .unwrap();
+    assert_eq!(versions, ["after"]);
+}
+
+#[test]
+fn a_destructive_migration_refuses_a_database_it_did_not_create() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("content.db");
+    {
+        let db = ContentDb::open(&path).unwrap();
+        db.store_blob(&blake2b256(b"precious"), b"precious")
+            .unwrap();
+    }
+    // Like a database restored from a backup: its migration row and our marker are missing.
+    {
+        let conn = Connection::open(&path).unwrap();
+        conn.execute(
+            "DELETE FROM SchemaVersions WHERE ScriptName = '0001_Blake2B'",
+            [],
+        )
+        .unwrap();
+        conn.pragma_update(None, "user_version", 0).unwrap();
+    }
+
+    let err = match ContentDb::open(&path) {
+        Ok(_) => panic!("a foreign database must not be wiped"),
+        Err(e) => e,
+    };
+    assert!(
+        err.to_string().contains("not created by this launcher"),
+        "{err}"
+    );
+    let conn = Connection::open(&path).unwrap();
+    let blobs: i64 = conn
+        .query_row("SELECT COUNT(*) FROM Content", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(blobs, 1, "the data was not wiped");
+}
+
+#[test]
+fn our_own_database_may_still_be_migrated_destructively() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("content.db");
+    {
+        let db = ContentDb::open(&path).unwrap();
+        db.store_blob(&blake2b256(b"old epoch"), b"old epoch")
+            .unwrap();
+    }
+    {
+        let conn = Connection::open(&path).unwrap();
+        conn.execute(
+            "DELETE FROM SchemaVersions WHERE ScriptName = '0001_Blake2B'",
+            [],
+        )
+        .unwrap();
+        // user_version stays 1: this database was created by us.
+    }
+    let db = ContentDb::open(&path).unwrap();
+    let blobs: i64 = db
+        .connection()
+        .query_row("SELECT COUNT(*) FROM Content", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(blobs, 0, "our marker allows the epoch wipe");
+}
+
+#[test]
+fn find_version_prefers_the_matching_row_even_with_nulls() {
+    let db = ContentDb::open_in_memory().unwrap();
+    let hash = [9u8; 32];
+    let hex = to_hex(&hash);
+
+    // An older row whose fork fields are NULL: `cv.ForkVersion = ?` would be NULL for it, and
+    // SQLite sorts NULL first, so it would have won over the exact match.
+    let null = db.create_version("fork", "whatever").unwrap();
+    db.connection()
+        .execute(
+            "UPDATE ContentVersion SET ForkId = NULL, ForkVersion = NULL WHERE Id = ?1",
+            [null],
+        )
+        .unwrap();
+    db.set_version_hash(null, &hash).unwrap();
+    db.add_engine_dependency(null, "Robust", "1.0.0").unwrap();
+
+    let exact = db.create_version("fork", "new").unwrap();
+    db.set_version_hash(exact, &hash).unwrap();
+    db.add_engine_dependency(exact, "Robust", "2.0.0").unwrap();
+
+    let found = db
+        .find_version(&build(Some(&hex), None, "fork", "new", "2.0.0"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(found.id, exact);
+}
+
+#[test]
+fn find_version_is_deterministic_between_equal_candidates() {
+    let db = ContentDb::open_in_memory().unwrap();
+    let hash = [7u8; 32];
+    let hex = to_hex(&hash);
+    let mut ids = Vec::new();
+    for _ in 0..3 {
+        let v = db.create_version("fork", "same").unwrap();
+        db.set_version_hash(v, &hash).unwrap();
+        db.add_engine_dependency(v, "Robust", "1.0.0").unwrap();
+        ids.push(v);
+    }
+    db.connection()
+        .execute("UPDATE ContentVersion SET LastUsed = '2026-01-01'", [])
+        .unwrap();
+
+    let expected = *ids.iter().max().unwrap();
+    for _ in 0..5 {
+        let found = db
+            .find_version(&build(Some(&hex), None, "fork", "same", "1.0.0"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(found.id, expected, "newest Id wins a tie");
+    }
+}
+
+#[test]
+fn missing_entries_and_fill_manifest_work_in_batches() {
+    let db = ContentDb::open_in_memory().unwrap();
+    // More hashes than one lookup batch holds.
+    let owned: Vec<(String, Vec<u8>)> = (0..1200)
+        .map(|i| (format!("f{i}.txt"), format!("payload {i}").into_bytes()))
+        .collect();
+    let refs: Vec<(&str, &[u8])> = owned
+        .iter()
+        .map(|(n, d)| (n.as_str(), d.as_slice()))
+        .collect();
+    let m = manifest_of(&refs);
+
+    assert_eq!(db.missing_entries(&m).unwrap().len(), 1200);
+    store_all(&db, &refs);
+    assert!(db.missing_entries(&m).unwrap().is_empty());
+
+    let v = db.create_version("fork", "many").unwrap();
+    db.fill_manifest(v, &m).unwrap();
+    assert_eq!(db.count_manifest_entries(v).unwrap(), 1200);
+    assert_eq!(db.compute_manifest_hash(v).unwrap(), m.hash);
+}
+
+#[test]
+fn linking_to_a_cleaned_up_download_is_not_an_error() {
+    let db = ContentDb::open_in_memory().unwrap();
+    let (id, _) = db.store_blob(&blake2b256(b"orphan"), b"orphan").unwrap();
+    // The parent row is gone (another process ran a cleanup): the blob is kept, nothing fails.
+    db.link_interrupted_blob(99_999, id).unwrap();
+    let links: i64 = db
+        .connection()
+        .query_row("SELECT COUNT(*) FROM InterruptedDownloadContent", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(links, 0);
+    assert!(db.read_blob(id).is_ok());
+}
+
+#[test]
+fn a_stored_blob_with_another_size_is_reported_as_corrupt() {
+    let db = ContentDb::open_in_memory().unwrap();
+    let (id, _) = db.store_blob(&blake2b256(b"abc"), b"abc").unwrap();
+    let blob = PreparedBlob::precompressed(blake2b256(b"abc"), 999, b"whatever".to_vec());
+    let err = db.store_prepared_blob(&blob).unwrap_err();
+    assert!(err.to_string().contains("size"), "{err}");
+    assert_eq!(db.read_blob(id).unwrap(), b"abc");
 }
 
 #[test]

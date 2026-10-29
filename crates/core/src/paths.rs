@@ -80,6 +80,10 @@ impl DataDirs {
             self.packs(),
             self.patches(),
             self.backgrounds(),
+            // Both are used right away by downloads and the pack overlay; creating them here
+            // keeps every later step from having to think about it.
+            self.scratch(),
+            self.overlays(),
         ] {
             std::fs::create_dir_all(dir)?;
         }
@@ -104,5 +108,9 @@ mod tests {
         let d = DataDirs::at(tmp.path().join("x"));
         d.ensure().unwrap();
         assert!(d.engines().is_dir() && d.modules().is_dir() && d.logs().is_dir());
+        assert!(
+            d.scratch().is_dir() && d.overlays().is_dir(),
+            "downloads and the pack overlay need tmp/ and overlays/"
+        );
     }
 }

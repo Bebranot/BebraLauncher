@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 
 use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
 use futures_util::StreamExt;
-use reqwest::header::{ACCEPT, AUTHORIZATION};
+use reqwest::header::{HeaderValue, ACCEPT, AUTHORIZATION};
 use reqwest::{Client, Response, StatusCode};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -34,7 +34,16 @@ const UPDATE_KEY_PEM: &str = include_str!("update_key.pem");
 const MAX_INSTALLER: u64 = 400 * 1024 * 1024;
 /// A signature file is one line of hex.
 const MAX_SIGNATURE: usize = 1024;
+/// A download that sends nothing for this long is treated as dead.
+const IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 const API: &str = "https://api.github.com";
+
+/// Installers we make start with this, followed by the version.
+const PRODUCT_PREFIX: &str = "BebraLauncher_";
+
+/// Hosts the access token may be sent to. GitHub itself only: an asset URL from a hostile or
+/// compromised answer must not receive the user's token.
+const TOKEN_HOSTS: [&str; 2] = ["api.github.com", "github.com"];
 
 // ---------------------------------------------------------------- versions
 
@@ -150,37 +159,63 @@ fn is_setup_name(name: &str) -> bool {
         && !name.starts_with('.')
 }
 
-/// Reads GitHub's answer for one release. `Ok(None)`: a draft, a pre-release, or one without our
-/// installer and its signature (not for us). `Err`: the tag is not a version of ours.
+/// The version in an installer name: `BebraLauncher_0.2.5_x64-setup.exe` -> `0.2.5`.
+fn setup_version(name: &str) -> Option<Version> {
+    name.strip_suffix("-setup.exe")?
+        .split('_')
+        .nth(1)
+        .and_then(Version::parse)
+}
+
+/// Reads GitHub's answer for one release. `Ok(None)`: a draft, a pre-release, a tag that is not a
+/// version of ours (e.g. `latest`), or one without our installer and its signature (not for us).
+/// A non-version tag is not an error: the repository may legitimately publish such a release, and
+/// failing on it would stop updates forever.
 pub fn parse_release(json: &str) -> Result<Option<Release>> {
     let raw: RawRelease = serde_json::from_str(json)
         .map_err(|e| Error::Other(format!("cannot read the release: {e}")))?;
     if raw.draft || raw.prerelease {
         return Ok(None);
     }
-    let version = Version::parse(&raw.tag_name).ok_or_else(|| {
-        Error::Other(format!(
-            "the release tag {:?} is not a version",
+    let Some(version) = Version::parse(&raw.tag_name) else {
+        eprintln!(
+            "self-update: release tag {:?} is not a version; ignoring it",
             raw.tag_name
-        ))
-    })?;
-
-    let find = |name: &str| {
-        raw.assets.iter().find(|a| a.name == name).map(|a| Asset {
-            name: a.name.clone(),
-            url: a.url.clone(),
-            size: a.size,
-        })
-    };
-    let Some(setup_name) = raw
-        .assets
-        .iter()
-        .map(|a| a.name.as_str())
-        .find(|n| is_setup_name(n))
-    else {
+        );
         return Ok(None);
     };
-    let (Some(setup), Some(signature)) = (find(setup_name), find(&format!("{setup_name}.sig")))
+
+    // Several installers may be attached (32-bit, x64, a debug build...). Take one whose version
+    // matches the release tag; if none does, the highest version with a signature next to it.
+    let mut candidates: Vec<&RawAsset> = raw
+        .assets
+        .iter()
+        .filter(|a| is_setup_name(&a.name))
+        .filter(|a| {
+            raw.assets
+                .iter()
+                .any(|s| s.name == format!("{}.sig", a.name))
+        })
+        .collect();
+    candidates.sort_by(|a, b| {
+        let rank = |asset: &&RawAsset| {
+            let v = setup_version(&asset.name);
+            (v == Some(version), v)
+        };
+        let (a_match, a_version) = rank(a);
+        let (b_match, b_version) = rank(b);
+        b_match
+            .cmp(&a_match)
+            .then_with(|| b_version.cmp(&a_version))
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    let Some(setup) = candidates.first() else {
+        return Ok(None);
+    };
+    let Some(signature) = raw
+        .assets
+        .iter()
+        .find(|a| a.name == format!("{}.sig", setup.name))
     else {
         return Ok(None);
     };
@@ -190,8 +225,16 @@ pub fn parse_release(json: &str) -> Result<Option<Release>> {
         notes: raw.body.unwrap_or_default(),
         published: raw.published_at,
         page_url: raw.html_url,
-        setup,
-        signature,
+        setup: Asset {
+            name: setup.name.clone(),
+            url: setup.url.clone(),
+            size: setup.size,
+        },
+        signature: Asset {
+            name: signature.name.clone(),
+            url: signature.url.clone(),
+            size: signature.size,
+        },
     }))
 }
 
@@ -209,20 +252,63 @@ pub fn valid_repo(repo: &str) -> bool {
     matches!((parts.next(), parts.next(), parts.next()), (Some(a), Some(b), None) if ok(a) && ok(b))
 }
 
+/// Is this an HTTPS URL for one of [`TOKEN_HOSTS`] (no userinfo, no tricks in the host)?
+fn is_token_host(url: &str) -> bool {
+    let Some(rest) = url.strip_prefix("https://") else {
+        return false;
+    };
+    let host = rest
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if host.contains('@') || host.contains(':') {
+        return false;
+    }
+    TOKEN_HOSTS.contains(&host.as_str())
+}
+
+/// Builds a request and says whether the token was attached. The token goes only to GitHub
+/// itself: release assets may point anywhere, and a stolen token is worse than a failed update.
 fn request(
     client: &Client,
     url: &str,
     accept: &str,
     token: Option<&Token>,
-) -> reqwest::RequestBuilder {
+) -> (reqwest::RequestBuilder, bool) {
     let mut req = client
         .get(url)
         .header(ACCEPT, accept)
         .header("X-GitHub-Api-Version", "2022-11-28");
+    let mut sent = false;
     if let Some(token) = token {
-        req = req.header(AUTHORIZATION, format!("Bearer {}", token.expose()));
+        if is_token_host(url) {
+            if let Ok(mut value) = HeaderValue::from_str(&format!("Bearer {}", token.expose())) {
+                // Keeps the token out of logs and crash reports.
+                value.set_sensitive(true);
+                req = req.header(AUTHORIZATION, value);
+                sent = true;
+            }
+        }
     }
-    req
+    (req, sent)
+}
+
+/// Reads a small body without trusting its `Content-Length`: never more than `max` bytes are kept.
+async fn read_limited(resp: Response, max: usize, what: &str) -> Result<Vec<u8>> {
+    if resp.content_length().is_some_and(|n| n > max as u64) {
+        return Err(Error::Other(format!("{what} is too large")));
+    }
+    let mut out = Vec::new();
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        if out.len() + chunk.len() > max {
+            return Err(Error::Other(format!("{what} is too large")));
+        }
+        out.extend_from_slice(&chunk);
+    }
+    Ok(out)
 }
 
 /// A readable reason for a refused request.
@@ -259,11 +345,12 @@ pub async fn latest(client: &Client, repo: &str, token: Option<&Token>) -> Resul
         return Err(Error::Other(format!("not a repository name: {repo}")));
     }
     let url = format!("{API}/repos/{repo}/releases/latest");
-    let resp = request(client, &url, "application/vnd.github+json", token)
+    let (req, token_sent) = request(client, &url, "application/vnd.github+json", token);
+    let resp = req
         .timeout(std::time::Duration::from_secs(20))
         .send()
         .await?;
-    let text = ok(resp, token.is_some())?.text().await?;
+    let text = ok(resp, token_sent)?.text().await?;
     parse_release(&text)
 }
 
@@ -348,27 +435,32 @@ pub async fn download(
     tokio::fs::create_dir_all(dir).await?;
 
     // The signature first: it is tiny, and without it there is nothing to download for.
-    let resp = request(
+    let (req, token_sent) = request(
         client,
         &release.signature.url,
         "application/octet-stream",
         token,
-    )
-    .timeout(std::time::Duration::from_secs(30))
-    .send()
-    .await?;
-    let sig_bytes = ok(resp, token.is_some())?.bytes().await?;
-    if sig_bytes.len() > MAX_SIGNATURE {
-        return Err(Error::Other("the signature file is too large".into()));
-    }
+    );
+    let resp = req
+        .timeout(std::time::Duration::from_secs(30))
+        .send()
+        .await?;
+    let sig_bytes =
+        read_limited(ok(resp, token_sent)?, MAX_SIGNATURE, "the signature file").await?;
     let sig_hex = String::from_utf8_lossy(&sig_bytes).trim().to_string();
 
     let part = dir.join(format!("{}.part", release.setup.name));
     let fin = dir.join(&release.setup.name);
 
     // Downloaded before and never installed: the same file, if it still checks out, is reused.
-    if let Ok(sha) = sha256_file(&fin) {
+    // Hashing a 400 MB installer is blocking work and must not run on the async runtime.
+    let hash_path = fin.clone();
+    let existing_sha = tokio::task::spawn_blocking(move || sha256_file(&hash_path))
+        .await
+        .map_err(|e| Error::Other(format!("hashing task failed: {e}")))?;
+    if let Ok(sha) = existing_sha {
         if verify_update(key, &release.version, &sha, &sig_hex).is_ok() {
+            write_sig_sidecar(&fin, &sig_hex).await?;
             progress(release.setup.size, release.setup.size);
             return Ok(fin);
         }
@@ -378,6 +470,9 @@ pub async fn download(
         Ok(()) => {
             let _ = tokio::fs::remove_file(&fin).await;
             tokio::fs::rename(&part, &fin).await?;
+            // The signature travels with the installer so that `spawn_installer` can check the
+            // file again right before running it.
+            write_sig_sidecar(&fin, &sig_hex).await?;
             Ok(fin)
         }
         Err(e) => {
@@ -385,6 +480,23 @@ pub async fn download(
             Err(e)
         }
     }
+}
+
+/// Where the verified signature of an installer is kept: `<installer>.sig`, next to it.
+fn sig_sidecar(setup: &Path) -> PathBuf {
+    let mut name = setup.as_os_str().to_os_string();
+    name.push(".sig");
+    PathBuf::from(name)
+}
+
+/// Writes the signature next to the installer, atomically (temp file, then rename).
+async fn write_sig_sidecar(setup: &Path, sig_hex: &str) -> Result<()> {
+    let path = sig_sidecar(setup);
+    let tmp = path.with_extension("sig.tmp");
+    tokio::fs::write(&tmp, sig_hex.trim()).await?;
+    let _ = tokio::fs::remove_file(&path).await;
+    tokio::fs::rename(&tmp, &path).await?;
+    Ok(())
 }
 
 async fn fetch_checked(
@@ -396,21 +508,32 @@ async fn fetch_checked(
     sig_hex: &str,
     progress: &mut impl FnMut(u64, u64),
 ) -> Result<()> {
-    let resp = request(
+    let (req, token_sent) = request(
         client,
         &release.setup.url,
         "application/octet-stream",
         token,
-    )
-    .send()
-    .await?;
-    let resp = ok(resp, token.is_some())?;
+    );
+    let resp = req.send().await?;
+    let resp = ok(resp, token_sent)?;
     let total = resp.content_length().unwrap_or(release.setup.size);
     let mut file = tokio::fs::File::create(part).await?;
     let mut hasher = Sha256::new();
     let mut done = 0u64;
     let mut stream = resp.bytes_stream();
-    while let Some(chunk) = stream.next().await {
+    loop {
+        // A server that stops sending must not hang the update forever.
+        let next = tokio::time::timeout(IDLE_TIMEOUT, stream.next())
+            .await
+            .map_err(|_| {
+                Error::Other(format!(
+                    "the installer download stopped for {}s",
+                    IDLE_TIMEOUT.as_secs()
+                ))
+            })?;
+        let Some(chunk) = next else {
+            break;
+        };
         let chunk = chunk?;
         done += chunk.len() as u64;
         if done > MAX_INSTALLER {
@@ -434,22 +557,28 @@ async fn fetch_checked(
     .map_err(|_| Error::Other("the installer's signature is wrong: it was not installed".into()))
 }
 
-/// Deletes installers left in `dir` by earlier updates, except `keep`.
+/// Deletes installers left in `dir` by earlier updates, except `keep` and its signature.
 pub fn clean_old(dir: &Path, keep: Option<&Path>) {
+    let keep_sig = keep.map(sig_sidecar);
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
     for entry in entries.flatten() {
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().into_owned();
-        if (name.ends_with("-setup.exe") || name.ends_with(".part")) && Some(path.as_path()) != keep
-        {
+        let ours = name.ends_with("-setup.exe")
+            || name.ends_with("-setup.exe.sig")
+            || name.ends_with(".part");
+        if ours && Some(path.as_path()) != keep && Some(&path) != keep_sig.as_ref() {
             let _ = std::fs::remove_file(path);
         }
     }
 }
 
 /// Deletes installers of this version or older: they are installed already (or beaten).
+///
+/// Only files we name ourselves are touched: an unrelated `notes-setup.exe` that happens to sit
+/// in the folder is left alone.
 pub fn clean_installed(dir: &Path) {
     let current = Version::current();
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -457,10 +586,19 @@ pub fn clean_installed(dir: &Path) {
     };
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
+        if !name.starts_with(PRODUCT_PREFIX) {
+            continue;
+        }
+        let ours = name.ends_with("-setup.exe")
+            || name.ends_with("-setup.exe.sig")
+            || name.ends_with(".part");
+        if !ours {
+            continue;
+        }
         // `BebraLauncher_0.2.5_x64-setup.exe`: the version sits between the first two `_`.
         let version = name.split('_').nth(1).and_then(Version::parse);
         let leftover = name.ends_with(".part") || version.is_some_and(|v| v <= current);
-        if leftover && (name.ends_with("-setup.exe") || name.ends_with(".part")) {
+        if leftover {
             let _ = std::fs::remove_file(entry.path());
         }
     }
@@ -470,6 +608,10 @@ pub fn clean_installed(dir: &Path) {
 
 /// Runs the installer silently over the current installation. With `restart` it starts the
 /// launcher again when done. The caller exits right after: the installer replaces the files.
+///
+/// The file has been sitting in a user-writable folder since it was checked, so it is checked
+/// once more right here: the name gives the version, the sidecar `.sig` (written by [`download`])
+/// is the signature over that version and the file's SHA-256. A replaced installer is refused.
 pub fn spawn_installer(setup: &Path, restart: bool) -> Result<()> {
     use std::os::windows::process::CommandExt;
     const DETACHED_PROCESS: u32 = 0x0000_0008;
@@ -482,6 +624,22 @@ pub fn spawn_installer(setup: &Path, restart: bool) -> Result<()> {
     if !setup.is_file() || !is_setup_name(name) {
         return Err(Error::Other("the installer is not there".into()));
     }
+    let version = setup_version(name)
+        .ok_or_else(|| Error::Other("the installer's name carries no version".into()))?;
+    let sig = std::fs::read_to_string(sig_sidecar(setup)).map_err(|_| {
+        Error::Other("the installer's signature is missing: download the update again".into())
+    })?;
+    if sig.len() > MAX_SIGNATURE {
+        return Err(Error::Other(
+            "the installer's signature is too large".into(),
+        ));
+    }
+    let sha = sha256_file(setup)?;
+    let key = update_key()?;
+    verify_update(&key, &version, &sha, sig.trim()).map_err(|_| {
+        Error::Other("the installer changed after it was verified: it was not started".into())
+    })?;
+
     let mut cmd = std::process::Command::new(setup);
     // `/S` silent, `/UPDATE` replaces a running copy without asking, `/R` starts the app after.
     cmd.arg("/S").arg("/UPDATE");
@@ -598,9 +756,70 @@ mod tests {
         ))
         .unwrap()
         .is_none());
-        // a tag that is no version is an error, not a silent skip
-        assert!(parse_release(&release_json("nightly", "", &[SETUP, &sig])).is_err());
+        // a tag that is no version is ignored, not fatal: otherwise one such release would stop
+        // automatic updates for good
+        assert!(parse_release(&release_json("nightly", "", &[SETUP, &sig]))
+            .unwrap()
+            .is_none());
+        assert!(parse_release(&release_json("latest", "", &[SETUP, &sig]))
+            .unwrap()
+            .is_none());
         assert!(parse_release("not json").is_err());
+    }
+
+    #[test]
+    fn the_installer_matching_the_tag_is_preferred() {
+        let other = "BebraLauncher_0.1.0_x86-setup.exe";
+        let json = release_json(
+            "v0.2.005",
+            "",
+            &[
+                "BebraLauncher_9.9.9_x64-setup.exe",
+                "BebraLauncher_9.9.9_x64-setup.exe.sig",
+                other,
+                &format!("{other}.sig"),
+                SETUP,
+                &format!("{SETUP}.sig"),
+            ],
+        );
+        let r = parse_release(&json).unwrap().unwrap();
+        assert_eq!(
+            r.setup.name, SETUP,
+            "same version as the tag wins over a higher one"
+        );
+
+        // No candidate matches the tag: the highest version with a signature is used, and an
+        // installer without one is ignored.
+        let json = release_json(
+            "v0.2.005",
+            "",
+            &[
+                "BebraLauncher_0.1.0_x64-setup.exe",
+                "BebraLauncher_0.3.0_x64-setup.exe.sig",
+                "BebraLauncher_0.3.0_x64-setup.exe",
+                "BebraLauncher_0.3.0_x64-setup.exe.sig",
+            ],
+        );
+        let r = parse_release(&json).unwrap().unwrap();
+        assert_eq!(r.setup.name, "BebraLauncher_0.3.0_x64-setup.exe");
+    }
+
+    #[test]
+    fn the_token_goes_only_to_github() {
+        assert!(is_token_host("https://api.github.com/repos/o/r/releases"));
+        assert!(is_token_host("https://github.com/o/r"));
+        for bad in [
+            "http://api.github.com/x",
+            "https://api.github.com.evil.example/x",
+            "https://evil.example/?api.github.com",
+            "https://api.github.com@evil.example/x",
+            "https://user@api.github.com/x",
+            "https://api.github.com:8443/x",
+            "ftp://api.github.com/x",
+            "",
+        ] {
+            assert!(!is_token_host(bad), "{bad:?} must not receive the token");
+        }
     }
 
     #[test]
@@ -781,6 +1000,13 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap(), installer);
         assert_eq!(last.0, 300_000);
         assert!(!dir.path().join(format!("{SETUP}.part")).exists());
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join(format!("{SETUP}.sig")))
+                .unwrap()
+                .trim(),
+            sig,
+            "the signature is kept next to the installer for the final check before spawn"
+        );
 
         // asked again: the verified file on disk is reused (nothing to fetch for the installer)
         let again = serve(vec![("/sig", format!("{sig}\n").into_bytes())]);
@@ -862,13 +1088,24 @@ mod tests {
         for n in [&older, &same, &newer, &part] {
             std::fs::write(dir.path().join(n), b"x").unwrap();
         }
+        std::fs::write(dir.path().join(format!("{older}.sig")), b"sig").unwrap();
+        // Not ours: same shape, but another product's installer.
+        std::fs::write(dir.path().join("Other_0.0.1_x64-setup.exe"), b"x").unwrap();
         clean_installed(dir.path());
-        assert!(!dir.path().join(older).exists());
+        assert!(!dir.path().join(&older).exists());
+        assert!(
+            !dir.path().join(format!("{older}.sig")).exists(),
+            "the signature of a removed installer goes too"
+        );
         assert!(!dir.path().join(same).exists());
         assert!(!dir.path().join(part).exists());
         assert!(
             dir.path().join(newer).exists(),
             "a newer installer is waiting to be installed"
+        );
+        assert!(
+            dir.path().join("Other_0.0.1_x64-setup.exe").exists(),
+            "another program's installer is not touched"
         );
     }
 
@@ -889,5 +1126,24 @@ mod tests {
         let p = dir.path().join("not-an-installer.txt");
         std::fs::write(&p, b"x").unwrap();
         assert!(spawn_installer(&p, false).is_err());
+    }
+
+    #[test]
+    fn an_installer_changed_after_the_check_is_not_started() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join(SETUP);
+        std::fs::write(&p, b"installer bytes").unwrap();
+
+        // No signature next to it: nothing can be verified, so nothing runs.
+        let err = spawn_installer(&p, false).unwrap_err();
+        assert!(err.to_string().contains("signature"), "{err}");
+
+        // A signature that does not cover these bytes (signed with a key that is not ours).
+        let sk = SigningKey::from_bytes(&[5u8; 32]);
+        let sha = sha256_file(&p).unwrap();
+        let version = setup_version(SETUP).unwrap();
+        std::fs::write(sig_sidecar(&p), sign_update(&sk, &version, &sha)).unwrap();
+        let err = spawn_installer(&p, false).unwrap_err();
+        assert!(err.to_string().contains("changed"), "{err}");
     }
 }

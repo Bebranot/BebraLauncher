@@ -56,21 +56,28 @@ pub struct MemoryStore {
     accounts: Mutex<BTreeMap<Uuid, StoredAccount>>,
 }
 
-impl TokenStore for MemoryStore {
-    fn save(&self, account: &StoredAccount) -> Result<()> {
+impl MemoryStore {
+    /// A poisoned lock only means another thread panicked while holding it; the map itself is
+    /// still consistent, so recover it instead of panicking on every later account call.
+    fn lock(&self) -> std::sync::MutexGuard<'_, BTreeMap<Uuid, StoredAccount>> {
         self.accounts
             .lock()
-            .unwrap()
-            .insert(account.user_id, account.clone());
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+impl TokenStore for MemoryStore {
+    fn save(&self, account: &StoredAccount) -> Result<()> {
+        self.lock().insert(account.user_id, account.clone());
         Ok(())
     }
 
     fn list(&self) -> Result<Vec<StoredAccount>> {
-        Ok(self.accounts.lock().unwrap().values().cloned().collect())
+        Ok(self.lock().values().cloned().collect())
     }
 
     fn remove(&self, user_id: Uuid) -> Result<()> {
-        self.accounts.lock().unwrap().remove(&user_id);
+        self.lock().remove(&user_id);
         Ok(())
     }
 }
@@ -223,7 +230,13 @@ impl TokenStore for CredentialStore {
         let mut accounts: Vec<StoredAccount> = cred::list(&self.prefix)?
             .into_iter()
             // An entry we can't read (damaged, or written by something else) is skipped, not fatal.
-            .filter_map(|(_, blob)| serde_json::from_slice(&blob).ok())
+            .filter_map(|(target, blob)| {
+                // The entry name is `<prefix><user id>`; a blob whose user id disagrees with the
+                // name (a copied or renamed entry) is not trusted.
+                let id = target.strip_prefix(&self.prefix)?.parse::<Uuid>().ok()?;
+                let account: StoredAccount = serde_json::from_slice(&blob).ok()?;
+                (account.user_id == id).then_some(account)
+            })
             .collect();
         accounts.sort_by_key(|a| a.username.to_lowercase());
         Ok(accounts)
@@ -333,12 +346,22 @@ pub async fn ensure_fresh(
         Freshness::Expired => Ok((account, AccountStatus::Expired)),
         Freshness::NeedsRefresh => match auth.refresh(&account.token).await? {
             Some((token, expire_time)) => {
+                // The old token may already be invalid on the server (it rotates), so a renewed
+                // token that is already expired is worthless: ask for a fresh login instead.
+                if expire_time <= now {
+                    return Ok((account, AccountStatus::Expired));
+                }
                 let renewed = StoredAccount {
                     token,
                     expire_time,
                     ..account
                 };
-                store.save(&renewed)?;
+                store.save(&renewed).map_err(|e| {
+                    Error::Other(format!(
+                        "the login of {} was renewed, but the new token could not be saved ({e}); please log in again",
+                        renewed.username
+                    ))
+                })?;
                 Ok((renewed, AccountStatus::Available))
             }
             None => Ok((account, AccountStatus::Expired)),
@@ -533,12 +556,22 @@ mod tests {
             b"this is not json",
         )
         .unwrap();
+        // A well-formed account blob filed under someone else's id.
+        let mismatched = account("eve", 4, NOW + Duration::days(30));
+        let mismatched_target = format!("{}{}", t.store.prefix, Uuid::from_u128(3));
+        cred::write(
+            &mismatched_target,
+            "x",
+            &serde_json::to_vec(&mismatched).unwrap(),
+        )
+        .unwrap();
 
         let listed = t.store.list().unwrap();
-        assert_eq!(listed.len(), 1, "junk is skipped");
+        assert_eq!(listed.len(), 1, "junk and renamed entries are skipped");
         assert_eq!(listed[0].username, "alice");
         assert_eq!(other.list().unwrap().len(), 1);
         let _ = cred::delete(&format!("{}garbage", t.store.prefix));
+        let _ = cred::delete(&mismatched_target);
         for a in other.list().unwrap_or_default() {
             let _ = other.remove(a.user_id);
         }
@@ -677,6 +710,71 @@ mod tests {
         assert_eq!(acc.token.expose(), "renewed");
         assert_eq!(store.list().unwrap()[0].token.expose(), "renewed", "saved");
         assert_eq!(seen.lock().unwrap()[0].path, "/api/auth/refresh");
+    }
+
+    #[tokio::test]
+    async fn a_renewal_that_is_already_expired_is_not_saved() {
+        let (base, _) = serve(|_| {
+            (
+                200,
+                vec![],
+                json!({"newToken": "stale", "expireTime": "2020-01-01T00:00:00Z"})
+                    .to_string()
+                    .into_bytes(),
+            )
+        })
+        .await;
+        let store = MemoryStore::default();
+        let old = account("a", 1, NOW + Duration::days(3));
+        store.save(&old).unwrap();
+
+        let (acc, status) = ensure_fresh(&auth_for(&base), &store, old.clone(), NOW, false)
+            .await
+            .unwrap();
+        assert_eq!(status, AccountStatus::Expired);
+        assert_eq!(acc, old);
+        assert_eq!(store.list().unwrap(), [old], "nothing expired is saved");
+    }
+
+    /// A store that always fails to write, like a full disk or a locked credential store.
+    struct FailingStore;
+
+    impl TokenStore for FailingStore {
+        fn save(&self, _: &StoredAccount) -> Result<()> {
+            Err(Error::Other("the store is full".into()))
+        }
+        fn list(&self) -> Result<Vec<StoredAccount>> {
+            Ok(Vec::new())
+        }
+        fn remove(&self, _: Uuid) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_failed_save_says_to_log_in_again() {
+        let (base, _) = serve(|_| {
+            (
+                200,
+                vec![],
+                json!({"newToken": "renamed", "expireTime": "2027-06-01T00:00:00Z"})
+                    .to_string()
+                    .into_bytes(),
+            )
+        })
+        .await;
+        let err = ensure_fresh(
+            &auth_for(&base),
+            &FailingStore,
+            account("a", 1, NOW + Duration::days(3)),
+            NOW,
+            false,
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("log in again"), "{err}");
+        assert!(err.contains("store is full"), "{err}");
     }
 
     #[tokio::test]

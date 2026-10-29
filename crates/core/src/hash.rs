@@ -28,13 +28,15 @@ pub fn to_hex(hash: &[u8]) -> String {
 /// Exactly 64 hex characters, any case.
 pub fn parse_hash_hex(s: &str) -> Result<Hash256> {
     let mut out = [0u8; 32];
-    if s.len() != 64 {
+    let chars = s.chars().count();
+    if chars != 64 {
         return Err(Error::InvalidHash(format!(
-            "expected 64 hex chars, got {}",
-            s.len()
+            "expected 64 hex characters, got {chars}"
         )));
     }
-    hex::decode_to_slice(s, &mut out).map_err(|e| Error::InvalidHash(format!("{e}: {s:?}")))?;
+    hex::decode_to_slice(s, &mut out).map_err(|_| {
+        Error::InvalidHash("expected 64 hex characters, but the value has non-hex ones".into())
+    })?;
     Ok(out)
 }
 
@@ -77,5 +79,12 @@ mod tests {
         assert!(parse_hash_hex("ABCD").is_err());
         assert!(parse_hash_hex(&"Z".repeat(64)).is_err());
         assert!(parse_hash_hex(&"A".repeat(66)).is_err());
+
+        // The message counts characters (and says so), not bytes.
+        let err = parse_hash_hex("ABCD").unwrap_err().to_string();
+        assert!(err.contains("characters, got 4"), "{err}");
+        let non_ascii = "тест";
+        let err = parse_hash_hex(non_ascii).unwrap_err().to_string();
+        assert!(err.contains("characters, got 4"), "{err}");
     }
 }

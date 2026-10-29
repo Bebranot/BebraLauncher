@@ -23,6 +23,9 @@ pub const AUTH_URLS: [&str; 2] = [
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// The auth server's answers are tiny; anything larger is not a JSON response we can use.
+const MAX_AUTH_JSON_BYTES: usize = 64 * 1024;
+
 /// Who is logging in: the account name, or its id (for re-login of a saved account).
 #[derive(Debug, Clone, Copy)]
 pub enum Identity<'a> {
@@ -189,11 +192,18 @@ impl AuthClient {
                 }))
             }
             StatusCode::UNAUTHORIZED => {
-                let r: DenyResponse = read_json(resp).await?;
-                Ok(AuthenticateOutcome::Denied {
-                    errors: r.errors,
-                    code: r.code,
-                })
+                // A proxy's HTML error page (or an empty body) must still mean "no": the player
+                // typed a wrong password, not "the launcher is broken".
+                match read_json::<DenyResponse>(resp).await {
+                    Ok(r) => Ok(AuthenticateOutcome::Denied {
+                        errors: r.errors,
+                        code: r.code,
+                    }),
+                    Err(_) => Ok(AuthenticateOutcome::Denied {
+                        errors: Vec::new(),
+                        code: DenyCode::Unknown,
+                    }),
+                }
             }
             _ => Err(unexpected_status(&resp)),
         }
@@ -279,11 +289,12 @@ fn unexpected_status(resp: &Response) -> Error {
     }
 }
 
-/// Parses a JSON response. On failure the message says nothing about the body.
+/// Parses a JSON response, with a hard size limit and an idle timeout. On failure the message says
+/// nothing about the body (it can hold tokens).
 async fn read_json<T: serde::de::DeserializeOwned>(resp: Response) -> Result<T> {
-    let bytes = resp.bytes().await?;
-    serde_json::from_slice(&bytes)
-        .map_err(|_| Error::Other("the auth server sent an unreadable response".into()))
+    crate::http::read_json_limited(resp, MAX_AUTH_JSON_BYTES, REQUEST_TIMEOUT)
+        .await
+        .map_err(|e| Error::Other(format!("the auth server sent an unreadable response ({e})")))
 }
 
 #[cfg(test)]
@@ -403,6 +414,49 @@ mod tests {
                 "{code_text}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_401_is_a_denial_not_a_parse_error() {
+        // A proxy or a captive portal answers with HTML: the player is still refused.
+        let (base, _) = serve(|_| (401, vec![], b"<html>blocked</html>".to_vec())).await;
+        let out = client_for(&base)
+            .authenticate(Identity::Username("a"), "b", None)
+            .await
+            .unwrap();
+        let AuthenticateOutcome::Denied { errors, code } = out else {
+            panic!("expected a denial")
+        };
+        assert!(errors.is_empty());
+        assert_eq!(code, DenyCode::Unknown);
+
+        let (base, _) = serve(|_| (401, vec![], Vec::new())).await;
+        let out = client_for(&base)
+            .authenticate(Identity::Username("a"), "b", None)
+            .await
+            .unwrap();
+        assert!(matches!(
+            out,
+            AuthenticateOutcome::Denied {
+                code: DenyCode::Unknown,
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn oversized_responses_are_not_read_to_the_end() {
+        let big = format!("{{\"token\":\"{}\"}}", "a".repeat(MAX_AUTH_JSON_BYTES));
+        let (base, _) = serve(move |_| (200, vec![], big.clone().into_bytes())).await;
+        let err = client_for(&base)
+            .authenticate(Identity::Username("a"), "b", None)
+            .await
+            .unwrap_err();
+        let text = err.to_string();
+        assert!(
+            text.contains("larger") || text.contains("too large"),
+            "{text}"
+        );
     }
 
     #[tokio::test]

@@ -18,6 +18,7 @@ pub enum ProcessState {
 ///
 /// A bare pid is not enough: Windows reuses them, and the content database remembers which program
 /// owned a pid (`RunningClient.MainModule`). The comparison ignores case.
+#[cfg(windows)]
 pub fn process_state(pid: u32, image_path: &str) -> ProcessState {
     use windows_sys::Win32::Foundation::{
         CloseHandle, GetLastError, ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER,
@@ -53,13 +54,20 @@ pub fn process_state(pid: u32, image_path: &str) -> ProcessState {
     }
 }
 
+/// Non-Windows builds have no process query here. `Unknown` is the honest answer: it must not be
+/// read as "the process is gone".
+#[cfg(not(windows))]
+pub fn process_state(_pid: u32, _image_path: &str) -> ProcessState {
+    ProcessState::Unknown
+}
+
 /// [`process_state`] as a plain yes/no answer. `false` also covers `Unknown`; use
 /// [`process_state`] where a failed check must not be read as "gone".
 pub fn is_process_running_from(pid: u32, image_path: &str) -> bool {
     process_state(pid, image_path) == ProcessState::Alive
 }
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
 mod tests {
     use super::*;
 

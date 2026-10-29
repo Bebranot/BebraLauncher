@@ -44,6 +44,13 @@ pub struct IngestedFile {
     pub content_id: i64,
 }
 
+/// Everything [`ingest_zip`] stored.
+pub struct IngestedZip {
+    pub files: Vec<IngestedFile>,
+    /// Blobs that were not already in the database before this install.
+    pub new_blobs: usize,
+}
+
 pub async fn install_zip(
     client: &Client,
     db: &ContentDb,
@@ -76,7 +83,8 @@ pub async fn install_zip(
 
     // Blobs are committed in batches while the zip is read (see `ingest_zip`); only the version row
     // and its file list go in at the end, in one short transaction.
-    let files = ingest_zip(db, &scratch.0, progress).await?;
+    let ingested = ingest_zip(db, &scratch.0, progress).await?;
+    let files = ingested.files;
     let file_count = files.len();
 
     let version_id = db.transaction(|db| {
@@ -91,11 +99,14 @@ pub async fn install_zip(
         Ok(id)
     })?;
 
+    // The zip was stored in batches, so the WAL holds a lot of data by now.
+    let _ = db.checkpoint_passive();
+
     Ok(InstalledContent {
         version_id,
         mode: DownloadMode::Zip,
         files: file_count,
-        downloaded: file_count,
+        downloaded: ingested.new_blobs,
         reused: false,
     })
 }
@@ -120,6 +131,17 @@ fn check_entry_path(name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Is this entry a directory? The zip attribute (Unix file type or the DOS directory bit) decides;
+/// the trailing slash is only a fallback for archives that carry no attributes at all. A file
+/// whose name merely ends with `/` must not be silently dropped, and a directory must not be
+/// stored as an empty file.
+fn is_directory<R: std::io::Read + ?Sized>(entry: &zip::read::ZipFile<'_, R>) -> bool {
+    match entry.unix_mode() {
+        Some(mode) => mode & 0o170000 == 0o040000,
+        None => entry.is_dir(),
+    }
+}
+
 /// Stores every file of the zip in the database and returns them. Directory entries are skipped.
 ///
 /// The zip is read, hashed and compressed on blocking threads; the async side only inserts the
@@ -128,7 +150,7 @@ pub async fn ingest_zip(
     db: &ContentDb,
     zip_path: &Path,
     progress: Option<ProgressFn<'_>>,
-) -> Result<Vec<IngestedFile>> {
+) -> Result<IngestedZip> {
     let archive = std::fs::File::open(zip_path)?;
     let archive =
         zip::ZipArchive::new(archive).map_err(|e| Error::Other(format!("bad client zip: {e}")))?;
@@ -137,6 +159,7 @@ pub async fn ingest_zip(
 
     let mut seen: HashSet<String> = HashSet::new();
     let mut files: Vec<IngestedFile> = Vec::new();
+    let mut new_blobs = 0usize;
     let mut batch: Vec<(String, PreparedBlob)> = Vec::new();
     let mut batch_bytes = 0u64;
     let mut unpacked = 0u64;
@@ -167,14 +190,14 @@ pub async fn ingest_zip(
         }
 
         if batch_bytes >= BATCH_BYTES || batch.len() >= BATCH_FILES || next >= total {
-            flush_batch(db, &mut batch, &mut files)?;
+            new_blobs += flush_batch(db, &mut batch, &mut files)?;
             batch_bytes = 0;
         }
 
         tokio::task::yield_now().await;
     }
 
-    Ok(files)
+    Ok(IngestedZip { files, new_blobs })
 }
 
 /// Claims a path for this version. A second file with the same path would fail on the manifest
@@ -188,18 +211,24 @@ fn claim_path(seen: &mut HashSet<String>, path: &str) -> Result<()> {
     Ok(())
 }
 
-/// Inserts the prepared blobs of one batch in a single short transaction.
+/// Inserts the prepared blobs of one batch in a single short transaction. Returns how many of
+/// them were new (a file that deduplicates to an existing blob costs no network and is not
+/// counted as downloaded).
 fn flush_batch(
     db: &ContentDb,
     batch: &mut Vec<(String, PreparedBlob)>,
     files: &mut Vec<IngestedFile>,
-) -> Result<()> {
+) -> Result<usize> {
     if batch.is_empty() {
-        return Ok(());
+        return Ok(0);
     }
+    let mut new_blobs = 0usize;
     db.transaction(|db| {
         for (path, blob) in batch.iter() {
-            let (content_id, _) = db.store_prepared_blob(blob)?;
+            let (content_id, inserted) = db.store_prepared_blob(blob)?;
+            if inserted {
+                new_blobs += 1;
+            }
             files.push(IngestedFile {
                 path: path.clone(),
                 content_id,
@@ -208,7 +237,7 @@ fn flush_batch(
         Ok(())
     })?;
     batch.clear();
-    Ok(())
+    Ok(new_blobs)
 }
 
 /// One blocking batch: the entries read, the bytes they used and the index to continue from.
@@ -242,7 +271,8 @@ fn read_batch(
                 .by_index(index)
                 .map_err(|e| Error::Other(format!("bad client zip entry {index}: {e}")))?;
             let name = entry.name().to_string();
-            if name.is_empty() || name.ends_with('/') {
+            // The directory flag comes from the entry's metadata; see `is_directory`.
+            if name.is_empty() || is_directory(&entry) {
                 continue;
             }
             check_entry_path(&name)?;
@@ -367,6 +397,10 @@ pub(crate) mod tests {
         .unwrap();
         assert_eq!(got.mode, DownloadMode::Zip);
         assert_eq!(got.files, 4, "directory entries are not files");
+        assert_eq!(
+            got.downloaded, 3,
+            "the metric counts distinct blobs, not files: two files share one blob"
+        );
 
         let entries = db.manifest_entries(got.version_id).unwrap();
         let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();

@@ -191,10 +191,8 @@ fn read_pack(path: &Path) -> (Files, Meta, Vec<String>) {
             problems.push(format!("cannot read {overlay}: {e}"));
             continue;
         }
-        if bytes.len() as u64 > MAX_FILE_BYTES {
-            problems.push(format!("file too large: {overlay}"));
-            continue;
-        }
+        // Count everything that was read, before the size and UTF-8 checks: otherwise a pack with
+        // thousands of rejected 2 MB files inflates to gigabytes without touching the limit.
         total += bytes.len() as u64;
         if total > MAX_TOTAL_BYTES {
             problems.push(format!(
@@ -202,6 +200,10 @@ fn read_pack(path: &Path) -> (Files, Meta, Vec<String>) {
                 MAX_TOTAL_BYTES >> 20
             ));
             break;
+        }
+        if bytes.len() as u64 > MAX_FILE_BYTES {
+            problems.push(format!("file too large: {overlay}"));
+            continue;
         }
         if std::str::from_utf8(&bytes).is_err() {
             problems.push(format!("not UTF-8 text: {overlay}"));
@@ -280,10 +282,119 @@ pub struct Overlay {
     pub used: Vec<String>,
 }
 
+/// What `overlay-<key>.key` remembers about a finished overlay: its file name, how many files it
+/// holds and which packs went into it. Written after the zip, so a key without its zip is stale.
+const OVERLAY_KEY_SUFFIX: &str = ".key";
+
+/// Size and modification time of a pack: enough to tell that its contents may have changed.
+fn pack_fingerprint(path: &Path) -> Option<(u64, u128)> {
+    let meta = std::fs::metadata(path).ok()?;
+    if !meta.is_file() {
+        return None;
+    }
+    let mtime = meta
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_nanos();
+    Some((meta.len(), mtime))
+}
+
+/// A name of an overlay file we wrote: `overlay-<hex>.zip`. Keeps a corrupted or hostile key file
+/// from pointing the loader at something else in the folder.
+fn is_overlay_zip_name(name: &str) -> bool {
+    name.strip_prefix("overlay-")
+        .and_then(|rest| rest.strip_suffix(".zip"))
+        .is_some_and(|hash| hash.len() == 16 && hash.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
+/// Stable name of the key file for a list of enabled packs, derived from their ids, sizes and
+/// modification times. Any edit of a pack (or the list) gives another key, so the cache is never
+/// used for other input.
+fn overlay_input_key(dirs: &DataDirs, enabled: &[String]) -> String {
+    let mut hasher = Sha256::new();
+    for id in enabled {
+        hasher.update((id.len() as u64).to_le_bytes());
+        hasher.update(id.as_bytes());
+        match pack_fingerprint(&dirs.packs().join(id)) {
+            Some((size, mtime)) => {
+                hasher.update([1u8]);
+                hasher.update(size.to_le_bytes());
+                hasher.update(mtime.to_le_bytes());
+            }
+            None => hasher.update([0u8]),
+        }
+    }
+    hex::encode(hasher.finalize())
+}
+
+/// `(zip file name, file count, used packs)` from a key file, in the format written below.
+fn read_overlay_key(path: &Path) -> Option<(String, usize, Vec<String>)> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let mut lines = text.lines();
+    let target = lines.next()?.to_string();
+    if !is_overlay_zip_name(&target) {
+        return None;
+    }
+    let files: usize = lines.next()?.parse().ok()?;
+    let used: Vec<String> = lines.map(str::to_string).collect();
+    Some((target, files, used))
+}
+
+fn write_overlay_key(path: &Path, target: &str, files: usize, used: &[String]) -> Result<()> {
+    let mut text = format!("{target}\n{files}\n");
+    for id in used {
+        text.push_str(id);
+        text.push('\n');
+    }
+    let tmp = path.with_extension("key.tmp");
+    std::fs::write(&tmp, text)?;
+    let _ = std::fs::remove_file(path);
+    std::fs::rename(&tmp, path)?;
+    Ok(())
+}
+
+/// Removes everything in the overlays folder except the current zip and key. Another overlay may
+/// still be open in a running game: then removing it fails, which is fine.
+fn drop_stale_overlays(dir: &Path, target: &Path, key: &Path) {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in rd.flatten() {
+        let path = entry.path();
+        if path != target && path != key {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
 /// Merges the enabled packs into one overlay zip. Earlier packs win when several have the
 /// same file. Packs that are missing or not valid are skipped (and reported by [`scan`]).
 /// Returns `None` when there is nothing to mount.
+///
+/// Building reads and unpacks every enabled pack, so the result is cached: `overlay-<key>.key`
+/// holds the input fingerprint (id, size and modification time of each pack) and is used to skip
+/// the work next time. The zip name still comes from the merged contents, so a running game's
+/// overlay is never rewritten.
 pub fn build_overlay(dirs: &DataDirs, enabled: &[String]) -> Result<Option<Overlay>> {
+    let dir = dirs.overlays();
+    std::fs::create_dir_all(&dir)?;
+    let key_digest = overlay_input_key(dirs, enabled);
+    let key_path = dir.join(format!("overlay-{}{OVERLAY_KEY_SUFFIX}", &key_digest[..16]));
+
+    if let Some((target_name, files, used)) = read_overlay_key(&key_path) {
+        let target = dir.join(&target_name);
+        if target.is_file() {
+            drop_stale_overlays(&dir, &target, &key_path);
+            return Ok(Some(Overlay {
+                path: target,
+                files,
+                used,
+            }));
+        }
+    }
+
     let mut merged = Files::new();
     let mut used = Vec::new();
     for id in enabled {
@@ -313,8 +424,6 @@ pub fn build_overlay(dirs: &DataDirs, enabled: &[String]) -> Result<Option<Overl
         hasher.update(bytes);
     }
     let digest = hex::encode(hasher.finalize());
-    let dir = dirs.overlays();
-    std::fs::create_dir_all(&dir)?;
     let target = dir.join(format!("overlay-{}.zip", &digest[..16]));
 
     if !target.is_file() {
@@ -337,15 +446,14 @@ pub fn build_overlay(dirs: &DataDirs, enabled: &[String]) -> Result<Option<Overl
         std::fs::rename(&tmp, &target)?;
     }
 
-    // Other overlays are from earlier combinations. One may still be open in a game that
-    // is running: then removing it fails, which is fine.
-    if let Ok(rd) = std::fs::read_dir(&dir) {
-        for entry in rd.flatten() {
-            if entry.path() != target {
-                let _ = std::fs::remove_file(entry.path());
-            }
-        }
-    }
+    // The key is written last: a key without a zip is simply ignored next time.
+    let target_name = target
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    write_overlay_key(&key_path, &target_name, merged.len(), &used)?;
+
+    drop_stale_overlays(&dir, &target, &key_path);
 
     Ok(Some(Overlay {
         path: target,
@@ -536,6 +644,81 @@ mod tests {
         assert!(build_overlay(&dirs, &["../outside.zip".to_string()])
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn rejected_files_still_count_towards_the_total_limit() {
+        let (_t, dirs) = dirs();
+        // Each entry is read (2 MB) but refused as not being UTF-8; the total must still stop it.
+        let big = vec![0xffu8; MAX_FILE_BYTES as usize];
+        let files: Vec<(String, &[u8])> = (0..17)
+            .map(|i| (format!("Locale/ru-RU/f{i}.ftl"), big.as_slice()))
+            .collect();
+        let refs: Vec<(&str, &[u8])> = files.iter().map(|(n, d)| (n.as_str(), *d)).collect();
+        let p = dirs.packs().join("bomb.zip");
+        make_zip(&p, &refs);
+        assert!(
+            std::fs::metadata(&p).unwrap().len() <= MAX_ZIP_BYTES,
+            "the zip itself stays small; the bomb is in the unpacked size"
+        );
+
+        let (kept, _, problems) = read_pack(&p);
+        assert!(kept.is_empty());
+        assert!(
+            problems.iter().any(|m| m.contains("MB of text in total")),
+            "{problems:?}"
+        );
+    }
+
+    #[test]
+    fn a_cached_overlay_is_used_without_reading_the_packs() {
+        let (_t, dirs) = dirs();
+        make_zip(
+            &dirs.packs().join("a.zip"),
+            &[("Locale/ru-RU/x.ftl", b"k = v")],
+        );
+        let enabled = ["a.zip".to_string()];
+        let first = build_overlay(&dirs, &enabled).unwrap().unwrap();
+        let key = dirs.overlays().join(format!(
+            "overlay-{}.key",
+            &overlay_input_key(&dirs, &enabled)[..16]
+        ));
+        assert!(key.is_file(), "the key is written next to the zip");
+        let entries = std::fs::read_dir(dirs.overlays()).unwrap().count();
+        assert_eq!(entries, 2, "one zip and one key, nothing else");
+
+        // A key that points at another (existing) overlay must be trusted: if the packs were read,
+        // the real merge would give the first overlay instead.
+        let fake = dirs.overlays().join("overlay-0123456789abcdef.zip");
+        std::fs::write(&fake, b"not really a zip").unwrap();
+        write_overlay_key(&key, "overlay-0123456789abcdef.zip", 42, &enabled).unwrap();
+        let cached = build_overlay(&dirs, &enabled).unwrap().unwrap();
+        assert_eq!(cached.path, fake);
+        assert_eq!(cached.files, 42);
+        assert_eq!(cached.used, enabled);
+        assert!(!first.path.exists(), "old overlays are cleaned up");
+    }
+
+    #[test]
+    fn editing_a_pack_invalidates_the_overlay_cache() {
+        let (_t, dirs) = dirs();
+        let pack = dirs.packs().join("a.zip");
+        make_zip(&pack, &[("Locale/ru-RU/x.ftl", b"k = old")]);
+        let enabled = ["a.zip".to_string()];
+        let first = build_overlay(&dirs, &enabled).unwrap().unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        make_zip(&pack, &[("Locale/ru-RU/x.ftl", b"k = new")]);
+        let second = build_overlay(&dirs, &enabled).unwrap().unwrap();
+        assert_ne!(second.path, first.path, "different contents, another zip");
+
+        let mut zip = zip::ZipArchive::new(std::fs::File::open(&second.path).unwrap()).unwrap();
+        let mut text = String::new();
+        zip.by_name("Locale/ru-RU/x.ftl")
+            .unwrap()
+            .read_to_string(&mut text)
+            .unwrap();
+        assert_eq!(text, "k = new");
     }
 
     #[test]

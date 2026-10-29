@@ -228,19 +228,29 @@ pub async fn install_engine(
     let sig = sig_path(dirs, &resolved.version);
 
     if zip.is_file() && sig.is_file() {
-        let have = tokio::task::spawn_blocking({
-            let zip = zip.clone();
-            move || sha256_of_file(&zip)
-        })
-        .await
-        .map_err(|e| Error::Other(format!("hashing task failed: {e}")))??;
-        if have == want_sha {
-            return Ok(InstalledEngine {
-                version: resolved.version,
-                zip_path: zip,
-                sig_hex: std::fs::read_to_string(&sig)?.trim().to_string(),
-                downloaded: false,
-            });
+        // The hash proves the bytes; the `.sig` only counts if it is the one the index published
+        // for that zip. A tampered or stale signature means the install is redone.
+        let stored_sig = std::fs::read_to_string(&sig)
+            .ok()
+            .map(|s| s.trim().to_string());
+        if stored_sig
+            .as_deref()
+            .is_some_and(|s| s.eq_ignore_ascii_case(resolved.sig.trim()))
+        {
+            let have = tokio::task::spawn_blocking({
+                let zip = zip.clone();
+                move || sha256_of_file(&zip)
+            })
+            .await
+            .map_err(|e| Error::Other(format!("hashing task failed: {e}")))??;
+            if have == want_sha {
+                return Ok(InstalledEngine {
+                    version: resolved.version,
+                    zip_path: zip,
+                    sig_hex: stored_sig.expect("checked above"),
+                    downloaded: false,
+                });
+            }
         }
     }
 
@@ -467,6 +477,30 @@ mod tests {
             .await
             .unwrap();
         assert!(!second.downloaded, "valid copy is reused");
+
+        // The zip is intact but the signature file was replaced: the install is redone, so the
+        // signature handed to the Loader is always the one the index published.
+        std::fs::write(dirs.engines().join("9.9.9.sig"), "AB".repeat(64)).unwrap();
+        let third = install_engine(&client, &urls, &dirs, "9.9.9", &key, None)
+            .await
+            .unwrap();
+        assert!(third.downloaded, "a wrong .sig is not trusted");
+        assert_eq!(third.sig_hex, sig);
+        assert_eq!(
+            std::fs::read_to_string(dirs.engines().join("9.9.9.sig"))
+                .unwrap()
+                .trim(),
+            sig
+        );
+
+        // A missing .sig is redone as well.
+        std::fs::remove_file(dirs.engines().join("9.9.9.sig")).unwrap();
+        assert!(
+            install_engine(&client, &urls, &dirs, "9.9.9", &key, None)
+                .await
+                .unwrap()
+                .downloaded
+        );
 
         let found = installed(&dirs, "9.9.9").unwrap().unwrap();
         assert_eq!(found.sig_hex, sig);

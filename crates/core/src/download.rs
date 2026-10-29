@@ -344,6 +344,8 @@ impl BlobBatch {
                 let (content_id, _) = db.store_prepared_blob(blob)?;
                 db.link_interrupted_blob(download_id, content_id)?;
             }
+            // Heartbeat: cleanup in another process must see that this download is still alive.
+            db.touch_interrupted_download(download_id)?;
             Ok(())
         })?;
         self.blobs.clear();

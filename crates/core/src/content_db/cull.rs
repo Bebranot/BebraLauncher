@@ -66,6 +66,12 @@ pub struct CullReport {
     pub blobs_removed: usize,
 }
 
+/// An interrupted download is never dropped before this many minutes without a heartbeat, even by
+/// "clear everything" (`interrupted_keep_hours: 0`). Otherwise a second launcher that is downloading
+/// right now would lose its `InterruptedDownload` row and, with it, the blobs it already fetched
+/// (and could even hit a foreign key error when a link points at the removed parent).
+pub const INTERRUPTED_MIN_GRACE_MINUTES: u32 = 10;
+
 impl ContentDb {
     /// Version ids used by clients that are still running. `state` reports whether a `RunningClient`
     /// row still describes a live process; rows of processes that are definitely gone are deleted,
@@ -166,9 +172,14 @@ impl ContentDb {
                 }
             }
 
+            // `Added` is refreshed on every stored batch (`touch_interrupted_download`), so this is
+            // "no activity for N minutes", not "started N minutes ago". The minimum grace keeps a
+            // download that another process started a moment ago safe even at keep_hours = 0.
+            let keep_minutes = (i64::from(policy.interrupted_keep_hours) * 60)
+                .max(i64::from(INTERRUPTED_MIN_GRACE_MINUTES));
             report.interrupted_removed = db.conn.execute(
                 "DELETE FROM InterruptedDownload WHERE Added < datetime('now', ?1)",
-                params![format!("-{} hours", policy.interrupted_keep_hours)],
+                params![format!("-{keep_minutes} minutes")],
             )?;
 
             if report.versions_removed > 0 || report.interrupted_removed > 0 {
@@ -321,6 +332,87 @@ mod tests {
         assert!(db.read_blob(fresh_blob).is_ok());
         assert!(db.read_blob(old_blob).is_err());
         assert!(db.read_blob(orphan).is_err());
+    }
+
+    #[test]
+    fn a_download_started_a_moment_ago_survives_clear_everything() {
+        let db = ContentDb::open_in_memory().unwrap();
+        let (blob, _) = db.store_blob(&blake2b256(b"fresh"), b"fresh").unwrap();
+        let fresh = db.begin_interrupted_download().unwrap();
+        db.link_interrupted_blob(fresh, blob).unwrap();
+
+        // `cleanup_all` uses zero hours; the row is younger than the grace period.
+        let report = db
+            .cull(
+                CullPolicy {
+                    max_versions: 0,
+                    max_versions_per_fork: 0,
+                    interrupted_keep_hours: 0,
+                },
+                &[],
+            )
+            .unwrap();
+        assert_eq!(report.interrupted_removed, 0);
+        assert!(
+            db.read_blob(blob).is_ok(),
+            "the other download keeps its blobs"
+        );
+    }
+
+    #[test]
+    fn an_abandoned_download_is_dropped_and_its_blobs_collected() {
+        let db = ContentDb::open_in_memory().unwrap();
+        let (blob, _) = db.store_blob(&blake2b256(b"stale"), b"stale").unwrap();
+        let stale = db.begin_interrupted_download().unwrap();
+        db.link_interrupted_blob(stale, blob).unwrap();
+        db.connection()
+            .execute(
+                "UPDATE InterruptedDownload SET Added = datetime('now', '-3 hours') WHERE Id = ?1",
+                [stale],
+            )
+            .unwrap();
+
+        let report = db
+            .cull(
+                CullPolicy {
+                    max_versions: 0,
+                    max_versions_per_fork: 0,
+                    interrupted_keep_hours: 0,
+                },
+                &[],
+            )
+            .unwrap();
+        assert_eq!(report.interrupted_removed, 1);
+        assert!(db.read_blob(blob).is_err(), "its blobs are collected");
+    }
+
+    #[test]
+    fn a_heartbeat_keeps_a_slow_download_alive() {
+        let db = ContentDb::open_in_memory().unwrap();
+        let (blob, _) = db.store_blob(&blake2b256(b"slow"), b"slow").unwrap();
+        let id = db.begin_interrupted_download().unwrap();
+        db.link_interrupted_blob(id, blob).unwrap();
+        db.connection()
+            .execute(
+                "UPDATE InterruptedDownload SET Added = datetime('now', '-3 hours') WHERE Id = ?1",
+                [id],
+            )
+            .unwrap();
+
+        assert!(db.touch_interrupted_download(id).unwrap());
+        let report = db
+            .cull(
+                CullPolicy {
+                    max_versions: 0,
+                    max_versions_per_fork: 0,
+                    interrupted_keep_hours: 0,
+                },
+                &[],
+            )
+            .unwrap();
+        assert_eq!(report.interrupted_removed, 0);
+        assert!(db.read_blob(blob).is_ok());
+        assert!(!db.touch_interrupted_download(12_345).unwrap());
     }
 
     #[test]

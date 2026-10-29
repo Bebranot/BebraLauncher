@@ -8,7 +8,7 @@ use std::path::{Component, Path, PathBuf};
 
 use ed25519_dalek::VerifyingKey;
 use reqwest::Client;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::download::{download_to_file, ProgressFn};
 use crate::engine::{preferred_rids, PlatformBuild};
@@ -20,6 +20,16 @@ use crate::{Error, Result};
 
 /// Written last into a module folder: its presence means the install finished.
 const DONE_MARKER: &str = ".installed";
+
+/// What the marker records: which zip was unpacked, and how much of it there is. On reuse the
+/// folder is compared with it, so a half-deleted or edited module is installed again instead of
+/// being handed to the client.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct InstalledMarker {
+    sha256: String,
+    files: u64,
+    bytes: u64,
+}
 
 /// The parts of a build's `manifest.yml` the launcher cares about. Other keys are ignored.
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
@@ -125,7 +135,17 @@ impl ModuleIndex {
 
     /// Modules are named by the *minimum* engine version they work with, so the right one is the
     /// newest version that is not newer than the engine.
-    pub fn version_for_engine(&self, module: &str, engine_version: &str) -> Result<String> {
+    ///
+    /// Insecure versions and versions without a build for one of `rids` are skipped here rather
+    /// than failing later in [`ModuleIndex::resolve`]. Equal version numbers (`1.2` and `1.2.0` are
+    /// the same version) are told apart by the original string, so the answer does not depend on
+    /// `HashMap` iteration order.
+    pub fn version_for_engine(
+        &self,
+        module: &str,
+        engine_version: &str,
+        rids: &[&str],
+    ) -> Result<String> {
         let data = self
             .modules
             .get(module)
@@ -133,14 +153,26 @@ impl ModuleIndex {
         let engine = parse_version(engine_version)?;
 
         data.versions
-            .keys()
-            .filter_map(|v| parse_version(v).ok().map(|parsed| (parsed, v)))
+            .iter()
+            .filter(|(_, v)| !v.insecure)
+            .filter(|(_, v)| {
+                let mut have_platform = false;
+                for rid in rids {
+                    if v.platforms.contains_key(*rid) {
+                        have_platform = true;
+                        break;
+                    }
+                }
+                have_platform
+            })
+            .filter_map(|(v, _)| parse_version(v).ok().map(|parsed| (parsed, v)))
             .filter(|(parsed, _)| compare_versions(&engine, parsed).is_ge())
-            .max_by(|(a, _), (b, _)| compare_versions(a, b))
+            .max_by(|(a, a_raw), (b, b_raw)| compare_versions(a, b).then_with(|| a_raw.cmp(b_raw)))
             .map(|(_, v)| v.clone())
             .ok_or_else(|| {
                 Error::Other(format!(
-                    "no version of {module} fits engine {engine_version}"
+                    "no usable version of {module} fits engine {engine_version} on {}",
+                    rids.join(" or ")
                 ))
             })
     }
@@ -230,11 +262,22 @@ pub async fn install_module(
         dir: dir.clone(),
         downloaded,
     };
-    if dir.join(DONE_MARKER).is_file() {
+
+    // The index decides what the folder must contain. If the version has meanwhile disappeared
+    // from the index, an intact folder is still usable: refusing to launch would be worse.
+    let build = match index.resolve(name, version, preferred_rids()) {
+        Ok(build) => build,
+        Err(e) => {
+            if verified_install(&dir, None).unwrap_or(false) {
+                return Ok(installed(false));
+            }
+            return Err(e);
+        }
+    };
+    if verified_install(&dir, Some(&build.sha256))? {
         return Ok(installed(false));
     }
 
-    let build = index.resolve(name, version, preferred_rids())?;
     let want_sha = parse_hash_hex(&build.sha256)?;
     let (pid, nanos) = unique_suffix();
 
@@ -276,6 +319,68 @@ fn unique_suffix() -> (u32, u128) {
     (std::process::id(), nanos)
 }
 
+/// Is `dir` a finished install of the module zip with `expected_sha` (if given)?
+///
+/// The marker alone is not trusted: the number and total size of the files are compared with it,
+/// so a folder whose files were deleted, added or edited is installed again.
+fn verified_install(dir: &Path, expected_sha: Option<&str>) -> Result<bool> {
+    if !dir.is_dir() {
+        return Ok(false);
+    }
+    let Ok(text) = std::fs::read(dir.join(DONE_MARKER)) else {
+        return Ok(false);
+    };
+    let Ok(marker) = serde_json::from_slice::<InstalledMarker>(&text) else {
+        return Ok(false);
+    };
+    if let Some(want) = expected_sha {
+        if !marker.sha256.eq_ignore_ascii_case(want.trim()) {
+            return Ok(false);
+        }
+    }
+    let (files, bytes) = match dir_totals(dir) {
+        Ok(v) => v,
+        Err(_) => return Ok(false),
+    };
+    Ok(files == marker.files && bytes == marker.bytes)
+}
+
+/// Writes the finished-install marker with what was unpacked.
+fn write_marker(dir: &Path, sha256: &str) -> Result<()> {
+    let (files, bytes) = dir_totals(dir)?;
+    let marker = InstalledMarker {
+        sha256: sha256.to_ascii_lowercase(),
+        files,
+        bytes,
+    };
+    let text = serde_json::to_vec(&marker)
+        .map_err(|e| Error::Other(format!("cannot write the module marker: {e}")))?;
+    std::fs::write(dir.join(DONE_MARKER), text)?;
+    Ok(())
+}
+
+/// Number of files and their total size under `dir`, not counting the marker itself.
+fn dir_totals(dir: &Path) -> Result<(u64, u64)> {
+    let mut files = 0u64;
+    let mut bytes = 0u64;
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        if entry.file_name() == DONE_MARKER {
+            continue;
+        }
+        let meta = entry.metadata()?;
+        if meta.is_dir() {
+            let (f, b) = dir_totals(&entry.path())?;
+            files += f;
+            bytes += b;
+        } else if meta.is_file() {
+            files += 1;
+            bytes += meta.len();
+        }
+    }
+    Ok((files, bytes))
+}
+
 /// Where a module install puts its files: the download, the folder being unpacked and the final
 /// folder. All three differ, so two processes never touch the same ones.
 struct InstallPaths<'a> {
@@ -306,7 +411,7 @@ async fn download_check_unpack(
     let tmp_dir = paths.tmp.to_owned();
     let sig = build.sig.clone();
     let key = *key;
-    let marker = to_hex(want_sha);
+    let marker_sha = to_hex(want_sha);
     tokio::task::spawn_blocking(move || -> Result<()> {
         let data = std::fs::read(&part)?;
         signature::verify(&key, &data, &sig)?;
@@ -317,7 +422,7 @@ async fn download_check_unpack(
         let _ = std::fs::remove_dir_all(&tmp_dir);
         std::fs::create_dir_all(&tmp_dir)?;
         unpack_zip(&part, &tmp_dir)?;
-        std::fs::write(tmp_dir.join(DONE_MARKER), marker)?;
+        write_marker(&tmp_dir, &marker_sha)?;
         Ok(())
     })
     .await
@@ -328,11 +433,16 @@ async fn download_check_unpack(
 
 /// Moves a finished unpack into place.
 ///
-/// `rename` is atomic, so another process either sees the old state or the complete folder. A folder
-/// without [`DONE_MARKER`] is a leftover from a crash and may be replaced; a folder that is in use
-/// (a running client holds its files) is left alone and reported instead of being deleted.
+/// `rename` is atomic, so another process either sees the old state or the complete folder. A
+/// folder that passes [`verified_install`] is kept (another process beat us to it); a folder that
+/// does not (left over from a crash, or edited by somebody) is replaced. A folder that is in use
+/// by a running client cannot be removed and is reported instead of being silently deleted.
 fn commit_unpack(tmp: &Path, dir: &Path) -> Result<()> {
-    if dir.exists() && !dir.join(DONE_MARKER).is_file() {
+    if dir.exists() {
+        if verified_install(dir, None)? {
+            let _ = std::fs::remove_dir_all(tmp);
+            return Ok(());
+        }
         std::fs::remove_dir_all(dir).map_err(|e| {
             Error::Other(format!(
                 "module folder {} is in use and cannot be replaced: {e}",
@@ -340,23 +450,18 @@ fn commit_unpack(tmp: &Path, dir: &Path) -> Result<()> {
             ))
         })?;
     }
-    if !dir.exists() {
-        match std::fs::rename(tmp, dir) {
-            Ok(()) => return Ok(()),
-            Err(_e) if dir.join(DONE_MARKER).is_file() => {
-                // Another process finished the same module first; its folder is as good as ours.
-                let _ = std::fs::remove_dir_all(tmp);
-                return Ok(());
-            }
-            Err(e) => {
-                let _ = std::fs::remove_dir_all(tmp);
-                return Err(e.into());
-            }
+    match std::fs::rename(tmp, dir) {
+        Ok(()) => Ok(()),
+        Err(_e) if verified_install(dir, None).unwrap_or(false) => {
+            // Another process finished the same module first; its folder is as good as ours.
+            let _ = std::fs::remove_dir_all(tmp);
+            Ok(())
+        }
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(tmp);
+            Err(e.into())
         }
     }
-    // Someone else installed the module while we were unpacking.
-    let _ = std::fs::remove_dir_all(tmp);
-    Ok(())
 }
 
 /// Unpacks `zip_path` into `dest`. Entries that would land outside `dest` make the whole unpack
@@ -470,30 +575,95 @@ mod tests {
     #[test]
     fn picks_the_newest_module_not_newer_than_the_engine() {
         let idx = index();
+        let win = &["win-x64"][..];
         assert_eq!(
-            idx.version_for_engine("Robust.Client.WebView", "0.89.0")
+            idx.version_for_engine("Robust.Client.WebView", "0.89.0", win)
                 .unwrap(),
             "0.85.1"
         );
         assert_eq!(
-            idx.version_for_engine("Robust.Client.WebView", "0.90.0")
+            idx.version_for_engine("Robust.Client.WebView", "0.90.0", win)
                 .unwrap(),
             "0.90.0"
         );
         assert_eq!(
-            idx.version_for_engine("Robust.Client.WebView", "277.0.0")
+            idx.version_for_engine("Robust.Client.WebView", "277.0.0", win)
                 .unwrap(),
-            "0.120.0"
+            "0.90.0",
+            "0.120.0 is linux-only and is left for the platform check, not picked and refused later"
         );
         assert_eq!(
-            idx.version_for_engine("Robust.Client.WebView", "264.0.2-fix-physics")
+            idx.version_for_engine("Robust.Client.WebView", "264.0.2-fix-physics", win)
+                .unwrap(),
+            "0.90.0"
+        );
+        assert!(idx
+            .version_for_engine("Robust.Client.WebView", "0.1.0", win)
+            .is_err());
+        assert!(idx.version_for_engine("Nope", "277.0.0", win).is_err());
+
+        // The same index seen from Linux: only the linux build fits.
+        assert_eq!(
+            idx.version_for_engine("Robust.Client.WebView", "277.0.0", &["linux-x64"])
                 .unwrap(),
             "0.120.0"
         );
         assert!(idx
-            .version_for_engine("Robust.Client.WebView", "0.1.0")
+            .version_for_engine("Robust.Client.WebView", "0.89.0", &["linux-x64"])
             .is_err());
-        assert!(idx.version_for_engine("Nope", "277.0.0").is_err());
+    }
+
+    #[test]
+    fn insecure_versions_are_never_picked() {
+        let idx = index();
+        // 0.86.0 has no newer-safe build: 0.85.1 is used, never the insecure 0.8.17.
+        assert_eq!(
+            idx.version_for_engine("Robust.Client.WebView", "0.86.0", &["win-x64"])
+                .unwrap(),
+            "0.85.1"
+        );
+    }
+
+    #[test]
+    fn equal_versions_are_picked_deterministically() {
+        let idx = ModuleIndex {
+            modules: [(
+                "M".to_string(),
+                ModuleData {
+                    versions: ["1.2", "1.2.0"]
+                        .iter()
+                        .map(|v| {
+                            (
+                                (*v).to_string(),
+                                ModuleVersionData {
+                                    insecure: false,
+                                    platforms: [(
+                                        "win-x64".to_string(),
+                                        PlatformBuild {
+                                            url: "u".into(),
+                                            sha256: "00".into(),
+                                            sig: "AA".into(),
+                                        },
+                                    )]
+                                    .into_iter()
+                                    .collect(),
+                                },
+                            )
+                        })
+                        .collect(),
+                },
+            )]
+            .into_iter()
+            .collect(),
+        };
+        let first = idx.version_for_engine("M", "9.0.0", &["win-x64"]).unwrap();
+        for _ in 0..20 {
+            assert_eq!(
+                idx.version_for_engine("M", "9.0.0", &["win-x64"]).unwrap(),
+                first,
+                "HashMap order must not decide between 1.2 and 1.2.0"
+            );
+        }
     }
 
     #[test]
@@ -700,6 +870,55 @@ mod tests {
         assert!(dir.join("Robust.Client.WebView.exe").is_file());
     }
 
+    #[tokio::test]
+    async fn a_module_whose_files_were_tampered_with_is_installed_again() {
+        let zip = module_zip();
+        let f = fixture(
+            zip.clone(),
+            to_hex(&sha256(&zip)),
+            sign_hex(&test_key(), &zip),
+        )
+        .await;
+        let m = install(&f).await.unwrap();
+        assert!(m.downloaded);
+
+        // Somebody deleted a file of the installed module: the marker no longer matches.
+        std::fs::remove_file(m.dir.join("locales").join("en-US.pak")).unwrap();
+        let again = install(&f).await.unwrap();
+        assert!(again.downloaded, "a damaged module is downloaded again");
+        assert!(again.dir.join("locales").join("en-US.pak").is_file());
+
+        // An edited file is noticed too (the totals no longer match the marker).
+        let exe = again.dir.join("Robust.Client.WebView.exe");
+        std::fs::write(&exe, b"MZ evil, much longer").unwrap();
+        let third = install(&f).await.unwrap();
+        assert!(third.downloaded);
+        assert_eq!(std::fs::read(&exe).unwrap(), b"MZ fake");
+    }
+
+    #[test]
+    fn an_install_without_a_marker_or_with_a_broken_one_is_not_trusted() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("0.90.0");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.dll"), b"x").unwrap();
+        assert!(!verified_install(&dir, None).unwrap(), "no marker");
+
+        std::fs::write(dir.join(DONE_MARKER), b"not json").unwrap();
+        assert!(!verified_install(&dir, None).unwrap(), "garbage marker");
+
+        write_marker(&dir, &"ab".repeat(32)).unwrap();
+        assert!(verified_install(&dir, None).unwrap());
+        assert!(verified_install(&dir, Some(&"AB".repeat(32))).unwrap());
+        assert!(!verified_install(&dir, Some(&"cd".repeat(32))).unwrap());
+
+        std::fs::write(dir.join("extra.dll"), b"x").unwrap();
+        assert!(
+            !verified_install(&dir, None).unwrap(),
+            "an added file changes the totals"
+        );
+    }
+
     // ---- P1-9: two processes installing the same module ----
 
     #[test]
@@ -709,11 +928,11 @@ mod tests {
         let dir = tmp_root.path().join("0.90.0");
         std::fs::create_dir_all(&tmp).unwrap();
         std::fs::write(tmp.join("ours.exe"), b"ours").unwrap();
-        std::fs::write(tmp.join(DONE_MARKER), "aa").unwrap();
+        write_marker(&tmp, &"aa".repeat(32)).unwrap();
         // The other process won the race and its folder is complete.
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("theirs.exe"), b"theirs").unwrap();
-        std::fs::write(dir.join(DONE_MARKER), "bb").unwrap();
+        write_marker(&dir, &"bb".repeat(32)).unwrap();
 
         commit_unpack(&tmp, &dir).unwrap();
         assert!(!tmp.exists(), "our temporary folder is gone");

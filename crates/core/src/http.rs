@@ -119,8 +119,9 @@ pub struct UrlFallbackSet {
 }
 
 impl UrlFallbackSet {
-    /// # Panics
-    /// If `urls` is empty.
+    /// Builds a set from the given mirrors (a trailing `/` is added). An empty iterator is
+    /// allowed here and every request then fails with a normal error instead of a panic; use
+    /// [`try_new`](Self::try_new) when an empty set is a programming mistake.
     pub fn new<S: Into<String>>(urls: impl IntoIterator<Item = S>) -> Self {
         let urls: Vec<String> = urls
             .into_iter()
@@ -132,13 +133,25 @@ impl UrlFallbackSet {
                 u
             })
             .collect();
-        assert!(!urls.is_empty(), "UrlFallbackSet needs at least one url");
         let wins = Arc::new(urls.iter().map(|_| AtomicU64::new(0)).collect());
         Self {
             urls,
             attempt_delay: ATTEMPT_DELAY,
             wins,
         }
+    }
+
+    /// Like [`new`](Self::new), but an empty list of mirrors is an error.
+    pub fn try_new<S: Into<String>>(urls: impl IntoIterator<Item = S>) -> Result<Self> {
+        let set = Self::new(urls);
+        if set.urls.is_empty() {
+            return Err(Error::Other("at least one mirror url is required".into()));
+        }
+        Ok(set)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.urls.is_empty()
     }
 
     pub fn with_attempt_delay(mut self, delay: Duration) -> Self {
@@ -168,7 +181,7 @@ impl UrlFallbackSet {
                 best = i;
             }
         }
-        &self.urls[best]
+        self.urls.get(best).map_or("", String::as_str)
     }
 
     pub async fn get(&self, client: &Client) -> Result<Response> {
@@ -185,6 +198,9 @@ impl UrlFallbackSet {
     where
         F: Fn(&str) -> RequestBuilder,
     {
+        if self.urls.is_empty() {
+            return Err(Error::Other("no mirrors to try".into()));
+        }
         let mut tasks: JoinSet<(usize, std::result::Result<Response, reqwest::Error>)> =
             JoinSet::new();
         let mut next = 0;
@@ -325,11 +341,18 @@ mod tests {
         format!("http://{addr}/")
     }
 
-    /// A local address nothing listens on: connecting fails immediately.
+    /// A local address that refuses connections: the listener stays bound and closes every socket
+    /// immediately. Keeping the port bound prevents another test or process from claiming it
+    /// between the check and the request (the old version dropped the listener, so the request
+    /// could hang or reach a different server).
     async fn dead_url() -> String {
-        let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = l.local_addr().unwrap();
-        drop(l);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((sock, _)) = listener.accept().await {
+                drop(sock);
+            }
+        });
         format!("http://{addr}/")
     }
 
@@ -390,6 +413,22 @@ mod tests {
                 "https://b.example/api/servers"
             ]
         );
+    }
+
+    #[test]
+    fn an_empty_mirror_list_is_an_error_not_a_panic() {
+        assert!(UrlFallbackSet::try_new(Vec::<String>::new()).is_err());
+        let empty = UrlFallbackSet::new(Vec::<String>::new());
+        assert!(empty.is_empty());
+        assert_eq!(empty.most_successful(), "");
+        assert!(UrlFallbackSet::try_new(["https://a.example"]).is_ok());
+    }
+
+    #[tokio::test]
+    async fn requests_on_an_empty_set_fail_cleanly() {
+        let set = UrlFallbackSet::new(Vec::<String>::new());
+        let err = set.get(&build_client().unwrap()).await.unwrap_err();
+        assert!(err.to_string().contains("no mirrors"), "{err}");
     }
 
     #[tokio::test]

@@ -1,6 +1,10 @@
 -- Schema of the content database. Must stay compatible with the official launcher's content.db:
 -- SS14.Loader reads Content / ContentManifest / RunningClient directly (docs/protocol.md, section 5).
 
+-- This database was created by us. A database without this mark that already holds data was made
+-- by another program (or restored from a foreign backup); destructive migrations must not wipe it.
+PRAGMA user_version = 1;
+
 -- One server version (build) stored in this database.
 CREATE TABLE ContentVersion(
     -- AUTOINCREMENT so ids are never reused if the DB is cleared while a game is running.

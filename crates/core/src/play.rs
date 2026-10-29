@@ -132,6 +132,76 @@ pub struct PreparedGame {
     pub cleanup: CullReport,
 }
 
+/// What the launcher would do, without downloading or starting anything (`--dry-run`).
+#[derive(Debug, Clone)]
+pub struct LaunchPlan {
+    pub info: ServerInfo,
+    pub plays_as: String,
+    pub sends_account: bool,
+    pub engine_type: String,
+    pub engine_version: String,
+    pub fork_version: String,
+    /// `None` when the client would start at its main menu.
+    pub connect_url: Option<String>,
+}
+
+/// Does everything `prepare` does *before* the first byte is downloaded: asks for `/info`, checks
+/// the account and the free space, and resolves the engine. Nothing is installed.
+pub async fn plan(
+    client: &Client,
+    dirs: &DataDirs,
+    req: &PlayRequest,
+) -> std::result::Result<LaunchPlan, PlayError> {
+    dirs.ensure()?;
+    let info = request_info(client, req).await?;
+    check_auth(info.auth.mode, req.account.is_some(), req.no_connect)?;
+    if let Some(free_bytes) = free_disk_space_bytes(dirs.root()) {
+        if free_bytes < 500 * 1024 * 1024 {
+            return Err(PlayError::DiskFull);
+        }
+    }
+    let build = info.build.clone().ok_or(PlayError::NoBuild)?;
+    let engine_type = build.engine_type().to_string();
+    // Resolve the sources so a server asking for an engine we cannot verify fails here, not
+    // halfway through a real launch.
+    Sources::for_engine(&engine_type)?;
+    let sends_account =
+        req.account.is_some() && !req.no_connect && info.auth.mode != AuthMode::Disabled;
+    Ok(LaunchPlan {
+        plays_as: req
+            .account
+            .as_ref()
+            .map_or_else(|| req.guest_name.clone(), |a| a.username.clone()),
+        sends_account,
+        engine_type,
+        engine_version: build.engine_version.clone(),
+        fork_version: build.version.clone(),
+        connect_url: (!req.no_connect).then(|| info.connect_url(&req.addr)),
+        info,
+    })
+}
+
+/// `/info` for this request: through the hub, or straight from the server (self-hosting rules
+/// applied when the hub is trusted to describe itself).
+async fn request_info(
+    client: &Client,
+    req: &PlayRequest,
+) -> std::result::Result<ServerInfo, PlayError> {
+    if req.via_hub {
+        HubClient::official(client.clone())
+            .server_info(req.addr.as_str())
+            .await
+            .map_err(PlayError::from)
+    } else {
+        server::fetch_info(client, &req.addr)
+            .await
+            .map_err(|source| PlayError::InfoUnreachable {
+                url: req.addr.info_url(),
+                source,
+            })
+    }
+}
+
 /// Downloads what is missing and builds the command that starts the game.
 ///
 /// The content database is not `Sync`, so the returned future is not `Send`: run it on a thread
@@ -145,18 +215,7 @@ pub async fn prepare(
     dirs.ensure()?;
 
     on_stage(Stage::Info, None);
-    let info = if req.via_hub {
-        HubClient::official(client.clone())
-            .server_info(req.addr.as_str())
-            .await?
-    } else {
-        server::fetch_info(client, &req.addr)
-            .await
-            .map_err(|source| PlayError::InfoUnreachable {
-                url: req.addr.info_url(),
-                source,
-            })?
-    };
+    let info = request_info(client, req).await?;
 
     // Preflight checks: verify auth requirement and free disk space
     // before starting heavy content downloads.

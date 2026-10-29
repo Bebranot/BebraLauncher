@@ -40,6 +40,7 @@ impl Manifest {
         }
 
         let mut entries = Vec::new();
+        let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
         for (i, line) in lines.enumerate() {
             let line_no = i + 2;
             // The first space separates hash and path; paths may contain spaces.
@@ -48,9 +49,10 @@ impl Manifest {
                 .ok_or_else(|| Error::InvalidManifest(format!("line {line_no}: no separator")))?;
             let hash = parse_hash_hex(hash)
                 .map_err(|e| Error::InvalidManifest(format!("line {line_no}: {e}")))?;
-            if path.is_empty() {
+            check_path(path, line_no)?;
+            if !seen.insert(path) {
                 return Err(Error::InvalidManifest(format!(
-                    "line {line_no}: empty path"
+                    "line {line_no}: the path {path:?} appears twice"
                 )));
             }
             entries.push(ManifestEntry {
@@ -79,12 +81,50 @@ impl Manifest {
     }
 }
 
+/// A path in the manifest ends up in `ContentManifest` and, through the Loader, on disk. Only
+/// plain relative `/`-separated paths are accepted: no `..`, no drive letters, no backslashes,
+/// no NUL or control characters and no directory entries.
+fn check_path(path: &str, line_no: usize) -> Result<()> {
+    let why = if path.is_empty() {
+        Some("empty path")
+    } else if path.ends_with('/') {
+        Some("path is a directory")
+    } else if path.starts_with('/') {
+        Some("absolute path")
+    } else if path.contains('\\') {
+        Some("backslash in path")
+    } else if path.contains(':') {
+        Some("drive letter or stream in path")
+    } else if path.chars().any(char::is_control) {
+        Some("control character in path")
+    } else if path
+        .split('/')
+        .any(|part| part.is_empty() || part == "." || part == "..")
+    {
+        Some("path escapes its folder")
+    } else {
+        None
+    };
+    match why {
+        None => Ok(()),
+        Some(why) => Err(Error::InvalidManifest(format!(
+            "line {line_no}: {why}: {path:?}"
+        ))),
+    }
+}
+
 /// The manifest hash computed from a list of files. `entries` MUST already be sorted by path
-/// (bytewise on UTF-8), which is how the content DB hands them out.
+/// (bytewise on UTF-8) and without duplicates, which is how the content DB hands them out.
 pub fn compute_hash<'a>(entries: impl IntoIterator<Item = (&'a Hash256, &'a str)>) -> Hash256 {
     let mut text = String::from(HEADER);
     text.push('\n');
+    let mut previous: Option<&str> = None;
     for (hash, path) in entries {
+        debug_assert!(
+            previous.is_none_or(|p| p < path),
+            "compute_hash needs entries sorted by path without duplicates, got {path:?} after {previous:?}"
+        );
+        previous = Some(path);
         text.push_str(&to_hex(hash));
         text.push(' ');
         text.push_str(path);
@@ -179,6 +219,35 @@ mod tests {
     #[test]
     fn rejects_invalid_utf8() {
         assert!(Manifest::parse(&[0xff, 0xfe, 0x00]).is_err());
+    }
+
+    #[test]
+    fn unsafe_and_duplicate_paths_are_refused() {
+        let h = "324DCF027DD4A30A932C441F365A25E86B173DEFA4B8E58948253471B81B72CF";
+        for bad in [
+            "../evil.txt",
+            "a/../../evil.txt",
+            "a//b.txt",
+            "./a.txt",
+            "/abs.txt",
+            "C:evil.txt",
+            "a\\b.txt",
+            "dir/",
+            "nul\0.txt",
+            "bell\u{7}.txt",
+        ] {
+            let text = format!("{HEADER}\n{h} {bad}\n");
+            let err = Manifest::parse(text.as_bytes()).unwrap_err();
+            assert!(
+                err.to_string().contains("line 2"),
+                "{bad:?} must be refused with its line: {err}"
+            );
+        }
+
+        let twice = format!("{HEADER}\n{h} a.txt\n{h} a.txt\n");
+        let err = Manifest::parse(twice.as_bytes()).unwrap_err();
+        assert!(err.to_string().contains("twice"), "{err}");
+        assert!(err.to_string().contains("line 3"), "{err}");
     }
 
     #[test]

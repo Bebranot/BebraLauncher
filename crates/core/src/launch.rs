@@ -200,41 +200,91 @@ impl std::fmt::Debug for LaunchCommand {
 }
 
 /// `ROBUST_MODULE_<NAME>`: upper case, dots become underscores.
+///
+/// Underscores in the name are doubled, so the mapping stays one-to-one: `A.B` and `A_B` used to
+/// produce the same variable and silently overwrite each other. Names without underscores keep
+/// the name the engine expects.
 fn module_env_name(module: &str) -> String {
-    format!("ROBUST_MODULE_{}", module.to_uppercase().replace('.', "_"))
-}
-
-/// Splits a command-line string into arguments, respecting single and double quotes.
-pub fn split_args(input: &str) -> Vec<String> {
-    let mut args = Vec::new();
-    let mut current = String::new();
-    let mut in_quotes = false;
-    let mut quote_char = ' ';
-
-    for ch in input.chars() {
-        match ch {
-            '"' | '\'' if !in_quotes => {
-                in_quotes = true;
-                quote_char = ch;
-            }
-            c if in_quotes && c == quote_char => {
-                in_quotes = false;
-            }
-            c if !in_quotes && c.is_whitespace() => {
-                if !current.is_empty() {
-                    args.push(current.clone());
-                    current.clear();
-                }
-            }
-            c => {
-                current.push(c);
-            }
+    let mut out = String::with_capacity("ROBUST_MODULE_".len() + module.len() * 2);
+    out.push_str("ROBUST_MODULE_");
+    for c in module.chars() {
+        match c {
+            '_' => out.push_str("__"),
+            '.' => out.push('_'),
+            c => out.push(c.to_ascii_uppercase()),
         }
     }
-    if !current.is_empty() {
+    out
+}
+
+/// Splits a command-line string into arguments, respecting single and double quotes, `\"`, `\\`
+/// and empty arguments (`""`). An unclosed quote makes the whole string unusable; see
+/// [`try_split_args`] when that matters. This lenient form keeps what it could read (the app calls
+/// it with text typed by the player).
+pub fn split_args(input: &str) -> Vec<String> {
+    split_args_inner(input).0
+}
+
+/// Like [`split_args`], but an unclosed quote is an error instead of a silent merge with the rest
+/// of the line.
+pub fn try_split_args(input: &str) -> Result<Vec<String>> {
+    let (args, unclosed) = split_args_inner(input);
+    if unclosed {
+        return Err(Error::Other("an argument has an unclosed quote".into()));
+    }
+    Ok(args)
+}
+
+/// Returns the arguments and whether a quote was left open.
+fn split_args_inner(input: &str) -> (Vec<String>, bool) {
+    let mut args = Vec::new();
+    let mut current = String::new();
+    let mut started = false;
+    let mut quote: Option<char> = None;
+    let mut chars = input.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        match quote {
+            Some(q) => {
+                if ch == '\\' && matches!(chars.peek(), Some('"' | '\\' | '\'')) {
+                    if let Some(next) = chars.next() {
+                        current.push(next);
+                    }
+                } else if ch == q {
+                    quote = None;
+                } else {
+                    current.push(ch);
+                }
+            }
+            None => match ch {
+                '"' | '\'' => {
+                    quote = Some(ch);
+                    // An empty pair of quotes is still an argument.
+                    started = true;
+                }
+                '\\' if matches!(chars.peek(), Some('"' | '\\' | '\'')) => {
+                    if let Some(next) = chars.next() {
+                        current.push(next);
+                    }
+                    started = true;
+                }
+                c if c.is_whitespace() => {
+                    if started {
+                        args.push(std::mem::take(&mut current));
+                        started = false;
+                    }
+                }
+                c => {
+                    current.push(c);
+                    started = true;
+                }
+            },
+        }
+    }
+    if started {
         args.push(current);
     }
-    args
+    (args, quote.is_some())
 }
 
 /// CVar names the engine accepts: dotted identifiers, e.g. `display.vsync` or `net.predict`.
@@ -507,8 +557,40 @@ pub fn ensure_signing_key_file_for_engine(dirs: &DataDirs, engine: &str) -> Resu
     let path = dirs.root().join(filename);
     let pem = crate::signature::key_pem_for_engine(engine);
     if std::fs::read_to_string(&path).ok().as_deref() != Some(pem) {
+        // Write to a temporary file and rename it into place: two launchers starting at once must
+        // never let the Loader read a half-written key.
         std::fs::create_dir_all(dirs.root())?;
-        std::fs::write(&path, pem)?;
+        crate::fsutil::write_atomic(&path, pem.as_bytes())?;
+    }
+    Ok(path)
+}
+
+/// Checks a loader path taken from the environment: it must be an existing regular file with the
+/// expected name. `BEBRA_LOADER` is an explicit developer override, but accepting an arbitrary
+/// executable there (a renamed `cmd.exe`, say) would turn a stray environment variable into code
+/// execution, so at least the name has to match.
+fn validate_loader_path(path: &Path) -> Result<PathBuf> {
+    let path = std::fs::canonicalize(path).map_err(|e| {
+        Error::Other(format!(
+            "BEBRA_LOADER points to {}, which cannot be used: {e}",
+            path.display()
+        ))
+    })?;
+    if !path.is_file() {
+        return Err(Error::Other(format!(
+            "BEBRA_LOADER points to {}, which is not a file",
+            path.display()
+        )));
+    }
+    let ok_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.eq_ignore_ascii_case("SS14.Loader.exe"));
+    if !ok_name {
+        return Err(Error::Other(format!(
+            "BEBRA_LOADER must point to SS14.Loader.exe, not {}",
+            path.display()
+        )));
     }
     Ok(path)
 }
@@ -517,15 +599,7 @@ pub fn ensure_signing_key_file_for_engine(dirs: &DataDirs, engine: &str) -> Resu
 /// folder) the `loader/out` of this repository.
 pub fn find_loader() -> Result<PathBuf> {
     if let Some(p) = std::env::var_os("BEBRA_LOADER") {
-        let p = PathBuf::from(p);
-        return if p.is_file() {
-            Ok(p)
-        } else {
-            Err(Error::Other(format!(
-                "BEBRA_LOADER points to {}, which is not a file",
-                p.display()
-            )))
-        };
+        return validate_loader_path(&PathBuf::from(p));
     }
 
     let exe = std::env::current_exe()?;
@@ -545,13 +619,30 @@ pub fn find_loader() -> Result<PathBuf> {
     ))
 }
 
+/// A client log larger than this is rotated once (`.1`) before a new run appends to it.
+pub const MAX_CLIENT_LOG_BYTES: u64 = 8 * 1024 * 1024;
+
+/// Opens a log for appending. Never truncates: two clients launched at once must not erase each
+/// other's output. A log that has grown past [`MAX_CLIENT_LOG_BYTES`] is moved aside first.
+fn open_log(path: &Path) -> Result<std::fs::File> {
+    if std::fs::metadata(path).is_ok_and(|m| m.len() >= MAX_CLIENT_LOG_BYTES) {
+        let rotated = PathBuf::from(format!("{}.1", path.display()));
+        let _ = std::fs::remove_file(&rotated);
+        let _ = std::fs::rename(path, rotated);
+    }
+    Ok(std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?)
+}
+
 /// Starts the command. The client's stdout and stderr are written to the given files.
 pub fn spawn(cmd: &LaunchCommand, stdout_log: &Path, stderr_log: &Path) -> Result<Child> {
     if let Some(dir) = stdout_log.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    let out = std::fs::File::create(stdout_log)?;
-    let err = std::fs::File::create(stderr_log)?;
+    let out = open_log(stdout_log)?;
+    let err = open_log(stderr_log)?;
 
     let mut c = Command::new(&cmd.program);
     c.args(&cmd.args)
@@ -706,11 +797,11 @@ mod tests {
         assert!(cmd.env_remove.contains(&"SS14_LAUNCHER_PATH".to_string()));
 
         let mut s = spec();
-        s.launcher_path = Some(PathBuf::from(r"C:ppebra-app.exe"));
+        s.launcher_path = Some(PathBuf::from(r"C:\app\bebra-app.exe"));
         let cmd = build_command(&s);
         assert_eq!(
             env_of(&cmd, "SS14_LAUNCHER_PATH").as_deref(),
-            Some(r"C:ppebra-app.exe")
+            Some(r"C:\app\bebra-app.exe")
         );
         assert!(!cmd.env_remove.contains(&"SS14_LAUNCHER_PATH".to_string()));
     }
@@ -889,6 +980,51 @@ mod tests {
             module_env_name("Robust.Client.WebView"),
             "ROBUST_MODULE_ROBUST_CLIENT_WEBVIEW"
         );
+        // Dots and underscores must not collapse into the same variable.
+        assert_eq!(module_env_name("A.B"), "ROBUST_MODULE_A_B");
+        assert_eq!(module_env_name("A_B"), "ROBUST_MODULE_A__B");
+        assert_ne!(module_env_name("A.B"), module_env_name("A_B"));
+    }
+
+    #[test]
+    fn module_names_with_dots_and_underscores_get_distinct_variables() {
+        let mut s = spec();
+        s.modules = vec![
+            ("A.B".into(), PathBuf::from(r"C:\m\dot")),
+            ("A_B".into(), PathBuf::from(r"C:\m\underscore")),
+        ];
+        let cmd = build_command(&s);
+        let names: Vec<&str> = cmd.env.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(
+            names
+                .iter()
+                .filter(|n| n.starts_with("ROBUST_MODULE_"))
+                .count(),
+            2
+        );
+        assert!(names.contains(&"ROBUST_MODULE_A_B"));
+        assert!(names.contains(&"ROBUST_MODULE_A__B"));
+    }
+
+    #[test]
+    fn an_explicit_loader_path_must_be_the_loader() {
+        let tmp = tempfile::tempdir().unwrap();
+        let good = tmp.path().join("SS14.Loader.exe");
+        std::fs::write(&good, b"not a real loader").unwrap();
+        assert_eq!(
+            validate_loader_path(&good).unwrap(),
+            std::fs::canonicalize(&good).unwrap()
+        );
+
+        let wrong = tmp.path().join("notepad.exe");
+        std::fs::write(&wrong, b"x").unwrap();
+        assert!(validate_loader_path(&wrong).is_err());
+
+        assert!(validate_loader_path(&tmp.path().join("missing.exe")).is_err());
+        assert!(
+            validate_loader_path(tmp.path()).is_err(),
+            "a folder is not a file"
+        );
     }
 
     #[test]
@@ -962,6 +1098,74 @@ mod tests {
             ]
         );
         assert_eq!(split_args("   "), Vec::<String>::new());
+    }
+
+    #[test]
+    fn split_args_keeps_empty_arguments() {
+        assert_eq!(split_args(r#"a "" b '' c"#), vec!["a", "", "b", "", "c"]);
+        assert_eq!(split_args(r#""""#), vec![""]);
+    }
+
+    #[test]
+    fn split_args_understands_escapes() {
+        // `\"` inside double quotes, `\\` anywhere, `\'` inside single quotes.
+        assert_eq!(
+            split_args(r#"--cvar "display.name=\"quoted name\"" plain"#),
+            vec!["--cvar", r#"display.name="quoted name""#, "plain"]
+        );
+        assert_eq!(split_args(r"a\\b"), vec![r"a\b"]);
+        assert_eq!(split_args(r#""a\\b""#), vec![r"a\b"]);
+        // A backslash before an ordinary character is a normal backslash (Windows paths).
+        assert_eq!(
+            split_args(r"C:\data\loader.exe"),
+            vec![r"C:\data\loader.exe"]
+        );
+        assert_eq!(split_args(r#""C:\data\x""#), vec![r"C:\data\x"]);
+    }
+
+    #[test]
+    fn an_unclosed_quote_is_an_error_only_when_asked() {
+        assert!(try_split_args(r#"--cvar "unclosed"#).is_err());
+        assert!(
+            try_split_args("it's fine").is_err(),
+            "an odd ' opens a quote"
+        );
+        assert_eq!(
+            try_split_args(r#"--cvar "ok" plain"#).unwrap(),
+            vec!["--cvar", "ok", "plain"]
+        );
+        // The lenient form still returns what it read instead of panicking.
+        assert_eq!(
+            split_args(r#"--cvar "unclosed"#),
+            vec!["--cvar", "unclosed"]
+        );
+    }
+
+    #[test]
+    fn client_logs_are_appended_not_truncated() {
+        use std::io::Write;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let log = tmp.path().join("client.stdout.log");
+        open_log(&log).unwrap().write_all(b"first run\n").unwrap();
+        open_log(&log).unwrap().write_all(b"second run\n").unwrap();
+        let text = std::fs::read_to_string(&log).unwrap();
+        assert!(text.contains("first run"), "{text}");
+        assert!(text.contains("second run"), "{text}");
+    }
+
+    #[test]
+    fn a_huge_client_log_is_rotated_before_use() {
+        let tmp = tempfile::tempdir().unwrap();
+        let log = tmp.path().join("client.stdout.log");
+        std::fs::write(&log, vec![b'x'; MAX_CLIENT_LOG_BYTES as usize]).unwrap();
+        drop(open_log(&log).unwrap());
+        let rotated = tmp.path().join("client.stdout.log.1");
+        assert_eq!(
+            std::fs::metadata(&rotated).unwrap().len(),
+            MAX_CLIENT_LOG_BYTES
+        );
+        assert_eq!(std::fs::metadata(&log).unwrap().len(), 0);
     }
 
     #[test]

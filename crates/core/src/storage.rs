@@ -12,16 +12,30 @@ use crate::Result;
 /// Sizes in bytes.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct StorageReport {
+    /// `content.db` plus its `-wal` and `-shm` files.
     pub content_db: u64,
     pub engines: u64,
     pub modules: u64,
     pub scratch: u64,
     pub logs: u64,
+    pub packs: u64,
+    pub patches: u64,
+    pub backgrounds: u64,
+    /// Generated `overlay-<hash>.zip` / `.key` files; removable at any time.
+    pub overlays: u64,
 }
 
 impl StorageReport {
     pub fn total(&self) -> u64 {
-        self.content_db + self.engines + self.modules + self.scratch + self.logs
+        self.content_db
+            + self.engines
+            + self.modules
+            + self.scratch
+            + self.logs
+            + self.packs
+            + self.patches
+            + self.backgrounds
+            + self.overlays
     }
 }
 
@@ -30,6 +44,8 @@ pub struct CleanReport {
     pub cull: CullReport,
     pub engines_removed: usize,
     pub modules_removed: usize,
+    /// Generated overlays that were deleted; they are rebuilt when a game is next started.
+    pub overlays_removed: usize,
     pub bytes_freed: u64,
 }
 
@@ -49,22 +65,30 @@ pub fn size_of(path: &Path) -> u64 {
         .unwrap_or(0)
 }
 
-pub fn report(dirs: &DataDirs) -> StorageReport {
+/// Size of `content.db` and its WAL files, without walking anything.
+fn db_size(dirs: &DataDirs) -> u64 {
     let db = dirs.content_db();
-    let db_files: u64 = ["", "-wal", "-shm"]
+    ["", "-wal", "-shm"]
         .iter()
         .map(|suffix| {
             let mut name = db.clone().into_os_string();
             name.push(suffix);
             size_of(Path::new(&name))
         })
-        .sum();
+        .sum()
+}
+
+pub fn report(dirs: &DataDirs) -> StorageReport {
     StorageReport {
-        content_db: db_files,
+        content_db: db_size(dirs),
         engines: size_of(&dirs.engines()),
         modules: size_of(&dirs.modules()),
         scratch: size_of(&dirs.scratch()),
         logs: size_of(&dirs.logs()),
+        packs: size_of(&dirs.packs()),
+        patches: size_of(&dirs.patches()),
+        backgrounds: size_of(&dirs.backgrounds()),
+        overlays: size_of(&dirs.overlays()),
     }
 }
 
@@ -87,7 +111,7 @@ fn remove_quietly(path: &Path) -> u64 {
 /// depends on, and the leftovers of unfinished downloads. Never call this while a game is
 /// being prepared: its engine may not be recorded yet.
 fn clean_with_cull(dirs: &DataDirs, db: &ContentDb, cull: CullReport) -> Result<CleanReport> {
-    let db_before = report(dirs).content_db;
+    let db_before = db_size(dirs);
 
     let deps = db.all_engine_dependencies()?;
     let engines_in_use: HashSet<&str> = deps
@@ -160,6 +184,23 @@ fn clean_with_cull(dirs: &DataDirs, db: &ContentDb, cull: CullReport) -> Result<
         }
     }
 
+    // Overlays are generated from the packs and rebuilt on the next start, so they are never
+    // needed between launches. A game that is still running keeps its own copy open; removing
+    // then simply fails.
+    if let Ok(rd) = std::fs::read_dir(dirs.overlays()) {
+        for entry in rd.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let freed = remove_quietly(&path);
+            if !path.exists() {
+                out.overlays_removed += 1;
+                out.bytes_freed += freed;
+            }
+        }
+    }
+
     // Give the space of removed rows back to the disk. Best effort: a running game holds
     // the database open, and then this is simply skipped.
     let conn = db.connection();
@@ -168,7 +209,7 @@ fn clean_with_cull(dirs: &DataDirs, db: &ContentDb, cull: CullReport) -> Result<
         let _ = conn.execute_batch("VACUUM;");
     }
 
-    out.bytes_freed += db_before.saturating_sub(report(dirs).content_db);
+    out.bytes_freed += db_before.saturating_sub(db_size(dirs));
     Ok(out)
 }
 
@@ -242,10 +283,16 @@ mod tests {
         );
         write(&dirs.scratch().join("half-downloaded.zip"), 30);
 
+        let db_before = db_size(&dirs);
         let r = clean(&dirs, &db).unwrap();
+        let db_after = db_size(&dirs);
         assert_eq!(r.engines_removed, 1);
         assert_eq!(r.modules_removed, 1);
-        assert!(r.bytes_freed >= 20 + 20 + 30);
+        assert_eq!(
+            r.bytes_freed,
+            10 + 10 + 20 + 30 + db_before.saturating_sub(db_after),
+            "exactly the removed files plus whatever the database shrank by"
+        );
 
         assert!(dirs.engines().join("100.0.0.zip").is_file());
         assert!(dirs.engines().join("100.0.0.sig").is_file());
@@ -257,6 +304,40 @@ mod tests {
             .is_file());
         assert!(!dirs.modules().join("Robust.Client.WebView/0.9.0").exists());
         assert!(!dirs.scratch().join("half-downloaded.zip").exists());
+    }
+
+    #[test]
+    fn packs_patches_backgrounds_and_overlays_are_reported_and_cleaned() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = DataDirs::at(tmp.path());
+        dirs.ensure().unwrap();
+        let db = ContentDb::open(&dirs.content_db()).unwrap();
+
+        write(&dirs.packs().join("ru.zip"), 10);
+        write(&dirs.patches().join("p.dll"), 20);
+        write(&dirs.backgrounds().join("bg.png"), 30);
+        write(&dirs.overlays().join("overlay-0123456789abcdef.zip"), 40);
+        write(&dirs.overlays().join("overlay-0123456789abcdef.key"), 5);
+
+        let r = report(&dirs);
+        assert_eq!((r.packs, r.patches, r.backgrounds), (10, 20, 30));
+        assert_eq!(r.overlays, 45);
+        assert_eq!(r.total(), report(&dirs).content_db + 10 + 20 + 30 + 45);
+
+        let db_before = db_size(&dirs);
+        let clean = clean(&dirs, &db).unwrap();
+        let db_after = db_size(&dirs);
+        assert_eq!(clean.overlays_removed, 2);
+        assert_eq!(
+            clean.bytes_freed,
+            45 + db_before.saturating_sub(db_after),
+            "exactly the removed overlays plus the database shrink"
+        );
+        assert_eq!(std::fs::read_dir(dirs.overlays()).unwrap().count(), 0);
+        // Player files are never deleted.
+        assert!(dirs.packs().join("ru.zip").is_file());
+        assert!(dirs.patches().join("p.dll").is_file());
+        assert!(dirs.backgrounds().join("bg.png").is_file());
     }
 
     #[test]
@@ -285,11 +366,17 @@ mod tests {
         );
         write(&dirs.scratch().join("half-downloaded.zip"), 30);
 
+        let db_before = db_size(&dirs);
         let r = clean_all(&dirs, &db).unwrap();
+        let db_after = db_size(&dirs);
         assert_eq!(r.cull.versions_removed, 1);
         assert_eq!(r.engines_removed, 2);
         assert_eq!(r.modules_removed, 1);
-        assert!(r.bytes_freed >= 20 + 20 + 20 + 30);
+        assert_eq!(
+            r.bytes_freed,
+            10 + 10 + 10 + 10 + 20 + 30 + db_before.saturating_sub(db_after),
+            "every removed byte accounted for"
+        );
 
         assert!(!dirs.engines().join("100.0.0.zip").exists());
         assert!(!dirs.engines().join("100.0.0.sig").exists());

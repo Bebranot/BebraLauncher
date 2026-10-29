@@ -10,6 +10,7 @@ pub mod download;
 pub mod dump;
 pub mod engine;
 pub mod error;
+pub mod fsutil;
 pub mod hash;
 pub mod http;
 pub mod hub;
