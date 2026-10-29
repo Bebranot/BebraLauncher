@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, tick } from "svelte";
+  import { onDestroy, onMount, tick } from "svelte";
   import ConnectingOverlay from "./lib/ConnectingOverlay.svelte";
   import DialogHost from "./lib/DialogHost.svelte";
   import ErpOverlay from "./lib/ErpOverlay.svelte";
@@ -20,10 +20,55 @@
 
   let searchInput = $state<HTMLInputElement>();
 
+  /** The page of the current tab and the element that scrolls it. */
+  let page = $state<HTMLElement>();
+  let pageHost = $state<HTMLElement>();
+
+  /** Where each tab was left: switching tabs must not throw the player back to the top. */
+  const scrollPositions = new Map<string, number>();
+
+  function scrollRoot(): HTMLElement | null {
+    if (!page) return null;
+    const marked = page.querySelector<HTMLElement>("[data-scroll]");
+    if (marked) return marked;
+    // Tabs that do not mark their scroller: the first element that actually scrolls.
+    for (const el of page.querySelectorAll<HTMLElement>("*")) {
+      const style = getComputedStyle(el);
+      if (
+        (style.overflowY === "auto" || style.overflowY === "scroll") &&
+        el.scrollHeight > el.clientHeight
+      ) {
+        return el;
+      }
+    }
+    return null;
+  }
+
+  function onPageScroll(e: Event) {
+    const el = e.target;
+    if (!(el instanceof HTMLElement) || !page?.contains(el)) return;
+    scrollPositions.set(app.tab, el.scrollTop);
+  }
+
+  // After the new tab is in the DOM, put its scroll position back.
+  $effect(() => {
+    const tab = app.tab;
+    void tick().then(() => {
+      const el = scrollRoot();
+      if (el) el.scrollTop = scrollPositions.get(tab) ?? 0;
+    });
+  });
+
   onMount(() => {
     void app.init();
     // The joke sale's timer runs from the launch, whichever tab is open.
     promo.start();
+    // Scroll does not bubble, so the listener has to sit in the capture phase.
+    pageHost?.addEventListener("scroll", onPageScroll, true);
+  });
+
+  onDestroy(() => {
+    pageHost?.removeEventListener("scroll", onPageScroll, true);
   });
 
   /** `/` or Ctrl+F: search the server list. */
@@ -36,6 +81,8 @@
 
   function onkeydown(e: KeyboardEvent) {
     if (app.dialog || app.play.phase !== "idle") return;
+    // Any open modal owns the keyboard (its own trap handles Escape and Tab).
+    if (document.querySelector('[role="dialog"][aria-modal="true"]')) return;
     const el = e.target as HTMLElement | null;
     const typing =
       el instanceof HTMLInputElement ||
@@ -76,26 +123,24 @@
       </button>
     </div>
   {/if}
-  <main>
-    {#key app.tab}
-      <div class="page">
-        {#if app.tab === "favorites"}
-          <FavoritesTab />
-        {:else if app.tab === "servers"}
-          <ServersTab bind:searchInput />
-        {:else if app.tab === "recent"}
-          <RecentTab />
-        {:else if app.tab === "news"}
-          <NewsTab />
-        {:else if app.tab === "updates"}
-          <UpdatesTab />
-        {:else if app.tab === "mods"}
-          <ModsTab />
-        {:else}
-          <OptionsTab />
-        {/if}
-      </div>
-    {/key}
+  <main bind:this={pageHost}>
+    <div class="page" bind:this={page}>
+      {#if app.tab === "favorites"}
+        <FavoritesTab />
+      {:else if app.tab === "servers"}
+        <ServersTab bind:searchInput />
+      {:else if app.tab === "recent"}
+        <RecentTab />
+      {:else if app.tab === "news"}
+        <NewsTab />
+      {:else if app.tab === "updates"}
+        <UpdatesTab />
+      {:else if app.tab === "mods"}
+        <ModsTab />
+      {:else}
+        <OptionsTab />
+      {/if}
+    </div>
   </main>
   <TabBar />
 </div>

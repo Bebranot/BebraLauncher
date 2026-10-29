@@ -42,9 +42,10 @@
   header {
     flex: none;
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     justify-content: space-between;
-    gap: 12px;
+    gap: 8px 12px;
     padding: 8px 14px;
     border-bottom: 1px solid var(--line);
     transition: border-color 0.15s ease;
@@ -92,14 +93,17 @@
     display: grid;
     gap: 4px;
     min-width: 0;
+    max-width: 100%;
     justify-items: stretch;
   }
   .links {
     display: flex;
+    flex-wrap: wrap;
+    gap: 0;
   }
   .links .btn {
-    flex: 1;
-    min-width: 90px;
+    flex: 1 1 auto;
+    min-width: 72px;
     font-size: 13px;
   }
 </style>

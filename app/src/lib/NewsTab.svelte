@@ -1,10 +1,12 @@
 <script lang="ts">
+  import { onMount } from "svelte";
   import { api } from "./api";
   import { t } from "./i18n.svelte";
   import { app } from "./store.svelte";
 
-  // Read the feed when the tab is first shown.
-  $effect(() => {
+  // Read the feed once, when the tab is shown. Not an `$effect`: that re-ran on every state
+  // change and turned a failed request into an endless loop of requests.
+  onMount(() => {
     void app.loadNews();
   });
 
@@ -15,7 +17,7 @@
   }
 </script>
 
-<div class="tab">
+<div class="tab" data-scroll>
   <h2>{t("news.recent")}</h2>
 
   {#if app.news.state === "loading" || app.news.state === "idle"}

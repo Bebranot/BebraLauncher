@@ -43,6 +43,9 @@
   --line: var(--scroll-sep);
   --tint: color-mix(in srgb, var(--fg) 5%, transparent);
   --tint-hover: color-mix(in srgb, var(--fg) 9%, transparent);
+  /* The page sheet: nearly opaque, so a light theme stays readable over the space canvas
+     or a custom photo while a dark one still shows a hint of the background through it. */
+  --page-surface: color-mix(in srgb, var(--bg, var(--bg-fill)) 94%, transparent);
   --accent-soft: color-mix(in srgb, var(--accent) 16%, transparent);
   --radius: 8px;
   --radius-sm: 6px;
@@ -89,7 +92,7 @@ html[data-bg="custom"] body {
 }
 html[data-bg="space"] .shell,
 html[data-bg="custom"] .shell {
-  background: transparent;
+  background: var(--page-surface);
 }
 html[data-bg="space"] .table,
 html[data-bg="custom"] .table {

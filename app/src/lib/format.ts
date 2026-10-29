@@ -59,15 +59,19 @@ export function pingClass(ms: number | null | undefined): PingClass {
   return "bad";
 }
 
-/** The CSS grid columns of the server table for the columns the player wants. */
+/**
+ * The CSS grid columns of the server table for the columns the player wants. Everything but the
+ * name and the button is allowed to shrink, so a 400 px wide viewport (200 % zoom) still fits
+ * (P1-31).
+ */
 export function gridTemplate(c: Columns): string {
-  const parts = ["minmax(0, 1fr)"];
-  if (c.mode) parts.push("110px");
-  if (c.map) parts.push("110px");
-  if (c.ping) parts.push("88px");
-  if (c.round_time) parts.push("96px");
-  if (c.players) parts.push("80px");
-  parts.push("124px"); // the Connect button
+  const parts = ["minmax(96px, 2fr)"];
+  if (c.mode) parts.push("minmax(64px, 0.8fr)");
+  if (c.map) parts.push("minmax(64px, 0.8fr)");
+  if (c.ping) parts.push("minmax(52px, 0.6fr)");
+  if (c.round_time) parts.push("minmax(64px, 0.8fr)");
+  if (c.players) parts.push("minmax(56px, 0.6fr)");
+  parts.push("minmax(80px, 124px)"); // the Connect button
   return parts.join(" ");
 }
 

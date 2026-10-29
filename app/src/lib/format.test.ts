@@ -89,8 +89,7 @@ describe("table columns", () => {
 
   it("always has the name and the connect button", () => {
     const none = { round_time: false, players: false, map: false, mode: false, ping: false };
-    expect(gridTemplate(none).split(" ").length).toBe(3); // minmax(0, 1fr) is two tokens, plus the button
-    expect(gridTemplate(none)).toMatch(/^minmax\(0, 1fr\) 124px$/);
+    expect(gridTemplate(none)).toBe("minmax(96px, 2fr) minmax(80px, 124px)");
   });
 
   it("adds a column for each switch", () => {
@@ -106,7 +105,15 @@ describe("table columns", () => {
       };
       expect(gridTemplate(only).length).toBeGreaterThan(base.length);
     }
-    expect(gridTemplate(all).match(/px/g)?.length).toBe(6);
+    expect(gridTemplate(all).match(/minmax\(/g)?.length).toBe(7);
+  });
+
+  it("lets every column shrink, so 200 % zoom does not push the button off screen (P1-31)", () => {
+    const template = gridTemplate(all);
+    // The old template had fixed pixel columns; now every column has a fraction part.
+    expect(template.match(/minmax\(/g)).toHaveLength(7);
+    expect(template.match(/fr\)/g)).toHaveLength(6);
+    expect(template).not.toMatch(/(^|\s)\d+px(\s|$)/);
   });
 });
 

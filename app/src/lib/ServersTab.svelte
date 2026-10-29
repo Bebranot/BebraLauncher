@@ -1,14 +1,34 @@
 <script lang="ts">
-  import { activeFilterCount } from "./filters";
-  import FiltersPanel from "./FiltersPanel.svelte";
-  import Icon from "./Icon.svelte";
+  import FiltersPanel from "./FiltersPanel.svelte";  import Icon from "./Icon.svelte";
   import { t } from "./i18n.svelte";
   import ServerTable from "./ServerTable.svelte";
   import { app } from "./store.svelte";
 
   let { searchInput = $bindable() }: { searchInput?: HTMLInputElement } = $props();
 
-  const filtered = $derived(activeFilterCount(app.filters) > 0 || app.search.trim() !== "");
+  // Typing stays instant, filtering waits a moment: matching every server on every keystroke
+  // is what made a 2000-row list lag (P1-38).
+  let query = $state(app.search);
+  let applied = app.search;
+  let searchTimer: ReturnType<typeof setTimeout> | undefined;
+
+  // A link, a redial or the clear button can change the search from outside.
+  $effect(() => {
+    const value = app.search;
+    if (value !== applied) {
+      applied = value;
+      query = value;
+    }
+  });
+
+  function onSearchInput(e: Event) {
+    query = (e.currentTarget as HTMLInputElement).value;
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => {
+      applied = query;
+      app.search = query;
+    }, 150);
+  }
 </script>
 
 <div class="tab">
@@ -53,7 +73,8 @@
         type="text"
         class="search"
         placeholder={t("servers.search")}
-        bind:value={app.search}
+        value={query}
+        oninput={onSearchInput}
         bind:this={searchInput}
       />
       {#if app.search.trim() !== ""}

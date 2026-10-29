@@ -59,6 +59,7 @@ let accounts: AccountRow[] = [
 ];
 
 const DEFAULT_SETTINGS: Settings = {
+  schema_version: 1,
   guest_name: "JoeGenero",
   compat_mode: false,
   discord_rpc: true,
@@ -245,6 +246,8 @@ export function installMock() {
       switch (cmd) {
         case "app_info":
           return { version: "0.2.0", data_dir: "C:\\Users\\you\\AppData\\Local\\BebraLauncher", loader_problem: null };
+        case "take_pending_actions":
+          return [];
         case "list_servers":
           return servers;
         case "cached_servers":
@@ -279,11 +282,17 @@ export function installMock() {
           return settings;
         case "set_settings": {
           const incoming = a.settings as Settings;
+          // Like the real backend: what only the launcher writes is not undone by the UI's copy.
           settings = {
             ...incoming,
+            schema_version: settings.schema_version,
             favorites: settings.favorites,
+            favorite_names: settings.favorite_names,
+            server_notes: settings.server_notes,
             history: settings.history,
             last_account: settings.last_account,
+            enabled_patches: settings.enabled_patches,
+            dismissed_intel_warning: settings.dismissed_intel_warning,
           };
           return settings;
         }

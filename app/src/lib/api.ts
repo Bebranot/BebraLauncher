@@ -24,8 +24,6 @@ export interface ServerRow {
   run_level: number | null;
   round_start_time: string | null;
   panic_bunker: boolean | null;
-  hub_url?: string | null;
-  auth_methods?: string[] | null;
 }
 
 export interface ServerDetails {
@@ -33,8 +31,6 @@ export interface ServerDetails {
   description: string | null;
   links: { name: string; url: string }[];
   auth: "optional" | "required" | "disabled";
-  login_urls?: string[] | null;
-  engine_type?: string | null;
 }
 
 export interface PingRow {
@@ -104,6 +100,8 @@ export interface HubSetting {
 }
 
 export interface Settings {
+  /** Settings file format; written back unchanged so an older UI cannot undo a migration. */
+  schema_version: number;
   guest_name: string;
   compat_mode: boolean;
   discord_rpc: boolean;
@@ -247,10 +245,16 @@ export type PlayEvent =
   | { kind: "stage"; stage: PlayStage }
   | { kind: "progress"; stage: PlayStage; done: number; total: number; unit: "items" | "bytes" }
   | { kind: "running"; pid: number; plays_as: string; address?: string }
-  | { kind: "exited"; pid?: number; code: number | null; log_tail: string[] }
+  | { kind: "exited"; pid: number; code: number | null; log_tail: string[] }
   | { kind: "failed"; code: string; message: string }
   | { kind: "cancelled" }
   | { kind: "preview"; command: string };
+
+/** An event that happened before the page could listen, kept by the backend (P1-18). */
+export interface PendingAction {
+  event: "open-link" | "redial" | "play";
+  payload: unknown;
+}
 
 /** The game asked the launcher to connect again (possibly to another server). */
 export interface RedialEvent {
@@ -334,6 +338,8 @@ export const api = {
   changelog: () => invoke<string>("changelog"),
   onUpdate: (handler: (s: UpdateStatus) => void): Promise<UnlistenFn> =>
     listen<UpdateStatus>("update", (e) => handler(e.payload)),
+  /** What happened before the UI could listen (a cold-start link, redial, the first play events). */
+  takePendingActions: () => invoke<PendingAction[]>("take_pending_actions"),
   onPlay: (handler: (e: PlayEvent) => void): Promise<UnlistenFn> =>
     listen<PlayEvent>("play", (e) => handler(e.payload)),
   onRedial: (handler: (e: RedialEvent) => void): Promise<UnlistenFn> =>

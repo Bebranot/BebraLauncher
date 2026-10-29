@@ -99,7 +99,7 @@
   onchange={onFileSelected}
 />
 
-<div class="mods-tab">
+<div class="mods-tab" data-scroll>
   <!-- Header & Toolbar -->
   <header class="mods-header">
     <div class="header-main">
@@ -257,7 +257,10 @@
 
 <style>
   .mods-tab {
-    flex: 1;
+    /* The parent is a plain block with height: 100%, not a flex container: `flex: 1` had no
+       effect, the height equalled the content and nothing could scroll. */
+    height: 100%;
+    min-height: 0;
     display: flex;
     flex-direction: column;
     padding: 24px 32px;

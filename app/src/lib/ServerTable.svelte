@@ -4,8 +4,9 @@
   import { nextSort, type SortKey } from "./filters";
   import { gridTemplate } from "./format";
   import { t } from "./i18n.svelte";
-  import ServerEntry from "./ServerEntry.svelte";
   import { app } from "./store.svelte";
+  import { compactColumns } from "./tableLayout";
+  import ServerEntry from "./ServerEntry.svelte";
 
   let {
     rows,
@@ -21,8 +22,24 @@
     children?: Snippet;
   } = $props();
 
-  const columns = $derived(app.columns);
+  let host = $state<HTMLElement>();
+  let width = $state(1000);
+
+  // 200% zoom or a small window: show fewer columns instead of squeezing the name and Connect.
+  const columns = $derived(compactColumns(app.columns, width));
   const template = $derived(gridTemplate(columns));
+
+  $effect(() => {
+    const el = host;
+    if (!el) return;
+    if (el.clientWidth > 0) width = el.clientWidth;
+    const observer = new ResizeObserver((entries) => {
+      const next = entries[0]?.contentRect.width ?? 0;
+      if (next > 0) width = next;
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  });
 
   function sortBy(key: SortKey) {
     if (sortable) app.sort = nextSort(app.sort, key);
@@ -41,7 +58,7 @@
   </button>
 {/snippet}
 
-<div class="table">
+<div class="table" bind:this={host}>
   <div class="header" style:grid-template-columns={template}>
     {@render head("name", t("col.name"), false)}
     {#if columns.mode}{@render head("mode", t("col.mode"), true)}{/if}
@@ -52,9 +69,9 @@
     <div class="cell last"></div>
   </div>
 
-  <div class="scroll">
+  <div class="scroll" data-scroll>
     {#each rows as server (server.address)}
-      <ServerEntry {server} {raise} />
+      <ServerEntry {server} {raise} {columns} {template} />
     {/each}
     {@render children?.()}
   </div>
@@ -65,6 +82,7 @@
     display: flex;
     flex-direction: column;
     min-height: 0;
+    min-width: 0;
     flex: 1;
     background: var(--decor);
   }
@@ -115,7 +133,8 @@
   .scroll {
     flex: 1;
     min-height: 0;
-    overflow-x: hidden;
+    /* The last line of defence: the grid rows below stay in sync with this scrollbar. */
+    overflow-x: auto;
     overflow-y: scroll;
     padding: 0 0 8px;
   }

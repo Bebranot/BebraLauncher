@@ -8,6 +8,7 @@ import {
   type BackgroundRow,
   type HistoryEntry,
   type NewsItem,
+  type PendingAction,
   type PlayEvent,
   type RunningClient,
   type UpdateStatus,
@@ -20,9 +21,11 @@ import {
 import {
   DEFAULT_SORT,
   availableValues,
+  canonicalRegion,
   emptyFilters,
   matchesFilters,
   matchesSearch,
+  normalizeRp,
   parseFilters,
   primaryLanguage,
   sortServers,
@@ -64,10 +67,63 @@ export type NewsState =
   | { state: "ready"; items: NewsItem[] }
   | { state: "failed"; error: string };
 
-/** Most servers pinged for the ping column in one go. */
-const PING_VISIBLE = 60;
+/** Most addresses one ping request carries, backend limit included (P1-37). */
+const PING_LIMIT = 200;
+/** Asking again after a filter or sort change, once the player stops clicking (P1-37). */
+const PING_REFRESH_DELAY_MS = 150;
+/** A link or a redial points at a row for a while, then stops (P1-35). */
+const FOCUS_TIMEOUT_MS = 30_000;
 const SAVE_DELAY_MS = 300;
+/** A failed save is retried, but slowly: being offline must not spin the disk. */
+const SAVE_RETRY_MS = 5_000;
 const UI_KEY = "bebra.ui";
+
+/**
+ * The one-second tick round timers share (P1-39). It runs only while somebody holds it, so a
+ * list without a running round does not repaint every second. A future `RoundTimer` component
+ * can `clock.retain()` on its own instead of reading the whole store.
+ */
+export class SecondClock {
+  now = $state(Date.now());
+  private timer: ReturnType<typeof setInterval> | null = null;
+  private holders = 0;
+
+  /** Keeps the clock running; call the returned function when the timer is gone. */
+  retain(): () => void {
+    this.holders += 1;
+    this.start();
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.holders -= 1;
+      if (this.holders <= 0) this.stop();
+    };
+  }
+
+  start() {
+    if (this.timer !== null) return;
+    this.now = Date.now();
+    this.timer = setInterval(() => {
+      // A hidden window needs no ticking; catch up as soon as it is shown again.
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      this.now = Date.now();
+    }, 1000);
+  }
+
+  stop() {
+    if (this.timer !== null) {
+      clearInterval(this.timer);
+      this.timer = null;
+    }
+  }
+
+  get running(): boolean {
+    return this.timer !== null;
+  }
+}
+
+export const clock = new SecondClock();
 
 /** A server that is not in the hub list: typed in, named by a link or by a redial. */
 function placeholderRow(address: string, name: string | null = null): ServerRow {
@@ -106,7 +162,7 @@ function loadUi(): { tab?: Tab; filters?: FilterState; sort?: Sort; filtersOpen?
   }
 }
 
-class Store {
+export class Store {
   info = $state<AppInfo | null>(null);
   settings = $state<Settings | null>(null);
 
@@ -153,18 +209,43 @@ class Store {
   /** When the user last asked for a check (ms), to show it. */
   updateCheckedAt = $state<number | null>(null);
 
-  /** Current time in milliseconds, updated every second (for round timers). */
-  now = $state(Date.now());
+  /** Current time in milliseconds, ticked by the shared clock while round timers are in use. */
+  get now(): number {
+    return clock.now;
+  }
 
   customBgUrl = $state<string | null>(null);
   backgrounds = $state<BackgroundRow[]>([]);
   backgroundsLoading = $state(false);
+  /** Wallpaper previews by file id: each is asked for once (P1-29). */
+  bgThumbnails = $state.raw<Record<string, string>>({});
+
+  /** Some servers need pinging but only `PING_LIMIT` fit in one request (P1-37). */
+  pingsTruncated = $state(false);
+  /** The last ping request failed: the values on screen may be old (P1-37). */
+  pingsStale = $state(false);
 
   private autoRefreshTimer: ReturnType<typeof setInterval> | null = null;
   private lastServersRefresh = 0;
+  /** Only the answer to the newest refresh may reach the list (P1-33). */
+  private serversGeneration = 0;
   private saveTimer: ReturnType<typeof setTimeout> | undefined;
-  private editedSinceSave = false;
+  /** The file does not have the current settings yet (P1-34). */
+  private settingsDirty = false;
+  /** One write at a time; edits made meanwhile schedule the next one (P1-34). */
+  private saveInFlight: Promise<void> | null = null;
+  /** Player edits the file has not got yet, kept so a reload cannot roll them back (P1-34). */
+  private unsaved: Partial<Settings> = {};
+  /** `bg_dim`/`bg_blur` changes are collected and applied once per frame (P1-30). */
+  private visualFrame: number | null = null;
+  private visualPatch: { bg_dim?: number; bg_blur?: number } | null = null;
   private noticeTimer: ReturnType<typeof setTimeout> | undefined;
+  private focusTimer: ReturnType<typeof setTimeout> | undefined;
+  private pingTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Wallpaper ids already asked for; outside $state so asking does not restart the effect. */
+  private thumbnailsRequested = new Set<string>();
+  /** Which wallpaper is on screen, so an unrelated save does not read it from disk again. */
+  private appliedBackgroundKey: string | null = null;
 
   readonly favorites = $derived(new Set(this.settings?.favorites ?? []));
   readonly history = $derived(new Map((this.settings?.history ?? []).map((h) => [h.address, h])));
@@ -186,6 +267,18 @@ class Store {
       this.sort,
       this.pings,
     ),
+  );
+
+  /** Which rows the ping column asks about. No pings inside, so asking does not change it (P1-37). */
+  private readonly pingTargets = $derived(
+    this.servers
+      .filter(
+        (s) =>
+          matchesSearch(s, this.search, this.settings?.server_notes?.[s.address]) &&
+          matchesFilters(s, this.filters),
+      )
+      .map((s) => s.address)
+      .join(" "),
   );
 
   /** Favourites in the order the player keeps them. Those the hub does not list use their own answer. */
@@ -224,7 +317,10 @@ class Store {
       };
       this.filtersOpen = true;
     } else if (lower.startsWith("region:")) {
-      const val = lower.slice(7);
+      // A server writes `region:ru`; the panel only knows `eu_e`. Without this, ticking its tag
+      // hides that very server behind a value the panel cannot show (P1-32).
+      const val = canonicalRegion(lower.slice(7));
+      if (!val) return;
       const cur = this.filters.regions;
       this.filters = {
         ...this.filters,
@@ -232,7 +328,9 @@ class Store {
       };
       this.filtersOpen = true;
     } else if (lower.startsWith("rp:")) {
-      const val = lower.slice(3);
+      // `rp:medium` and `rp:mid` mean the panel's `med`; unknown levels cannot be shown (P1-32).
+      const val = normalizeRp(lower.slice(3));
+      if (!val) return;
       const cur = this.filters.rp;
       this.filters = {
         ...this.filters,
@@ -268,10 +366,7 @@ class Store {
     if (ui.filtersOpen) this.filtersOpen = true;
 
     // Listen first, so nothing the backend sends at startup (a redial) is missed.
-    await api.onPlay((e) => this.onPlayEvent(e));
-    await api.onRedial((e) => this.onRedial(e));
-    await api.onOpenLink((address) => this.onOpenLink(address));
-    await api.onUpdate((s) => (this.update = s));
+    await this.subscribe();
     void api.updateStatus().then((s) => (this.update ??= s)).catch(() => {});
 
     await Promise.all([this.loadInfo(), this.loadSettings(), this.loadAccounts()]);
@@ -288,7 +383,6 @@ class Store {
     }
     void this.refreshServers();
 
-    setInterval(() => (this.now = Date.now()), 1000);
     if (typeof document !== "undefined") {
       document.addEventListener("visibilitychange", () => {
         if (document.visibilityState === "visible") {
@@ -301,8 +395,15 @@ class Store {
           ) {
             void this.refreshServers();
           }
+        } else {
+          // Going away: the last edit must reach the file, not wait for the debounce (P1-34).
+          this.flushSettingsNow();
         }
       });
+    }
+    if (typeof window !== "undefined") {
+      // Closing the window (also `close_on_play`) skips the save timer otherwise (P1-34).
+      window.addEventListener("pagehide", () => this.flushSettingsNow());
     }
 
     // Remember tab, filters and sorting between runs.
@@ -320,12 +421,47 @@ class Store {
           // No storage (private window, blocked): the choices are just not remembered.
         }
       });
-      // The ping column needs pings as soon as it is switched on. Only the switch is watched:
-      // asking for pings reads and writes the very data the list is made of.
+      // The ping column needs pings as soon as it is switched on and whenever the rows it would
+      // ask about change (P1-37). `pingTargets` holds no pings, so asking cannot restart this.
       $effect(() => {
-        if (this.columns.ping) untrack(() => void this.refreshPings());
+        if (!this.columns.ping) return;
+        void this.pingTargets;
+        void this.sort.key;
+        void this.sort.desc;
+        untrack(() => this.schedulePings());
       });
+      // The store no longer owns a ticker (P1-39): `RoundTimer` ticks only for a running round.
+      // `clock` above is the shared mechanism for any future timer that needs one.
     });
+  }
+
+  /**
+   * Subscribes to the backend events, then replays what happened before the page could listen:
+   * a cold-start link, a redial, the first play events (P1-18).
+   */
+  async subscribe() {
+    await api.onPlay((e) => this.onPlayEvent(e));
+    await api.onRedial((e) => this.onRedial(e));
+    await api.onOpenLink((address) => this.onOpenLink(address));
+    await api.onUpdate((s) => (this.update = s));
+    // Tauri does not buffer events: what already happened is kept by the backend until asked.
+    const pending = await api.takePendingActions().catch(() => []);
+    for (const action of pending) this.replayPending(action);
+  }
+
+  /** The same handlers as the live events, oldest first. */
+  private replayPending(action: PendingAction) {
+    switch (action.event) {
+      case "open-link":
+        if (typeof action.payload === "string") this.onOpenLink(action.payload);
+        break;
+      case "redial":
+        if (action.payload) this.onRedial(action.payload as RedialEvent);
+        break;
+      case "play":
+        if (action.payload) this.onPlayEvent(action.payload as PlayEvent);
+        break;
+    }
   }
 
   private async loadInfo() {
@@ -333,12 +469,27 @@ class Store {
   }
 
   async loadSettings() {
-    this.settings = await api.getSettings().catch(() => this.settings);
+    const loaded = await api.getSettings().catch(() => null);
+    if (!loaded) return;
+    if (this.settingsDirty || this.saveInFlight) {
+      // The backend knows favourites, history and the account; the player's unsaved edits must
+      // not be rolled back by that answer (P1-34).
+      this.settings = { ...loaded, ...this.unsaved };
+    } else {
+      this.settings = loaded;
+    }
     this.applySettings();
   }
 
-  /** Puts the theme, font and language of the settings on screen. */
+  /** Puts the theme, font, language, wallpaper and refresh timer of the settings on screen. */
   applySettings() {
+    this.applyAppearance();
+    void this.loadActiveBackground();
+    this.restartAutoRefresh();
+  }
+
+  /** Theme, font, language and UI scale: no IPC, cheap enough for every keystroke (P1-30). */
+  private applyAppearance() {
     const s = this.settings;
     applyTheme({
       theme: s?.theme ?? "dark",
@@ -353,8 +504,6 @@ class Store {
       const scale = s?.launcher_ui_scale ?? 100;
       document.documentElement.style.zoom = String(scale / 100);
     }
-    void this.loadActiveBackground();
-    this.restartAutoRefresh();
   }
 
   async loadRunningClients() {
@@ -373,6 +522,7 @@ class Store {
   }
 
   async loadActiveBackground() {
+    this.appliedBackgroundKey = this.backgroundKey();
     if (this.settings?.bg_type === "custom" && this.settings?.bg_custom_name) {
       try {
         this.customBgUrl = await api.getBackground(this.settings.bg_custom_name);
@@ -381,6 +531,21 @@ class Store {
       }
     } else {
       this.customBgUrl = null;
+    }
+  }
+
+  /**
+   * The preview of one wallpaper. Each id is asked for once: a gallery of N files needs N
+   * requests, not N², and updating the map must not restart the caller (P1-29).
+   */
+  async ensureThumbnail(id: string): Promise<void> {
+    if (this.thumbnailsRequested.has(id)) return;
+    this.thumbnailsRequested.add(id);
+    try {
+      const url = await api.getBackground(id);
+      this.bgThumbnails = { ...this.bgThumbnails, [id]: url };
+    } catch {
+      // No preview: the tile keeps showing its placeholder.
     }
   }
 
@@ -451,30 +616,143 @@ class Store {
 
   /**
    * Changes settings: the screen follows at once, the file is written a moment later (so typing
-   * a name does not write on every key).
+   * a name does not write on every key). Only the parts that changed are applied: no wallpaper
+   * is re-read and no timer restarted for an unrelated field (P1-30).
    */
   updateSettings(patch: Partial<Settings>) {
     if (!this.settings) return;
-    this.settings = { ...this.settings, ...patch };
-    this.applySettings();
-    this.editedSinceSave = true;
+    const before = this.settings;
+    // The dim and blur sliders are pure CSS: collect them and apply once per frame.
+    const { bg_dim, bg_blur, ...rest } = patch;
+    const next = { ...before, ...rest };
+    const changed = (key: keyof typeof rest) => key in rest && rest[key] !== before[key];
+
+    this.settings = next;
+    this.unsaved = { ...this.unsaved, ...rest };
+    if (bg_dim !== undefined) this.unsaved.bg_dim = bg_dim;
+    if (bg_blur !== undefined) this.unsaved.bg_blur = bg_blur;
+    this.queueVisual({ bg_dim, bg_blur });
+
+    if (
+      changed("theme") ||
+      changed("theme_gradient") ||
+      changed("theme_decor") ||
+      changed("custom_theme") ||
+      changed("font") ||
+      changed("language") ||
+      changed("launcher_ui_scale") ||
+      changed("bg_type")
+    ) {
+      this.applyAppearance();
+    }
+    if (changed("bg_type") || changed("bg_custom_name")) {
+      if (this.backgroundKey() !== this.appliedBackgroundKey) void this.loadActiveBackground();
+    }
+    if (changed("auto_refresh_interval")) this.restartAutoRefresh();
+    this.markSettingsDirty();
+  }
+
+  /** Writes unsaved settings right away: closing or hiding the window must not lose the last edit. */
+  flushSettingsNow() {
+    clearTimeout(this.saveTimer);
+    this.foldVisual();
+    void this.flushSettings();
+  }
+
+  private markSettingsDirty() {
+    this.settingsDirty = true;
     clearTimeout(this.saveTimer);
     this.saveTimer = setTimeout(() => void this.flushSettings(), SAVE_DELAY_MS);
   }
 
-  private async flushSettings() {
-    if (!this.settings) return;
-    this.editedSinceSave = false;
-    try {
-      const saved = await api.setSettings($state.snapshot(this.settings) as Settings);
-      // Take the cleaned-up values, unless the player changed something meanwhile.
-      if (!this.editedSinceSave) {
-        this.settings = { ...saved, favorites: this.settings.favorites, history: this.settings.history };
-        this.applySettings();
-      }
-    } catch (e) {
-      this.say(errorText(e));
+  private backgroundKey(): string {
+    return `${this.settings?.bg_type ?? ""}|${this.settings?.bg_custom_name ?? ""}`;
+  }
+
+  /** Coalesces the background look into one write per animation frame (P1-30). */
+  private queueVisual(patch: { bg_dim?: number; bg_blur?: number }) {
+    if (patch.bg_dim === undefined && patch.bg_blur === undefined) return;
+    const merged = { ...this.visualPatch };
+    if (patch.bg_dim !== undefined) merged.bg_dim = patch.bg_dim;
+    if (patch.bg_blur !== undefined) merged.bg_blur = patch.bg_blur;
+    this.visualPatch = merged;
+    if (this.visualFrame !== null) return;
+    const apply = () => {
+      this.visualFrame = null;
+      this.foldVisual();
+    };
+    this.visualFrame =
+      typeof requestAnimationFrame === "function"
+        ? requestAnimationFrame(apply)
+        : (setTimeout(apply, 16) as unknown as number);
+  }
+
+  /** Pushes the collected dim/blur values into the settings once (before any save). */
+  private foldVisual() {
+    const patch = this.visualPatch;
+    this.visualPatch = null;
+    if (this.visualFrame !== null) {
+      if (typeof cancelAnimationFrame === "function") cancelAnimationFrame(this.visualFrame);
+      this.visualFrame = null;
     }
+    if (patch && this.settings) this.settings = { ...this.settings, ...patch };
+  }
+
+  /**
+   * Writes the settings file. Only one write runs at a time; an edit made while it runs is not
+   * lost — it is written by the next round (P1-34).
+   */
+  private async flushSettings(): Promise<void> {
+    if (!this.settings) return;
+    if (this.saveInFlight) {
+      this.settingsDirty = true;
+      return this.saveInFlight;
+    }
+    this.foldVisual();
+    this.settingsDirty = false;
+    const snapshot = $state.snapshot(this.settings) as Settings;
+    let failed = false;
+    const run = (async () => {
+      try {
+        const saved = await api.setSettings(snapshot);
+        // Take the cleaned-up values, unless the player changed something meanwhile.
+        if (!this.settingsDirty) {
+          const local = this.settings;
+          this.unsaved = {};
+          this.settings = local
+            ? {
+                ...saved,
+                // Written by their own commands while this request ran; the answer is older.
+                favorites: local.favorites,
+                history: local.history,
+                server_notes: local.server_notes,
+                favorite_names: local.favorite_names,
+                last_account: local.last_account,
+              }
+            : saved;
+          this.applyAppearance();
+          if (this.backgroundKey() !== this.appliedBackgroundKey) void this.loadActiveBackground();
+          if (local && saved.auto_refresh_interval !== local.auto_refresh_interval) {
+            this.restartAutoRefresh();
+          }
+        }
+      } catch (e) {
+        failed = true;
+        this.settingsDirty = true;
+        this.say(errorText(e));
+      } finally {
+        this.saveInFlight = null;
+        if (this.settingsDirty) {
+          clearTimeout(this.saveTimer);
+          this.saveTimer = setTimeout(
+            () => void this.flushSettings(),
+            failed ? SAVE_RETRY_MS : SAVE_DELAY_MS,
+          );
+        }
+      }
+    })();
+    this.saveInFlight = run;
+    return run;
   }
 
   async loadAccounts() {
@@ -511,39 +789,86 @@ class Store {
     this.noticeTimer = setTimeout(() => (this.notice = null), ms);
   }
 
-  async refreshServers() {
-    this.lastServersRefresh = Date.now();
-    this.serversLoading = true;
-    try {
-      this.servers = await api.listServers();
-      this.serversError = null;
-      this.serversFromCache = false;
-    } catch (e) {
-      // Keep the old list on screen; just say the refresh failed.
-      this.serversError = errorText(e);
-    } finally {
-      this.serversLoading = false;
-    }
-    void this.refreshPings();
+  /** When the list was last received (ms); 0 until the first successful refresh. */
+  get serversRefreshedAt(): number {
+    return this.lastServersRefresh;
   }
 
   /**
-   * Asks servers for their status: the ones the hub does not list but the player cares about,
-   * and (with the ping column on) the first servers of the list.
+   * Reloads the server list. Several callers may start at once (hub toggles, the timer, the
+   * window becoming visible); only the newest answer is applied, and the refresh time only
+   * moves on success (P1-33).
+   */
+  async refreshServers(): Promise<void> {
+    const generation = ++this.serversGeneration;
+    this.serversLoading = true;
+    try {
+      const rows = await api.listServers();
+      if (generation !== this.serversGeneration) return; // a newer request is under way
+      this.servers = rows;
+      this.serversError = null;
+      this.serversFromCache = false;
+      this.lastServersRefresh = Date.now();
+    } catch (e) {
+      if (generation === this.serversGeneration) {
+        // Keep the old list on screen; just say the refresh failed.
+        this.serversError = errorText(e);
+      }
+      return;
+    } finally {
+      if (generation === this.serversGeneration) this.serversLoading = false;
+    }
+    if (generation === this.serversGeneration) void this.refreshPings();
+  }
+
+  /** Asks for pings again once the player stops changing filters or sorting (P1-37). */
+  private schedulePings() {
+    clearTimeout(this.pingTimer);
+    this.pingTimer = setTimeout(() => void this.refreshPings(), PING_REFRESH_DELAY_MS);
+  }
+
+  /**
+   * Asks servers for their status: favourites, servers the hub does not list, and the visible
+   * rows. At most `PING_LIMIT` addresses go in one request and the truncation is visible
+   * (`pingsTruncated`); answers for servers that left the list are dropped, and a failed
+   * request marks the values as old (P1-37).
    */
   async refreshPings() {
     const inHub = new Set(this.servers.map((s) => s.address));
     const wanted = new Set<string>();
-    for (const a of this.settings?.favorites ?? []) if (!inHub.has(a)) wanted.add(a);
+    // Favourites and history first: their rows may have no other source of status.
+    for (const a of this.settings?.favorites ?? []) wanted.add(a);
     for (const h of this.settings?.history ?? []) if (!inHub.has(h.address)) wanted.add(h.address);
     if (this.columns.ping) {
-      for (const s of this.visible.slice(0, PING_VISIBLE)) wanted.add(s.address);
+      for (const s of this.visible) wanted.add(s.address);
       for (const s of this.favoriteRows) wanted.add(s.address);
     }
-    if (wanted.size === 0) return;
 
-    const rows = await api.pingServers([...wanted]).catch(() => []);
-    const pings = { ...this.pings };
+    // What can be on screen; answers about anything else are stale.
+    const known = new Set<string>([...inHub, ...wanted, ...(this.settings?.favorites ?? [])]);
+    const addresses = [...wanted].slice(0, PING_LIMIT);
+    this.pingsTruncated = wanted.size > PING_LIMIT;
+
+    const pings: Record<string, number | null> = {};
+    for (const [address, ms] of Object.entries(this.pings)) {
+      if (known.has(address)) pings[address] = ms;
+    }
+    if (addresses.length === 0) {
+      this.pings = pings;
+      this.pingsStale = false;
+      return;
+    }
+
+    let rows;
+    try {
+      rows = await api.pingServers(addresses);
+    } catch {
+      // Keep what is on screen, but say it may be old.
+      this.pings = pings;
+      this.pingsStale = true;
+      return;
+    }
+
     const extra = { ...this.extra };
     for (const r of rows) {
       pings[r.address] = r.ms;
@@ -551,6 +876,7 @@ class Store {
     }
     this.pings = pings;
     this.extra = extra;
+    this.pingsStale = false;
   }
 
   // ------------------------------------------------------------ favourites
@@ -791,20 +1117,43 @@ class Store {
 
   // ------------------------------------------------------------ events from the backend
 
+  /**
+   * Puts a server from a link or a redial on screen. A server of the hub can be hidden by the
+   * current search or filters; then they are cleared, otherwise only a toast would appear (P1-35).
+   */
+  private reveal(address: string) {
+    const inList = this.servers.find((s) => s.address === address);
+    this.tab = "servers";
+    if (inList) {
+      const hidden =
+        !matchesSearch(inList, this.search, this.settings?.server_notes?.[address]) ||
+        !matchesFilters(inList, this.filters);
+      if (hidden) {
+        this.search = "";
+        this.filters = emptyFilters();
+      }
+    } else {
+      this.adhoc = placeholderRow(address, this.history.get(address)?.name ?? null);
+    }
+    this.focusAddress = address;
+    // The row is shown and scrolled to at once; do not keep asking for it forever.
+    clearTimeout(this.focusTimer);
+    this.focusTimer = setTimeout(() => {
+      if (this.focusAddress === address) this.focusAddress = null;
+    }, FOCUS_TIMEOUT_MS);
+  }
+
   /** A clicked ss14:// link: show the server and wait for the player to press Connect. */
   private onOpenLink(address: string) {
     if (this.busy) return;
     const typed = address.trim();
-    if (!this.servers.some((s) => s.address === typed)) this.adhoc = placeholderRow(typed);
-    this.tab = "servers";
-    this.focusAddress = typed;
+    this.reveal(typed);
     void this.loadDetails(typed);
     this.say(i18nNotice("link.opened"), 12000);
   }
 
   private onRedial(e: RedialEvent) {
-    if (!this.servers.some((s) => s.address === e.address)) this.adhoc = placeholderRow(e.address);
-    this.focusAddress = e.address;
+    this.reveal(e.address);
     this.redial = { reason: e.reason };
     this.play = { phase: "preparing", stage: "account", done: 0, total: 0, unit: "items" };
   }
@@ -834,11 +1183,7 @@ class Store {
         void this.loadSettings();
         break;
       case "exited":
-        if (e.pid != null) {
-          this.runningClients = this.runningClients.filter((c) => c.pid !== e.pid);
-        } else {
-          this.runningClients = [];
-        }
+        this.runningClients = this.runningClients.filter((c) => c.pid !== e.pid);
         // A clean exit needs no message.
         if (e.code === 0) {
           if (this.play.phase !== "preparing") {

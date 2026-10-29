@@ -1,45 +1,57 @@
 <script lang="ts">
-  import { api, type ServerRow } from "./api";
+  import { api, type Columns, type ServerRow } from "./api";
   import {
     formatPlayed,
     gridTemplate,
     pingClass,
     playersText,
-    roundText,
     serverTitle,
   } from "./format";
   import Icon from "./Icon.svelte";
   import { tagLabel } from "./filters";
   import { i18n, t } from "./i18n.svelte";
+  import RoundTimer from "./RoundTimer.svelte";
   import { app } from "./store.svelte";
 
   let {
     server,
     raise = false,
+    columns: chosenColumns = undefined,
+    template: chosenTemplate = undefined,
   }: {
     server: ServerRow;
     /** Show the "raise to top" button (the favorites tab). */
     raise?: boolean;
+    /** The columns the table decided to show; defaults to the player's choice. */
+    columns?: Columns;
+    /** The CSS grid template of the row, shared with the table header. */
+    template?: string;
   } = $props();
 
   let expanded = $state(false);
   let root = $state<HTMLElement>();
   let copied = $state(false);
 
-  const columns = $derived(app.columns);
-  const template = $derived(gridTemplate(columns));
+  const columns = $derived(chosenColumns ?? app.columns);
+  const template = $derived(chosenTemplate ?? gridTemplate(columns));
   const isFavorite = $derived(app.favorites.has(server.address));
   const details = $derived(app.details[server.address]);
   const ready = $derived(typeof details === "object" ? details : null);
   const ping = $derived(app.pings[server.address]);
-  const round = $derived(
-    columns.round_time && server.run_level === 1 ? roundText(server, app.now) : roundText(server),
-  );
   const played = $derived(app.historyOf(server.address));
   // A favourite the hub does not list and that did not answer: nothing known about it.
   const silent = $derived(
     server.name === null && server.players === 0 && app.pings[server.address] === null,
   );
+
+  /** The row is a button: Enter and Space open it, like a click. */
+  function onHeadKeydown(e: KeyboardEvent) {
+    if (e.target !== e.currentTarget) return;
+    if (e.key === "Enter" || e.key === " " || e.key === "Spacebar") {
+      e.preventDefault();
+      expanded = !expanded;
+    }
+  }
 
   // Opened by a link or a redial: unfold and show it.
   $effect(() => {
@@ -81,21 +93,6 @@
   const customName = $derived(app.favoriteNameOf(server.address));
   const displayTitle = $derived(customName || serverTitle(server));
 
-  function hubName(url: string): string {
-    try {
-      const u = new URL(url);
-      if (u.hostname.includes("spacestation14.com")) return "Wizards' Den";
-      if (u.hostname.includes("spacestation14.ru")) return "Singularity";
-      if (u.hostname.includes("simplestation.org")) return "SimpleStation";
-      if (u.hostname.includes("spacestationmultiverse.com")) return "Multiverse";
-      if (u.hostname.includes("corvax.fun")) return "Corvax";
-      if (u.hostname.includes("spacestories.club")) return "Space Stories";
-      return u.hostname;
-    } catch {
-      return url;
-    }
-  }
-
   const note = $derived(app.noteOf(server.address));
   let editingNote = $state(false);
   let noteDraft = $state("");
@@ -121,8 +118,15 @@
 </script>
 
 <div class="entry" bind:this={root}>
-  <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-  <div class="head" style:grid-template-columns={template} onclick={() => (expanded = !expanded)}>
+  <div
+    class="head"
+    style:grid-template-columns={template}
+    role="button"
+    tabindex="0"
+    aria-expanded={expanded}
+    onclick={() => (expanded = !expanded)}
+    onkeydown={onHeadKeydown}
+  >
     <div class="cell name">
       <span class="chev" class:open={expanded}><Icon name="chevron" size={18} /></span>
       {#if isFavorite}<span class="fav" title={t("server.favoriteMark")}><Icon name="star" size={14} /></span>{/if}
@@ -142,7 +146,9 @@
       </div>
     {/if}
     {#if columns.round_time}
-      <div class="cell center">{silent ? t("server.offline") : (round ?? "")}</div>
+      <div class="cell center">
+        {#if silent}{t("server.offline")}{:else}<RoundTimer {server} />{/if}
+      </div>
     {/if}
     {#if columns.players}
       <div class="cell center numeric">{silent ? "" : playersText(server)}</div>
@@ -191,15 +197,6 @@
         {/if}
         {#if customName && customName !== serverTitle(server)}
           <span class="sub original-name">({serverTitle(server)})</span>
-        {/if}
-        {#if server.hub_url}
-          <span class="hub-tag">{t("server.hubSource", { hub: hubName(server.hub_url) })}</span>
-        {/if}
-        {#if server.auth_methods && server.auth_methods.length > 0}
-          <span class="auth-tag">{t("server.allowedAuth", { providers: server.auth_methods.join(", ") })}</span>
-        {/if}
-        {#if ready?.engine_type && ready.engine_type.toLowerCase() !== "robust"}
-          <span class="engine-tag">Engine: {ready.engine_type}</span>
         {/if}
       </div>
 
@@ -475,22 +472,6 @@
     align-items: center;
     gap: 6px;
     margin-left: auto;
-  }
-  .hub-tag,
-  .auth-tag,
-  .engine-tag {
-    display: inline-flex;
-    align-items: center;
-    font-size: 11px;
-    padding: 1px 7px;
-    background: var(--tint-hover);
-    border-radius: var(--radius-sm);
-    color: var(--sub);
-  }
-  .engine-tag {
-    color: var(--accent);
-    background: var(--accent-soft);
-    font-weight: 500;
   }
   .original-name {
     font-style: italic;

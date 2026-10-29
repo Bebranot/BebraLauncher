@@ -1,20 +1,23 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { ServerRow } from "./api";
 import {
   DEFAULT_SORT,
   UNSPECIFIED,
   activeFilterCount,
   availableValues,
+  debounce,
   emptyFilters,
   languageName,
   matchesFilters,
   matchesSearch,
   nextSort,
+  normalizeRp,
   parseFilters,
   primaryLanguage,
   canonicalRegion,
   regionName,
   regionsOf,
+  searchVariants,
   sortServers,
   tagValuesOf,
 } from "./filters";
@@ -266,5 +269,78 @@ describe("names", () => {
     ];
     expect(availableValues(servers, "lang:", true)).toEqual(["ru", "en"]);
     expect(availableValues(servers, "region:")).toEqual([]);
+  });
+});
+
+describe("tag filters (P1-32)", () => {
+  it("normalizes rp: values to the four the panel offers", () => {
+    expect(normalizeRp("none")).toBe("none");
+    expect(normalizeRp("Low")).toBe("low");
+    expect(normalizeRp("medium")).toBe("med");
+    expect(normalizeRp("mid")).toBe("med");
+    expect(normalizeRp("HIGH")).toBe("high");
+    expect(normalizeRp("chaotic")).toBeNull();
+  });
+
+  it("a filter made from a tag shows that very server", () => {
+    const servers = [
+      row({ tags: ["region:ru", "rp:medium"] }),
+      row({ tags: ["region:es", "rp:low"] }),
+      row({ tags: ["region:eu_e", "rp:high"] }),
+    ];
+    // Clicking `region:ru` and `rp:medium` puts the canonical values into the filter.
+    const f = { ...emptyFilters(), regions: [canonicalRegion("ru")!], rp: [normalizeRp("medium")!] };
+    expect(f.regions).toEqual(["eu_e"]);
+    expect(f.rp).toEqual(["med"]);
+    expect(matchesFilters(servers[0], f)).toBe(true);
+    expect(matchesFilters(servers[1], f)).toBe(false);
+    expect(matchesFilters(servers[2], f)).toBe(false);
+  });
+
+  it("filters saved by an older run are canonicalized too", () => {
+    const f = parseFilters({ regions: ["ru", "us", "", "mars"], rp: ["medium", "chaotic"] });
+    expect(f.regions).toEqual(["eu_e", "am_n_e", UNSPECIFIED, "mars"]);
+    expect(f.rp).toEqual(["med"]);
+  });
+});
+
+describe("search performance helpers (P1-38)", () => {
+  it("makes the variants of a term once and reuses the list", () => {
+    const first = searchVariants("корвакс");
+    expect(searchVariants("корвакс")).toBe(first);
+    expect(first).toContain("korvaks");
+  });
+
+  it("finds the same rows as before", () => {
+    const s = row({ name: "Corvax Solaris", address: "ss14s://corvax.net" });
+    expect(matchesSearch(s, "корвакс")).toBe(true);
+    expect(matchesSearch(s, "nope")).toBe(false);
+  });
+
+  it("calls the debounced function once with the last arguments", () => {
+    vi.useFakeTimers();
+    try {
+      const calls: string[] = [];
+      const run = debounce((value: string) => calls.push(value), 150);
+      run("a");
+      run("ab");
+      run("abc");
+      expect(calls).toEqual([]);
+      vi.advanceTimersByTime(149);
+      expect(calls).toEqual([]);
+      vi.advanceTimersByTime(1);
+      expect(calls).toEqual(["abc"]);
+
+      run("x");
+      run.cancel();
+      vi.advanceTimersByTime(500);
+      expect(calls).toEqual(["abc"]);
+
+      run("y");
+      run.flush();
+      expect(calls).toEqual(["abc", "y"]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

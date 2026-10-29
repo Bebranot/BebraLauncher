@@ -44,8 +44,14 @@ export function parseFilters(value: unknown): FilterState {
   const count = (x: unknown): number | null =>
     typeof x === "number" && Number.isFinite(x) && x >= 0 ? Math.floor(x) : null;
   result.languages = strings(v.languages);
-  result.regions = strings(v.regions);
-  result.rp = strings(v.rp);
+  // Older runs could save a server's own region code (`ru`, `us`): file it under the launcher's
+  // region, or the filter would match nothing and have no checkbox to untick (P1-32).
+  result.regions = strings(v.regions).map((code) =>
+    code === UNSPECIFIED ? UNSPECIFIED : (canonicalRegion(code) ?? code),
+  );
+  result.rp = strings(v.rp)
+    .map(normalizeRp)
+    .filter((x): x is RpLevel => x !== null);
   result.age = strings(v.age).filter((a) => a === "yes" || a === "no");
   result.hideEmpty = v.hideEmpty === true;
   result.hideFull = v.hideFull === true;
@@ -91,6 +97,41 @@ export function isFull(s: ServerRow): boolean {
   return s.soft_max_players > 0 && s.players >= s.soft_max_players;
 }
 
+/** The roleplay levels the filter panel knows (P1-32). */
+export type RpLevel = "none" | "low" | "med" | "high";
+
+/**
+ * The filter value for a `rp:` tag. Servers write `medium`, `mid` or `med` for the same thing;
+ * anything unknown is no value at all, so ticking never hides such a server behind a filter the
+ * panel does not show.
+ */
+export function normalizeRp(value: string): RpLevel | null {
+  switch (value.trim().toLowerCase()) {
+    case "none":
+      return "none";
+    case "low":
+      return "low";
+    case "med":
+    case "mid":
+    case "medium":
+      return "med";
+    case "high":
+      return "high";
+    default:
+      return null;
+  }
+}
+
+/** The `rp:` values of a server, normalized to the four the panel offers. */
+function rpLevelsOf(tags: string[]): string[] {
+  const found = new Set<string>();
+  for (const raw of tagValuesOf(tags, "rp:")) {
+    const level = normalizeRp(raw);
+    if (level) found.add(level);
+  }
+  return [...found];
+}
+
 export function matchesFilters(s: ServerRow, f: FilterState): boolean {
   if (f.age.length === 1) {
     const is18 = s.tags.includes("18+");
@@ -99,7 +140,7 @@ export function matchesFilters(s: ServerRow, f: FilterState): boolean {
   const languages = tagValuesOf(s.tags, "lang:").map(primaryLanguage);
   if (!categoryMatches(f.languages, languages)) return false;
   if (!categoryMatches(f.regions, regionsOf(s.tags))) return false;
-  if (!categoryMatches(f.rp, tagValuesOf(s.tags, "rp:"))) return false;
+  if (!categoryMatches(f.rp, rpLevelsOf(s.tags))) return false;
 
   if (f.hideEmpty && s.players === 0) return false;
   if (f.hideFull && isFull(s)) return false;
@@ -113,22 +154,39 @@ export function normalizeSearch(str: string): string {
   return str.toLowerCase().replace(/ё/g, "е");
 }
 
+// Transliteration tables, once for the whole run: they used to be rebuilt for every term of
+// every server on each keystroke (P1-38).
+const RU_TO_EN: Record<string, string> = {
+  а: "a", б: "b", в: "v", г: "g", д: "d", е: "e", ё: "e", ж: "zh",
+  з: "z", и: "i", й: "y", к: "k", л: "l", м: "m", н: "n", о: "o",
+  п: "p", р: "r", с: "s", т: "t", у: "u", ф: "f", х: "kh", ц: "ts",
+  ч: "ch", ш: "sh", щ: "shch", ъ: "", ы: "y", ь: "", э: "e", ю: "yu", я: "ya",
+};
+
+const EN_TO_RU: Record<string, string> = {
+  a: "а", b: "б", c: "к", d: "д", e: "е", f: "ф", g: "г", h: "х",
+  i: "и", j: "дж", k: "к", l: "л", m: "м", n: "н", o: "о", p: "п",
+  q: "к", r: "р", s: "с", t: "т", u: "у", v: "в", w: "в",
+  y: "й", z: "з",
+};
+
+/** Terms repeat on every keystroke and for every server: their variants are made once. */
+const variantCache = new Map<string, string[]>();
+const VARIANT_CACHE_LIMIT = 512;
+
 export function searchVariants(term: string): string[] {
+  const cached = variantCache.get(term);
+  if (cached) return cached;
+
   const variants = new Set<string>();
   variants.add(term);
 
   // RU -> EN
-  const ruToEnMap: Record<string, string> = {
-    а: "a", б: "b", в: "v", г: "g", д: "d", е: "e", ё: "e", ж: "zh",
-    з: "z", и: "i", й: "y", к: "k", л: "l", м: "m", н: "n", о: "o",
-    п: "p", р: "r", с: "s", т: "t", у: "u", ф: "f", х: "kh", ц: "ts",
-    ч: "ch", ш: "sh", щ: "shch", ъ: "", ы: "y", ь: "", э: "e", ю: "yu", я: "ya",
-  };
-  const enDirect = term.split("").map((c) => ruToEnMap[c] ?? c).join("");
+  const enDirect = term.split("").map((c) => RU_TO_EN[c] ?? c).join("");
   variants.add(enDirect);
   variants.add(enDirect.replace(/k/g, "c"));
 
-  const enX = term.replace(/кс/g, "x").split("").map((c) => ruToEnMap[c] ?? c).join("");
+  const enX = term.replace(/кс/g, "x").split("").map((c) => RU_TO_EN[c] ?? c).join("");
   variants.add(enX);
   variants.add(enX.replace(/k/g, "c"));
 
@@ -145,29 +203,70 @@ export function searchVariants(term: string): string[] {
     .replace(/ye/g, "е")
     .replace(/x/g, "кс");
 
-  const enToRuMap: Record<string, string> = {
-    a: "а", b: "б", c: "к", d: "д", e: "е", f: "ф", g: "г", h: "х",
-    i: "и", j: "дж", k: "к", l: "л", m: "м", n: "н", o: "о", p: "п",
-    q: "к", r: "р", s: "с", t: "т", u: "у", v: "в", w: "в",
-    y: "й", z: "з",
-  };
-  const ruDirect = ruBase.split("").map((c) => enToRuMap[c] ?? c).join("");
+  const ruDirect = ruBase.split("").map((c) => EN_TO_RU[c] ?? c).join("");
   variants.add(ruDirect);
 
-  return Array.from(variants).filter((v) => v.length > 0);
+  const result = Array.from(variants).filter((v) => v.length > 0);
+  if (variantCache.size >= VARIANT_CACHE_LIMIT) variantCache.clear();
+  variantCache.set(term, result);
+  return result;
+}
+
+/** The searchable text of a row, normalized once per row and note (P1-38). */
+const hayCache = new WeakMap<ServerRow, { note: string; hay: string }>();
+
+function searchableText(s: ServerRow, note?: string | null): string {
+  const n = note ?? "";
+  const cached = hayCache.get(s);
+  if (cached && cached.note === n) return cached.hay;
+  const hay = normalizeSearch(
+    `${s.name ?? ""} ${s.address} ${s.tags.join(" ")} ${s.map ?? ""} ${s.preset ?? ""} ${n}`,
+  );
+  hayCache.set(s, { note: n, hay });
+  return hay;
 }
 
 export function matchesSearch(s: ServerRow, query: string, note?: string | null): boolean {
   const q = normalizeSearch(query.trim());
   if (!q) return true;
-  const hay = normalizeSearch(
-    `${s.name ?? ""} ${s.address} ${s.tags.join(" ")} ${s.map ?? ""} ${s.preset ?? ""} ${note ?? ""}`,
-  );
+  const hay = searchableText(s, note);
   const terms = q.split(/\s+/).filter(Boolean);
   return terms.every((term) => {
     const vars = searchVariants(term);
     return vars.some((v) => hay.includes(v));
   });
+}
+
+/** A delayed call: the last arguments win. Typing in the search box calls the filter once (P1-38). */
+export function debounce<A extends unknown[]>(
+  fn: (...args: A) => void,
+  ms: number,
+): ((...args: A) => void) & { cancel(): void; flush(): void } {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let waiting: A | null = null;
+
+  const run = () => {
+    timer = null;
+    const args = waiting;
+    waiting = null;
+    if (args) fn(...args);
+  };
+
+  const wrapped = (...args: A) => {
+    waiting = args;
+    if (timer !== null) clearTimeout(timer);
+    timer = setTimeout(run, ms);
+  };
+  wrapped.cancel = () => {
+    if (timer !== null) clearTimeout(timer);
+    timer = null;
+    waiting = null;
+  };
+  wrapped.flush = () => {
+    if (timer !== null) clearTimeout(timer);
+    run();
+  };
+  return wrapped;
 }
 
 // ---------------------------------------------------------------- sorting

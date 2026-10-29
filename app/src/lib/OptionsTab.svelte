@@ -1,8 +1,9 @@
-<script lang="ts">
+﻿<script lang="ts">
   import { onMount } from "svelte";
   import {
     api,
     errorText,
+    type BackgroundRow,
     type DiagRow,
     type PackRow,
     type PatchRow,
@@ -14,6 +15,7 @@
   import { t, type Key } from "./i18n.svelte";
   import { nativeName, UI_LANGUAGES } from "./languages";
   import ErpPromo from "./ErpPromo.svelte";
+  import Modal from "./Modal.svelte";
   import Option from "./Option.svelte";
   import { app } from "./store.svelte";
   import {
@@ -118,17 +120,11 @@
   // ------------------------------------------------------------ backgrounds
   let bgFileInput = $state<HTMLInputElement>();
   let uploadingBg = $state(false);
-  let bgThumbnails = $state<Record<string, string>>({});
 
+  // Each preview is requested once; the map is written by the store, so this effect does not
+  // restart when a thumbnail arrives (P1-29).
   $effect(() => {
-    const list = app.backgrounds;
-    for (const bg of list) {
-      if (!bgThumbnails[bg.id]) {
-        void api.getBackground(bg.id).then((url) => {
-          bgThumbnails = { ...bgThumbnails, [bg.id]: url };
-        }).catch(() => {});
-      }
-    }
+    for (const bg of app.backgrounds) void app.ensureThumbnail(bg.id);
   });
 
   async function handleBgFile(e: Event) {
@@ -143,6 +139,22 @@
     } finally {
       uploadingBg = false;
       input.value = "";
+    }
+  }
+
+  /** Deleting wallpapers is not undoable, so the card asks first. */
+  let pendingDeleteBg = $state<BackgroundRow | null>(null);
+  let deletingBg = $state(false);
+
+  async function confirmDeleteBg() {
+    const bg = pendingDeleteBg;
+    if (!bg || deletingBg) return;
+    deletingBg = true;
+    try {
+      await app.deleteBackground(bg.id);
+      pendingDeleteBg = null;
+    } finally {
+      deletingBg = false;
     }
   }
 
@@ -504,7 +516,7 @@
 </script>
 
 {#if s}
-  <div class="tab">
+  <div class="tab" data-scroll>
     {#if app.intelWarning}
       <div class="intel-card">
         <div class="intel-card-header">
@@ -742,7 +754,7 @@
       {#if s.opt_profile !== "custom"}
         <div class="opt-toggle-row">
           <button class="btn secondary sm" onclick={() => (showOptDetails = !showOptDetails)}>
-            {showOptDetails ? "▲ " + t("opt.optDetails") : "▼ " + t("opt.optDetails")}
+            {showOptDetails ? "в–І " + t("opt.optDetails") : "в–ј " + t("opt.optDetails")}
           </button>
         </div>
       {/if}
@@ -882,10 +894,10 @@
               {uploadingBg ? "..." : "+ " + t("opt.bgUpload")}
             </button>
             <button class="btn" onclick={() => app.resetBackground()}>
-              ↩ {t("opt.bgReset")}
+              в†© {t("opt.bgReset")}
             </button>
             <button class="btn" onclick={() => api.openBackgroundsFolder()}>
-              📁 {t("opt.bgFolder")}
+              рџ“Ѓ {t("opt.bgFolder")}
             </button>
           </div>
 
@@ -902,9 +914,9 @@
                 >
                   <div
                     class="bg-thumb"
-                    style:background-image={bgThumbnails[bg.id] ? `url('${bgThumbnails[bg.id]}')` : "none"}
+                    style:background-image={app.bgThumbnails[bg.id] ? `url('${app.bgThumbnails[bg.id]}')` : "none"}
                   >
-                    {#if !bgThumbnails[bg.id]}
+                    {#if !app.bgThumbnails[bg.id]}
                       <span class="sub small">...</span>
                     {/if}
                     {#if s.bg_custom_name === bg.id}
@@ -921,10 +933,10 @@
                     aria-label={t("opt.bgDelete")}
                     onclick={(e) => {
                       e.stopPropagation();
-                      void app.deleteBackground(bg.id);
+                      pendingDeleteBg = bg;
                     }}
                   >
-                    ✕
+                    вњ•
                   </button>
                 </div>
               {/each}
@@ -971,7 +983,7 @@
                 aria-label={t("opt.hubsRemove")}
                 onclick={() => removeHub(i)}
               >
-                ✕
+                вњ•
               </button>
             {/if}
           </li>
@@ -1024,7 +1036,7 @@
                   disabled={isAdded}
                   onclick={() => addPresetHub(rec.url)}
                 >
-                  {isAdded ? "✓" : t("opt.addHub")}
+                  {isAdded ? "вњ“" : t("opt.addHub")}
                 </button>
               </div>
             {/each}
@@ -1058,7 +1070,7 @@
                 <div>
                   <b>{pack.name}</b>
                   <span class="sub small">
-                    {pack.id}{#if pack.problems.length === 0} · {t("pack.files", { count: pack.files })} · {pack.cultures.map(nativeName).join(", ")}{/if}
+                    {pack.id}{#if pack.problems.length === 0} В· {t("pack.files", { count: pack.files })} В· {pack.cultures.map(nativeName).join(", ")}{/if}
                   </span>
                 </div>
                 {#if pack.description}<div class="sub small">{pack.description}</div>{/if}
@@ -1069,8 +1081,8 @@
                 {/if}
               </div>
               {#if pack.enabled}
-                <button class="btn icon open-r" title={t("pack.up")} aria-label={t("pack.up")} disabled={i === 0} onclick={() => movePack(pack.id, -1)}>▲</button>
-                <button class="btn icon open-l" title={t("pack.down")} aria-label={t("pack.down")} disabled={i >= (s.enabled_packs.length - 1)} onclick={() => movePack(pack.id, 1)}>▼</button>
+                <button class="btn icon open-r" title={t("pack.up")} aria-label={t("pack.up")} disabled={i === 0} onclick={() => movePack(pack.id, -1)}>в–І</button>
+                <button class="btn icon open-l" title={t("pack.down")} aria-label={t("pack.down")} disabled={i >= (s.enabled_packs.length - 1)} onclick={() => movePack(pack.id, 1)}>в–ј</button>
               {/if}
             </li>
           {/each}
@@ -1103,7 +1115,7 @@
               <div class="grow">
                 <div>
                   <b>{patch.name}</b>
-                  <span class="sub small">· {formatBytes(patch.file_size)}</span>
+                  <span class="sub small">В· {formatBytes(patch.file_size)}</span>
                 </div>
                 <div class="sub small code">{patch.id}</div>
               </div>
@@ -1209,7 +1221,7 @@
             <ul class="diag">
               {#each diag as r}
                 <li>
-                  <span class={r.ok ? "good" : "error"}>{r.ok ? "●" : "✕"}</span>
+                  <span class={r.ok ? "good" : "error"}>{r.ok ? "в—Џ" : "вњ•"}</span>
                   <b>{r.name}</b>
                   {#if r.ms !== null}<span class="sub">{r.ms} ms</span>{/if}
                   <span class="sub detail">{r.detail}</span>
@@ -1246,6 +1258,22 @@
         </div>
         <small class="sub">{t("dbg.resetHint")}</small>
       </section>
+    {/if}
+
+    {#if pendingDeleteBg}
+      <Modal title={t("opt.bgDeleteTitle")} onclose={() => (pendingDeleteBg = null)}>
+        <div class="bg-delete">
+          <p>{t("opt.bgDeleteBody", { name: pendingDeleteBg.name })}</p>
+          <div class="row">
+            <button class="btn primary" disabled={deletingBg} onclick={confirmDeleteBg}>
+              {deletingBg ? "..." : t("opt.bgDeleteAction")}
+            </button>
+            <button class="btn" disabled={deletingBg} onclick={() => (pendingDeleteBg = null)}>
+              {t("conn.cancel")}
+            </button>
+          </div>
+        </div>
+      </Modal>
     {/if}
   </div>
 {/if}
@@ -1520,6 +1548,16 @@
     grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
     gap: 12px;
     margin-top: 6px;
+  }
+  /* Confirm deleting a wallpaper: it is a file on disk and cannot be undone. */
+  .bg-delete {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  .bg-delete p {
+    margin: 0;
+    line-height: 1.45;
   }
   .bg-card {
     position: relative;
