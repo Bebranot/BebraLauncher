@@ -60,6 +60,34 @@ pub fn record_end(root: &Path, pid: u32) -> Option<GameSession> {
     Some(removed)
 }
 
+/// The journal file, with a lock around each read-modify-write.
+///
+/// Two clients can close at almost the same moment, and the launcher can start another game
+/// while doing so. Without the lock, A reads `[B]`, B reads `[A]`, and one of the writes is
+/// lost: a dead session stays in the file and `recover_sessions` credits its time again on
+/// the next start, although `record_play_time` already did (P1-22).
+#[derive(Default)]
+pub struct SessionJournal {
+    lock: std::sync::Mutex<()>,
+}
+
+impl SessionJournal {
+    pub fn load(&self, root: &Path) -> Vec<GameSession> {
+        let _guard = self.lock.lock().unwrap();
+        load_sessions(root)
+    }
+
+    pub fn record_start(&self, root: &Path, session: GameSession) {
+        let _guard = self.lock.lock().unwrap();
+        record_start(root, session);
+    }
+
+    pub fn record_end(&self, root: &Path, pid: u32) -> Option<GameSession> {
+        let _guard = self.lock.lock().unwrap();
+        record_end(root, pid)
+    }
+}
+
 /// Recovers unclosed sessions on launcher startup:
 /// 1. If the process is still running, keeps it in the active list.
 /// 2. If the process has exited, calculates elapsed play time using log file modification
@@ -161,6 +189,63 @@ mod tests {
         let ended = record_end(&dir, 12345);
         assert_eq!(ended, Some(session));
         assert!(load_sessions(&dir).is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn session(pid: u32) -> GameSession {
+        GameSession {
+            id: u64::from(pid),
+            pid,
+            image_path: "C:\\game.exe".into(),
+            address: format!("ss14://server-{pid}"),
+            server_name: None,
+            account: None,
+            plays_as: "Bebra".into(),
+            log_path: PathBuf::new(),
+            started_at_secs: 1000,
+        }
+    }
+
+    /// Games closing at the same time must not erase each other's journal entries: without the
+    /// lock, the last writer wins and a session stays behind (P1-22).
+    #[test]
+    fn concurrent_journal_updates_do_not_lose_sessions() {
+        let dir = tempdir();
+        let journal = SessionJournal::default();
+        const PLAYERS: u32 = 8;
+
+        std::thread::scope(|scope| {
+            for pid in 1..=PLAYERS {
+                let dir = &dir;
+                let journal = &journal;
+                scope.spawn(move || {
+                    for round in 0..20 {
+                        journal.record_start(dir, session(pid));
+                        // The same pid again: a restart of that client.
+                        journal.record_start(dir, session(pid));
+                        if round % 2 == 0 {
+                            journal.record_end(dir, pid);
+                        }
+                    }
+                    journal.record_start(dir, session(pid));
+                });
+            }
+        });
+
+        let left = journal.load(&dir);
+        let mut pids: Vec<u32> = left.iter().map(|s| s.pid).collect();
+        pids.sort_unstable();
+        assert_eq!(
+            pids,
+            (1..=PLAYERS).collect::<Vec<_>>(),
+            "every player's last session is still in the journal"
+        );
+
+        for pid in 1..=PLAYERS {
+            assert!(journal.record_end(&dir, pid).is_some());
+        }
+        assert!(journal.load(&dir).is_empty());
 
         let _ = std::fs::remove_dir_all(&dir);
     }

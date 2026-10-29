@@ -16,7 +16,7 @@ use bebra_core::paths::DataDirs;
 use bebra_core::play::{self, PlayRequest, Stage};
 use bebra_core::ServerAddr;
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Manager};
 use time::OffsetDateTime;
 use tokio::sync::Notify;
 use uuid::Uuid;
@@ -61,11 +61,38 @@ pub enum PlayEvent {
     },
 }
 
+/// A game the launcher started: enough to tell it from an unrelated process that got the same
+/// pid after the game ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunningGame {
+    pub pid: u32,
+    /// The program that owns the pid. Empty only if it could not be known; then the pid alone
+    /// has to be trusted.
+    pub image_path: String,
+}
+
+impl RunningGame {
+    fn is_alive(&self) -> bool {
+        self.image_path.is_empty()
+            || bebra_core::process::is_process_running_from(self.pid, &self.image_path)
+    }
+}
+
+/// Drops the games whose process has ended; returns how many were dropped.
+fn prune_with(games: &mut Vec<RunningGame>, is_alive: impl Fn(&RunningGame) -> bool) -> usize {
+    let before = games.len();
+    games.retain(is_alive);
+    before - games.len()
+}
+
 /// Tracks running games and ensures at most one game is being prepared at a time.
 #[derive(Default)]
 pub struct GameState {
     preparing: Mutex<Option<Arc<Notify>>>,
-    running: Mutex<std::collections::HashSet<u32>>,
+    /// Games started by the launcher, including the ones recovered from the journal after a
+    /// restart. Dead entries are dropped before every check: a launcher that crashed during
+    /// play must not keep `is_active()` true for the rest of the session (P1-17).
+    running: Mutex<Vec<RunningGame>>,
     token_refresh_lock: tokio::sync::Mutex<()>,
 }
 
@@ -89,18 +116,28 @@ impl GameState {
         self.preparing.lock().unwrap().is_some()
     }
 
-    pub fn register_running(&self, pid: u32) {
-        self.running.lock().unwrap().insert(pid);
+    pub fn register_running(&self, pid: u32, image_path: impl Into<String>) {
+        let game = RunningGame {
+            pid,
+            image_path: image_path.into(),
+        };
+        let mut running = self.running.lock().unwrap();
+        running.retain(|g| g.pid != pid);
+        running.push(game);
     }
 
     pub fn unregister_running(&self, pid: u32) -> usize {
-        let mut r = self.running.lock().unwrap();
-        r.remove(&pid);
-        r.len()
+        let mut running = self.running.lock().unwrap();
+        running.retain(|g| g.pid != pid);
+        prune_with(&mut running, RunningGame::is_alive);
+        running.len()
     }
 
+    /// How many games are actually running now.
     pub fn running_count(&self) -> usize {
-        self.running.lock().unwrap().len()
+        let mut running = self.running.lock().unwrap();
+        prune_with(&mut running, RunningGame::is_alive);
+        running.len()
     }
 
     /// Is a game being prepared or running?
@@ -177,7 +214,8 @@ pub fn start(app: AppHandle, game: Arc<GameState>, params: PlayParams) -> Result
             let release = PrepareRelease(game_clone.clone());
 
             let emit = |event: PlayEvent| {
-                let _ = app.emit(EVENT, event);
+                // Kept when the page is not listening yet (cold start with `--commands`).
+                crate::pending::emit(&app, EVENT, event);
             };
             let rt = match tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -255,7 +293,7 @@ async fn prepare(
     params: &PlayParams,
 ) -> Result<play::PreparedGame, Failure> {
     let emit = |event: PlayEvent| {
-        let _ = app.emit(EVENT, event);
+        crate::pending::emit(app, EVENT, event);
     };
 
     emit(PlayEvent::Stage { stage: "account" });
@@ -474,14 +512,15 @@ fn run_game(
         }
     };
     let pid = child.id();
-    game.register_running(pid);
+    let image_path = prepared_game.command.program.to_string_lossy().to_string();
+    game.register_running(pid, image_path.clone());
     crate::applog::line(&format!("game started, pid {pid}"));
     remember_game(app, params);
 
     let session = crate::sessions::GameSession {
         id: session_id,
         pid,
-        image_path: prepared_game.command.program.to_string_lossy().to_string(),
+        image_path,
         address: params.history_key.clone(),
         server_name: params.server_name.clone(),
         account: params.account.map(|a| a.to_string()),
@@ -492,7 +531,9 @@ fn run_game(
             .unwrap_or_default()
             .as_secs(),
     };
-    crate::sessions::record_start(dirs.root(), session);
+    app.state::<crate::AppState>()
+        .sessions
+        .record_start(dirs.root(), session);
 
     emit(PlayEvent::Running {
         pid,
@@ -511,7 +552,11 @@ fn run_game(
     let started = std::time::Instant::now();
     let code = child.wait().ok().and_then(|s| s.code());
     let remaining = game.unregister_running(pid);
-    let _ = crate::sessions::record_end(dirs.root(), pid);
+    // The journal entry goes first: the time below is credited by this run, and a crash between
+    // the two must not let `recover_sessions` count the same time again (P1-22).
+    app.state::<crate::AppState>()
+        .sessions
+        .record_end(dirs.root(), pid);
     record_play_time(app, &params.history_key, started.elapsed().as_secs());
     crate::applog::line(&format!(
         "game pid {pid} exited, code {code:?}, after {} s (remaining active: {remaining})",
@@ -533,4 +578,55 @@ fn run_game(
         code,
         log_tail,
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn game(pid: u32, path: &str) -> RunningGame {
+        RunningGame {
+            pid,
+            image_path: path.into(),
+        }
+    }
+
+    #[test]
+    fn dead_games_are_dropped_and_live_ones_kept() {
+        let mut games = vec![
+            game(1, r"C:\game\Robust.exe"),
+            game(2, r"C:\game\Robust.exe"),
+            game(3, ""),
+        ];
+        let dropped = prune_with(&mut games, |g| g.pid != 2);
+        assert_eq!(dropped, 1);
+        assert_eq!(games.iter().map(|g| g.pid).collect::<Vec<_>>(), [1, 3]);
+    }
+
+    /// A pid recovered after a launcher crash must not keep `is_active()` true after the game
+    /// is closed (P1-17): its entry is checked against the live process before every count.
+    #[test]
+    fn a_recovered_game_that_exited_stops_being_active() {
+        let state = GameState::default();
+        // A pid that certainly has no process behind it, with the program it used to run.
+        state.register_running(u32::MAX - 7, r"C:\game\Robust.exe");
+        state.register_running(u32::MAX - 8, "");
+        let live = state.running_count();
+        assert_eq!(
+            live, 1,
+            "the entry with an unknown program is kept, the verifiable dead one is dropped"
+        );
+        assert!(state.is_active(), "an unverifiable game is assumed running");
+        assert_eq!(state.unregister_running(u32::MAX - 8), 0);
+        assert!(!state.is_active(), "nothing is left, so the game is over");
+    }
+
+    #[test]
+    fn registering_the_same_pid_twice_keeps_one_entry() {
+        let state = GameState::default();
+        // A pid without a known program: always considered alive, so the count is stable.
+        state.register_running(u32::MAX - 9, "");
+        state.register_running(u32::MAX - 9, "");
+        assert_eq!(state.running_count(), 1);
+    }
 }

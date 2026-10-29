@@ -6,6 +6,8 @@ mod changelog;
 mod commands;
 mod game;
 mod news;
+mod pending;
+mod redact;
 mod redial;
 mod selfupdate;
 mod sessions;
@@ -26,7 +28,15 @@ pub struct AppState {
     pub client: Client,
     pub dirs: DataDirs,
     pub settings: Mutex<Settings>,
+    /// The settings the UI was last given: `set_settings` uses it to tell a stale copy of a
+    /// field from a deliberate edit (P1-20).
+    pub settings_seen: Mutex<Settings>,
     pub game: Arc<GameState>,
+    /// Events that happened before the UI could listen (a clicked link, a redial, the first
+    /// `play` events of a cold start); the UI asks for them with `take_pending_actions`.
+    pub pending: pending::PendingActions,
+    /// The session journal file: a read-modify-write on it must not interleave.
+    pub sessions: sessions::SessionJournal,
     /// The news feed of the last successful read, to not ask for it on every visit of the tab.
     pub news: Mutex<Option<(std::time::Instant, Vec<news::NewsItem>)>>,
     /// The launcher's own update: what was found, downloaded, started.
@@ -43,19 +53,23 @@ fn main() {
     let mut settings = Settings::load(dirs.root());
     let recovered_running = sessions::recover_sessions(dirs.root(), &mut settings);
     let client = http::build_client_with_proxy(Some(&settings.proxy)).unwrap_or_else(|e| {
-        // A broken proxy setting must not keep the launcher from starting.
-        applog::line(&format!("proxy ignored: {e}"));
+        // A broken proxy setting must not keep the launcher from starting. The address is not
+        // repeated here: it may carry a login and a password (P1-13).
+        applog::line(&format!("proxy ignored: {}", redact::text(&e.to_string())));
         http::build_client().expect("failed to set up the http client")
     });
     let game = Arc::new(GameState::default());
     for s in &recovered_running {
-        game.register_running(s.pid);
+        game.register_running(s.pid, &s.image_path);
     }
     let state = AppState {
         client,
+        settings_seen: Mutex::new(settings.clone()),
         settings: Mutex::new(settings),
         dirs,
         game,
+        pending: pending::PendingActions::default(),
+        sessions: sessions::SessionJournal::default(),
         news: Mutex::new(None),
         update: selfupdate::UpdateState::default(),
     };
@@ -95,6 +109,7 @@ fn main() {
             commands::logout,
             commands::get_settings,
             commands::set_settings,
+            commands::take_pending_actions,
             commands::toggle_favorite,
             commands::server_info,
             commands::cached_servers,

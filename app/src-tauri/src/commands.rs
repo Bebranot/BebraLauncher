@@ -14,7 +14,7 @@ use bebra_core::server::{self, AuthMode};
 use bebra_core::storage;
 use bebra_core::ServerAddr;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Manager, State};
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -431,24 +431,36 @@ pub fn select_account(state: State<'_, AppState>, account: Option<String>) -> Cm
 
 #[tauri::command]
 pub fn get_settings(state: State<'_, AppState>) -> Settings {
-    state.settings.lock().unwrap().clone()
+    let settings = state.settings.lock().unwrap().clone();
+    // Remember what the UI was told, to tell a stale copy from an edit in `set_settings`.
+    *state.settings_seen.lock().unwrap() = settings.clone();
+    settings
 }
 
 #[tauri::command]
 pub fn set_settings(state: State<'_, AppState>, settings: Settings) -> CmdResult<Settings> {
     let mut current = state.settings.lock().unwrap();
-    // The UI edits everything except what the launcher keeps itself: favourites (own
-    // commands), history and the last used account (written when a game starts).
-    let merged = Settings {
-        favorites: current.favorites.clone(),
-        history: current.history.clone(),
-        last_account: current.last_account.clone(),
-        ..settings
-    }
-    .sanitized();
+    let seen = state.settings_seen.lock().unwrap().clone();
+    // The UI edits its own options, but sends the whole settings object back. What only the
+    // launcher writes — favourites and their names, notes, history, the last account, enabled
+    // patches, the dismissed Intel warning, the chosen background, the schema version — must
+    // not be undone by its older copy (P1-20).
+    let merged = current.merged_from_ui(&seen, settings).sanitized();
     merged.save(state.dirs.root()).map_err(err)?;
     *current = merged.clone();
+    *state.settings_seen.lock().unwrap() = merged.clone();
     Ok(merged)
+}
+
+/// Everything that happened before the UI could listen: a clicked `ss14://` link, a redial
+/// asked for by the running game, the first `play` events of a cold start.
+///
+/// The UI calls this once, after subscribing to the events, and replays every item through the
+/// same handler as the live event: `{ event: "open-link" | "redial" | "play", payload: … }`,
+/// oldest first. After the call events are emitted live and nothing is repeated.
+#[tauri::command]
+pub fn take_pending_actions(state: State<'_, AppState>) -> Vec<crate::pending::PendingAction> {
+    state.pending.take()
 }
 
 /// Adds or removes a favourite server. Returns the new list of favourites.
@@ -606,7 +618,7 @@ pub struct RunningClientDto {
 /// Lists games that are currently running.
 #[tauri::command]
 pub fn list_running_clients(state: State<'_, AppState>) -> Vec<RunningClientDto> {
-    let sessions = crate::sessions::load_sessions(state.dirs.root());
+    let sessions = state.sessions.load(state.dirs.root());
     sessions
         .into_iter()
         .filter(|s| bebra_core::process::is_process_running_from(s.pid, &s.image_path))
@@ -685,14 +697,19 @@ pub fn handle_launcher_args(app: &AppHandle, args: &[String]) {
         match action {
             Action::Activate => game::restore_window(app),
             Action::Open { address } => {
-                crate::applog::line(&format!("link opened: {address}"));
+                // A clicked link is untrusted text: keep a possible `user:pass@` out of the log.
+                crate::applog::line(&format!("link opened: {}", crate::redact::text(&address)));
                 game::restore_window(app);
-                let _ = app.emit("open-link", address);
+                // The page may not be listening yet (cold start): it asks for it after that.
+                crate::pending::emit(app, "open-link", address);
             }
             Action::Connect { address, reason } => {
                 let state = app.state::<AppState>();
                 if state.settings.lock().unwrap().ignore_redial {
-                    crate::applog::line(&format!("redial to {address} ignored (setting)"));
+                    crate::applog::line(&format!(
+                        "redial to {} ignored (setting)",
+                        crate::redact::text(&address)
+                    ));
                     continue;
                 }
                 let app = app.clone();
@@ -711,7 +728,8 @@ pub fn handle_launcher_args(app: &AppHandle, args: &[String]) {
 fn redial_connect(app: &AppHandle, address: String, reason: Option<String>) {
     let state = app.state::<AppState>();
     if let Err(e) = ServerAddr::parse(&address) {
-        let _ = app.emit(
+        crate::pending::emit(
+            app,
             game::EVENT,
             game::PlayEvent::failed("invalid_address", e.to_string()),
         );
@@ -726,9 +744,10 @@ fn redial_connect(app: &AppHandle, address: String, reason: Option<String>) {
         .as_deref()
         .and_then(|a| a.parse::<Uuid>().ok());
 
-    crate::applog::line(&format!("redial to {address}"));
+    crate::applog::line(&format!("redial to {}", crate::redact::text(&address)));
     game::restore_window(app);
-    let _ = app.emit(
+    crate::pending::emit(
+        app,
         "redial",
         RedialEvent {
             address: address.clone(),
@@ -743,7 +762,7 @@ fn redial_connect(app: &AppHandle, address: String, reason: Option<String>) {
                 std::thread::sleep(std::time::Duration::from_millis(500));
             }
             Err(e) => {
-                let _ = app.emit(game::EVENT, game::PlayEvent::failed("other", e));
+                crate::pending::emit(app, game::EVENT, game::PlayEvent::failed("other", e));
                 return;
             }
             Ok(()) => return,
@@ -1027,19 +1046,15 @@ pub async fn content_versions(state: State<'_, AppState>) -> CmdResult<Vec<Versi
     .map_err(err)?
 }
 
-/// Puts every option back to its default. Favourites, history, the chosen account and the
-/// saved logins stay.
+/// Puts every option back to its default. Favourites, their custom names, server notes,
+/// history, the chosen account and the saved logins stay (P1-21).
 #[tauri::command]
 pub fn reset_settings(state: State<'_, AppState>) -> CmdResult<Settings> {
     let mut current = state.settings.lock().unwrap();
-    let fresh = Settings {
-        favorites: current.favorites.clone(),
-        history: current.history.clone(),
-        last_account: current.last_account.clone(),
-        ..Settings::default()
-    };
+    let fresh = current.reset_keeping_user_data();
     fresh.save(state.dirs.root()).map_err(err)?;
     *current = fresh.clone();
+    *state.settings_seen.lock().unwrap() = fresh.clone();
     Ok(fresh)
 }
 

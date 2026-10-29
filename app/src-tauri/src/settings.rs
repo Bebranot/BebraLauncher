@@ -301,7 +301,7 @@ impl Settings {
         if path.exists() {
             match std::fs::read(&path) {
                 Ok(bytes) => match serde_json::from_slice::<Settings>(&bytes) {
-                    Ok(settings) => return settings,
+                    Ok(settings) => return Self::cleaned(root, settings),
                     Err(e) => {
                         crate::applog::line(&format!(
                             "settings.json is corrupted ({e}); quarantining and attempting recovery"
@@ -325,12 +325,33 @@ impl Settings {
             if let Ok(bytes) = std::fs::read(&bak) {
                 if let Ok(settings) = serde_json::from_slice::<Settings>(&bytes) {
                     crate::applog::line("settings restored successfully from settings.json.bak");
-                    return settings;
+                    return Self::cleaned(root, settings);
                 }
             }
         }
 
         Settings::default()
+    }
+
+    /// Cleans what was read and writes the clean version back.
+    ///
+    /// A file can be valid JSON and still contain values the UI cannot survive
+    /// (`{"launcher_ui_scale": 0}` makes the window empty). Such a file is only reachable by a
+    /// hand edit or an old version, but it is read at start, before the reset button exists, so
+    /// the same cleaning as in `set_settings` has to happen here (P1-19). An already clean file
+    /// is left untouched, so a normal start does not rewrite it.
+    fn cleaned(root: &Path, settings: Settings) -> Self {
+        let clean = settings.clone().sanitized();
+        let same = match (serde_json::to_vec(&settings), serde_json::to_vec(&clean)) {
+            (Ok(before), Ok(after)) => before == after,
+            _ => false,
+        };
+        if !same {
+            if let Err(e) = clean.save(root) {
+                crate::applog::line(&format!("cannot save cleaned settings.json ({e})"));
+            }
+        }
+        clean
     }
 
     /// Saves settings atomically, keeping a backup of the previous valid settings.json.
@@ -704,6 +725,71 @@ impl Settings {
         if let Some(i) = self.favorites.iter().position(|a| a == address) {
             let item = self.favorites.remove(i);
             self.favorites.insert(0, item);
+        }
+    }
+
+    /// Defaults, keeping the things the player cannot retype: favourites and their names,
+    /// notes, history and the account chosen last (P1-21).
+    pub fn reset_keeping_user_data(&self) -> Self {
+        Settings {
+            last_account: self.last_account.clone(),
+            favorites: self.favorites.clone(),
+            favorite_names: self.favorite_names.clone(),
+            history: self.history.clone(),
+            server_notes: self.server_notes.clone(),
+            ..Settings::default()
+        }
+    }
+
+    /// Settings coming from the UI, merged with the current ones (P1-20).
+    ///
+    /// The UI works on a snapshot and sends the whole object back. Some fields are also written
+    /// by the launcher itself: `enabled_patches` (`install_patch`/`delete_patch`),
+    /// `bg_custom_name` (`delete_background`), `dismissed_intel_warning`
+    /// (`dismiss_intel_warning`). For those, a value equal to `seen` — the settings the UI was
+    /// last given — means the UI did not touch it, and the current value wins; the UI's copy may
+    /// be older than what the launcher wrote. A different value is a deliberate edit by the UI
+    /// and is taken as is.
+    ///
+    /// Favourites, their names, notes, history and the last account are always the launcher's:
+    /// they are changed by their own commands and the UI only shows them. `schema_version` is
+    /// always ours too: a UI must not be able to roll a migration back.
+    pub fn merged_from_ui(&self, seen: &Settings, incoming: Settings) -> Self {
+        /// Keep the current value unless the UI changed it since it was last told about it.
+        fn untouched<T: PartialEq>(current: &T, seen: &T, incoming: &T) -> bool {
+            incoming == seen && current != seen
+        }
+        fn pick<T: PartialEq + Clone>(current: &T, seen: &T, incoming: &T) -> T {
+            if untouched(current, seen, incoming) {
+                current.clone()
+            } else {
+                incoming.clone()
+            }
+        }
+
+        Settings {
+            schema_version: CURRENT_SCHEMA_VERSION,
+            last_account: self.last_account.clone(),
+            favorites: self.favorites.clone(),
+            favorite_names: self.favorite_names.clone(),
+            history: self.history.clone(),
+            server_notes: self.server_notes.clone(),
+            dismissed_intel_warning: pick(
+                &self.dismissed_intel_warning,
+                &seen.dismissed_intel_warning,
+                &incoming.dismissed_intel_warning,
+            ),
+            enabled_patches: pick(
+                &self.enabled_patches,
+                &seen.enabled_patches,
+                &incoming.enabled_patches,
+            ),
+            bg_custom_name: pick(
+                &self.bg_custom_name,
+                &seen.bg_custom_name,
+                &incoming.bg_custom_name,
+            ),
+            ..incoming
         }
     }
 }
@@ -1128,6 +1214,172 @@ mod tests {
         let p = std::env::temp_dir().join(format!("bebra-settings-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&p).unwrap();
         p
+    }
+
+    /// A file that is valid JSON but holds values the UI cannot survive is cleaned at load,
+    /// before the UI ever sees it, and the clean version is written back (P1-19).
+    #[test]
+    fn loading_cleans_the_file_and_keeps_the_clean_version() {
+        let dir = tempdir();
+        std::fs::write(
+            Settings::path(&dir),
+            br#"{"launcher_ui_scale":0,"bg_dim":500,"bg_blur":99,"guest_name":"  \u0007 bad  ","client_max_fps":100000,"theme":"dark"}"#,
+        )
+        .unwrap();
+
+        let s = Settings::load(&dir);
+        assert_eq!(s.launcher_ui_scale, 75, "the window stays usable");
+        assert_eq!(s.bg_dim, 95);
+        assert_eq!(s.bg_blur, 30);
+        assert_eq!(s.guest_name, "bad");
+        assert_eq!(s.client_max_fps, 360);
+        assert_eq!(s.theme, "dark", "valid values are kept");
+
+        let on_disk: Settings =
+            serde_json::from_slice(&std::fs::read(Settings::path(&dir)).unwrap()).unwrap();
+        assert_eq!(on_disk.launcher_ui_scale, 75);
+        assert_eq!(on_disk.bg_dim, 95);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A clean file is not rewritten on every start.
+    #[test]
+    fn a_clean_settings_file_is_left_alone() {
+        let dir = tempdir();
+        Settings::default().save(&dir).unwrap();
+        assert!(!Settings::backup_path(&dir).exists());
+
+        let loaded = Settings::load(&dir);
+        assert_eq!(loaded.guest_name, FALLBACK_USERNAME);
+        assert!(
+            !Settings::backup_path(&dir).exists(),
+            "no save happened, so no backup of an unchanged file was made"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The backup-restored file is cleaned too, not returned as it was saved long ago.
+    #[test]
+    fn a_restored_backup_is_cleaned() {
+        let dir = tempdir();
+        std::fs::write(
+            Settings::backup_path(&dir),
+            br#"{"launcher_ui_scale":5,"guest_name":"Player"}"#,
+        )
+        .unwrap();
+        let s = Settings::load(&dir);
+        assert_eq!(s.launcher_ui_scale, 75);
+        assert_eq!(s.guest_name, "Player");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A reset keeps what the player cannot retype: favourite names and server notes were lost
+    /// by `..Settings::default()` before (P1-21).
+    #[test]
+    fn reset_keeps_user_data() {
+        let mut current = Settings {
+            theme: "light".into(),
+            extra_args: "--cvar x=1".into(),
+            enabled_patches: vec!["p.dll".into()],
+            ..Settings::default()
+        };
+        current.toggle_favorite("ss14://a:1212");
+        current.set_favorite_name("ss14://a:1212", Some("Свой сервер".into()));
+        current.set_server_note("ss14://a:1212", "Тут играем по вечерам");
+        current.remember_played("ss14://a:1212", Some("A".into()), "1".into());
+        current.last_account = Some("user-1".into());
+
+        let fresh = current.reset_keeping_user_data();
+        assert_eq!(fresh.theme, "dark", "options go back to defaults");
+        assert_eq!(fresh.extra_args, "");
+        assert!(fresh.enabled_patches.is_empty());
+        assert_eq!(fresh.favorites, ["ss14://a:1212"]);
+        assert_eq!(
+            fresh
+                .favorite_names
+                .get("ss14://a:1212")
+                .map(String::as_str),
+            Some("Свой сервер")
+        );
+        assert_eq!(
+            fresh.server_notes.get("ss14://a:1212").map(String::as_str),
+            Some("Тут играем по вечерам")
+        );
+        assert_eq!(fresh.history.len(), 1);
+        assert_eq!(fresh.last_account.as_deref(), Some("user-1"));
+    }
+
+    /// The UI saves a snapshot. Fields the launcher wrote meanwhile must come from the current
+    /// settings; a field the UI itself changed is taken from the request (P1-20).
+    #[test]
+    fn an_old_ui_snapshot_does_not_wipe_backend_fields() {
+        // What the UI was last given.
+        let seen = Settings {
+            favorites: vec!["ss14://a:1212".into()],
+            enabled_patches: vec!["a.dll".into()],
+            bg_custom_name: Some("old.png".into()),
+            ..Settings::default()
+        };
+        // What the launcher has meanwhile: a patch was installed and the warning dismissed.
+        let current = Settings {
+            enabled_patches: vec!["a.dll".into(), "b.dll".into()],
+            dismissed_intel_warning: true,
+            ..seen.clone()
+        };
+
+        // The UI changes only the theme and sends its old copy of everything else.
+        let stale = Settings {
+            theme: "light".into(),
+            schema_version: 999,
+            ..seen.clone()
+        };
+        let merged = current.merged_from_ui(&seen, stale);
+        assert_eq!(merged.theme, "light", "the UI's own fields are taken");
+        assert!(merged.dismissed_intel_warning);
+        assert_eq!(merged.enabled_patches, ["a.dll", "b.dll"]);
+        assert_eq!(merged.schema_version, CURRENT_SCHEMA_VERSION);
+
+        // The UI turns a patch off and picks another background itself: those values differ
+        // from what it was given, so they win over the current ones.
+        let edited = Settings {
+            enabled_patches: Vec::new(),
+            bg_custom_name: Some("other.png".into()),
+            ..seen.clone()
+        };
+        let merged = current.merged_from_ui(&seen, edited);
+        assert!(merged.enabled_patches.is_empty());
+        assert_eq!(merged.bg_custom_name.as_deref(), Some("other.png"));
+    }
+
+    /// The launcher's own data is never taken from the UI's copy.
+    #[test]
+    fn the_ui_cannot_change_launcher_owned_data() {
+        let mut current = Settings {
+            favorites: vec!["ss14://a:1212".into()],
+            favorite_names: [("ss14://a:1212".to_string(), "A".to_string())]
+                .into_iter()
+                .collect(),
+            server_notes: [("ss14://a:1212".to_string(), "note".to_string())]
+                .into_iter()
+                .collect(),
+            last_account: Some("user-1".into()),
+            ..Settings::default()
+        };
+        current.remember_played("ss14://a:1212", Some("A".into()), "1".into());
+
+        let incoming = Settings {
+            favorites: Vec::new(),
+            last_account: None,
+            ..Settings::default()
+        };
+        let merged = current.merged_from_ui(&Settings::default(), incoming);
+        assert_eq!(merged.favorites, ["ss14://a:1212"]);
+        assert!(merged.favorite_names.contains_key("ss14://a:1212"));
+        assert!(merged.server_notes.contains_key("ss14://a:1212"));
+        assert_eq!(merged.history.len(), 1);
+        assert_eq!(merged.last_account.as_deref(), Some("user-1"));
     }
 }
 
