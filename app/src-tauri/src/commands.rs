@@ -14,6 +14,7 @@ use bebra_core::server::{self, AuthMode};
 use bebra_core::storage;
 use bebra_core::ServerAddr;
 use serde::{Deserialize, Serialize};
+use std::io::Write;
 use tauri::{AppHandle, Manager, State};
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
@@ -23,13 +24,23 @@ use crate::game::{self, PlayParams};
 use crate::news::{self, NewsItem};
 use crate::redial::{self, Action};
 use crate::selfupdate;
-use crate::settings::Settings;
+use crate::settings::{self, Settings};
 use crate::AppState;
 
 type CmdResult<T> = Result<T, String>;
 
 fn err(e: impl std::fmt::Display) -> String {
     e.to_string()
+}
+
+/// The settings lock, surviving a panic that poisoned it (P2-38).
+fn settings_lock(state: &AppState) -> std::sync::MutexGuard<'_, Settings> {
+    crate::lock_or_recover(&state.settings)
+}
+
+/// A server address in the one spelling favourites, notes and history use (P2-37).
+fn server_address(address: &str) -> CmdResult<String> {
+    settings::canonical_address(address).ok_or_else(|| "Неверный адрес сервера".to_string())
 }
 
 #[derive(Serialize)]
@@ -98,7 +109,7 @@ impl ServerRow {
 #[tauri::command]
 pub async fn list_servers(state: State<'_, AppState>) -> CmdResult<Vec<ServerRow>> {
     let hubs: Vec<String> = {
-        let s = state.settings.lock().unwrap();
+        let s = settings_lock(&state);
         s.hubs
             .iter()
             .filter(|h| h.enabled)
@@ -115,9 +126,7 @@ pub async fn list_servers(state: State<'_, AppState>) -> CmdResult<Vec<ServerRow
         .map_err(err)?;
     let rows: Vec<ServerRow> = servers.into_iter().map(ServerRow::from).collect();
     // So the next start has something to show before the hub answers.
-    if let Ok(json) = serde_json::to_vec(&rows) {
-        let _ = std::fs::write(cache_path(&state), json);
-    }
+    write_server_cache(&state, &rows);
     Ok(rows)
 }
 
@@ -125,13 +134,62 @@ fn cache_path(state: &AppState) -> std::path::PathBuf {
     state.dirs.root().join("servers-cache.json")
 }
 
+/// Writes bytes next to the target, flushes them, then renames: a half-written file is never
+/// seen by the next start (P2-36).
+fn store_cache_file(path: &std::path::Path, json: &[u8]) -> std::io::Result<()> {
+    let tmp = path.with_extension("json.tmp");
+    {
+        let mut file = std::fs::File::create(&tmp)?;
+        file.write_all(json)?;
+        file.sync_all()?;
+    }
+    std::fs::rename(&tmp, path)
+}
+
+/// Writes the list in one go: a temporary file under the lock, then a rename (P2-36).
+fn write_server_cache(state: &AppState, rows: &[ServerRow]) {
+    let json = match serde_json::to_vec(rows) {
+        Ok(json) => json,
+        Err(e) => {
+            crate::applog::line(&format!("servers cache: cannot serialize: {e}"));
+            return;
+        }
+    };
+    let _guard = crate::lock_or_recover(&state.servers_cache);
+    if let Err(e) = store_cache_file(&cache_path(state), &json) {
+        crate::applog::line(&format!("servers cache: cannot save: {e}"));
+    }
+}
+
 /// The server list of the last successful refresh (maybe long ago); empty if there is none.
 #[tauri::command]
 pub fn cached_servers(state: State<'_, AppState>) -> Vec<ServerRow> {
-    std::fs::read(cache_path(&state))
-        .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_default()
+    read_server_cache(&state)
+}
+
+/// The cached list, logging anything that is wrong with the file (P2-36).
+pub(crate) fn read_server_cache(state: &AppState) -> Vec<ServerRow> {
+    let path = cache_path(state);
+    let _guard = crate::lock_or_recover(&state.servers_cache);
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(e) => {
+            crate::applog::line(&format!("servers cache: cannot read: {e}"));
+            return Vec::new();
+        }
+    };
+    match parse_cached_rows(&bytes) {
+        Ok(rows) => rows,
+        Err(e) => {
+            crate::applog::line(&format!("servers cache: ignoring a damaged file: {e}"));
+            Vec::new()
+        }
+    }
+}
+
+fn parse_cached_rows(bytes: &[u8]) -> serde_json::Result<Vec<ServerRow>> {
+    serde_json::from_slice(bytes)
 }
 
 #[derive(Serialize)]
@@ -347,6 +405,8 @@ pub async fn login(
     password: String,
     tfa_code: Option<String>,
 ) -> CmdResult<LoginOutcome> {
+    // The same lock the game uses to renew a token: a login must not race a renewal (P2-35).
+    let _tokens = state.game.lock_tokens().await;
     let auth = AuthClient::official(state.client.clone());
     let store = CredentialStore::default();
     let tfa = tfa_code.as_deref().map(str::trim).filter(|c| !c.is_empty());
@@ -397,6 +457,8 @@ pub async fn login(
 #[tauri::command]
 pub async fn logout(state: State<'_, AppState>, user_id: String) -> CmdResult<bool> {
     let id: Uuid = user_id.parse().map_err(|_| "Неверный id аккаунта")?;
+    // A concurrent token renewal would write the login back after the logout (P2-35).
+    let _tokens = state.game.lock_tokens().await;
     let store = CredentialStore::default();
     let accounts_list = store.list().map_err(err)?;
     let account = accounts_list
@@ -407,23 +469,24 @@ pub async fn logout(state: State<'_, AppState>, user_id: String) -> CmdResult<bo
         .await
         .map_err(err)?;
 
-    let mut settings = state.settings.lock().unwrap();
+    let mut settings = settings_lock(&state);
     if settings.last_account.as_deref() == Some(user_id.as_str()) {
         settings.last_account = None;
-        let _ = settings.save(state.dirs.root());
+        settings.save(state.dirs.root()).map_err(err)?;
     }
     Ok(told)
 }
 
 #[tauri::command]
-pub fn select_account(state: State<'_, AppState>, account: Option<String>) -> CmdResult<()> {
+pub async fn select_account(state: State<'_, AppState>, account: Option<String>) -> CmdResult<()> {
     let acc_str = account.unwrap_or_default();
     if !acc_str.is_empty() {
         acc_str
             .parse::<Uuid>()
             .map_err(|_| "Неверный id аккаунта")?;
     }
-    let mut settings = state.settings.lock().unwrap();
+    let _tokens = state.game.lock_tokens().await;
+    let mut settings = settings_lock(&state);
     settings.last_account = Some(acc_str);
     settings.save(state.dirs.root()).map_err(err)?;
     Ok(())
@@ -431,16 +494,16 @@ pub fn select_account(state: State<'_, AppState>, account: Option<String>) -> Cm
 
 #[tauri::command]
 pub fn get_settings(state: State<'_, AppState>) -> Settings {
-    let settings = state.settings.lock().unwrap().clone();
+    let settings = settings_lock(&state).clone();
     // Remember what the UI was told, to tell a stale copy from an edit in `set_settings`.
-    *state.settings_seen.lock().unwrap() = settings.clone();
+    *crate::lock_or_recover(&state.settings_seen) = settings.clone();
     settings
 }
 
 #[tauri::command]
 pub fn set_settings(state: State<'_, AppState>, settings: Settings) -> CmdResult<Settings> {
-    let mut current = state.settings.lock().unwrap();
-    let seen = state.settings_seen.lock().unwrap().clone();
+    let mut current = settings_lock(&state);
+    let seen = crate::lock_or_recover(&state.settings_seen).clone();
     // The UI edits its own options, but sends the whole settings object back. What only the
     // launcher writes — favourites and their names, notes, history, the last account, enabled
     // patches, the dismissed Intel warning, the chosen background, the schema version — must
@@ -448,7 +511,7 @@ pub fn set_settings(state: State<'_, AppState>, settings: Settings) -> CmdResult
     let merged = current.merged_from_ui(&seen, settings).sanitized();
     merged.save(state.dirs.root()).map_err(err)?;
     *current = merged.clone();
-    *state.settings_seen.lock().unwrap() = merged.clone();
+    *crate::lock_or_recover(&state.settings_seen) = merged.clone();
     Ok(merged)
 }
 
@@ -466,7 +529,8 @@ pub fn take_pending_actions(state: State<'_, AppState>) -> Vec<crate::pending::P
 /// Adds or removes a favourite server. Returns the new list of favourites.
 #[tauri::command]
 pub fn toggle_favorite(state: State<'_, AppState>, address: String) -> CmdResult<Vec<String>> {
-    let mut s = state.settings.lock().unwrap();
+    let address = server_address(&address)?;
+    let mut s = settings_lock(&state);
     s.toggle_favorite(&address);
     s.save(state.dirs.root()).map_err(err)?;
     Ok(s.favorites.clone())
@@ -475,12 +539,9 @@ pub fn toggle_favorite(state: State<'_, AppState>, address: String) -> CmdResult
 /// Adds a favourite server by address (one the hub may not list). Returns the new list.
 #[tauri::command]
 pub fn add_favorite(state: State<'_, AppState>, address: String) -> CmdResult<Vec<String>> {
-    let address = address.trim().to_string();
-    ServerAddr::parse(&address).map_err(err)?;
-    let mut s = state.settings.lock().unwrap();
-    if !s.favorites.contains(&address) {
-        s.favorites.push(address);
-    }
+    let address = server_address(&address)?;
+    let mut s = settings_lock(&state);
+    s.add_favorite(&address);
     s.save(state.dirs.root()).map_err(err)?;
     Ok(s.favorites.clone())
 }
@@ -488,7 +549,8 @@ pub fn add_favorite(state: State<'_, AppState>, address: String) -> CmdResult<Ve
 /// Moves a favourite server to the top of the list. Returns the new list of favourites.
 #[tauri::command]
 pub fn raise_favorite(state: State<'_, AppState>, address: String) -> CmdResult<Vec<String>> {
-    let mut s = state.settings.lock().unwrap();
+    let address = server_address(&address)?;
+    let mut s = settings_lock(&state);
     s.raise_favorite(&address);
     s.save(state.dirs.root()).map_err(err)?;
     Ok(s.favorites.clone())
@@ -501,7 +563,8 @@ pub fn move_favorite(
     address: String,
     delta: i32,
 ) -> CmdResult<Vec<String>> {
-    let mut s = state.settings.lock().unwrap();
+    let address = server_address(&address)?;
+    let mut s = settings_lock(&state);
     s.move_favorite(&address, delta);
     s.save(state.dirs.root()).map_err(err)?;
     Ok(s.favorites.clone())
@@ -515,9 +578,9 @@ pub fn edit_favorite(
     new_address: String,
     name: Option<String>,
 ) -> CmdResult<Vec<String>> {
-    let new_address = new_address.trim().to_string();
-    ServerAddr::parse(&new_address).map_err(err)?;
-    let mut s = state.settings.lock().unwrap();
+    let old_address = server_address(&old_address)?;
+    let new_address = server_address(&new_address)?;
+    let mut s = settings_lock(&state);
     s.edit_favorite(&old_address, &new_address, name);
     s.save(state.dirs.root()).map_err(err)?;
     Ok(s.favorites.clone())
@@ -530,7 +593,8 @@ pub fn set_favorite_name(
     address: String,
     name: Option<String>,
 ) -> CmdResult<std::collections::HashMap<String, String>> {
-    let mut s = state.settings.lock().unwrap();
+    let address = server_address(&address)?;
+    let mut s = settings_lock(&state);
     s.set_favorite_name(&address, name);
     s.save(state.dirs.root()).map_err(err)?;
     Ok(s.favorite_names.clone())
@@ -539,7 +603,7 @@ pub fn set_favorite_name(
 /// Returns true if a desktop 13th/14th Gen Intel CPU is detected and the warning was not yet dismissed.
 #[tauri::command]
 pub fn check_intel_warning(state: State<'_, AppState>) -> bool {
-    let s = state.settings.lock().unwrap();
+    let s = settings_lock(&state);
     if s.dismissed_intel_warning {
         return false;
     }
@@ -549,7 +613,7 @@ pub fn check_intel_warning(state: State<'_, AppState>) -> bool {
 /// Dismisses the Intel 13th/14th Gen CPU degradation advisory.
 #[tauri::command]
 pub fn dismiss_intel_warning(state: State<'_, AppState>) -> CmdResult<()> {
-    let mut s = state.settings.lock().unwrap();
+    let mut s = settings_lock(&state);
     s.dismissed_intel_warning = true;
     s.save(state.dirs.root()).map_err(err)?;
     Ok(())
@@ -568,7 +632,8 @@ pub fn set_server_note(
     address: String,
     note: String,
 ) -> CmdResult<std::collections::HashMap<String, String>> {
-    let mut s = state.settings.lock().unwrap();
+    let address = server_address(&address)?;
+    let mut s = settings_lock(&state);
     s.set_server_note(&address, &note);
     s.save(state.dirs.root()).map_err(err)?;
     Ok(s.server_notes.clone())
@@ -640,9 +705,17 @@ pub fn start_play(
     preview: bool,
 ) -> CmdResult<()> {
     let addr = ServerAddr::parse(address).map_err(err)?;
-    let settings = state.settings.lock().unwrap().clone();
+    let settings = settings_lock(state).clone();
 
-    let patches = bebra_core::patches::resolve_patches(&state.dirs, &settings.enabled_patches);
+    let resolved = bebra_core::patches::resolve_verified(&state.dirs, &settings.enabled_patches);
+    if !resolved.rejected.is_empty() {
+        // Something replaced an installed patch: never load it without saying so.
+        crate::applog::line(&format!(
+            "patches not loaded, the file changed after installation: {}",
+            resolved.rejected.join(", ")
+        ));
+    }
+    let patches = resolved.paths;
     let optimization = settings.optimization_config();
 
     game::start(
@@ -705,7 +778,7 @@ pub fn handle_launcher_args(app: &AppHandle, args: &[String]) {
             }
             Action::Connect { address, reason } => {
                 let state = app.state::<AppState>();
-                if state.settings.lock().unwrap().ignore_redial {
+                if settings_lock(&state).ignore_redial {
                     crate::applog::line(&format!(
                         "redial to {} ignored (setting)",
                         crate::redact::text(&address)
@@ -814,17 +887,55 @@ pub struct BackgroundRow {
 
 const SUPPORTED_BG_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "webp", "gif"];
 
+/// Largest background the UI may send. The base64 text is measured before it is decoded, so an
+/// oversized request costs nothing (P2-31).
+const MAX_BG_BYTES: usize = 30 * 1024 * 1024;
+/// Largest client patch the UI may send.
+const MAX_PATCH_BYTES: usize = 100 * 1024 * 1024;
+
+/// Names Windows keeps for devices: a file `CON.png` cannot be created or opened (P2-32).
+const RESERVED_NAMES: &[&str] = &[
+    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+];
+
 fn is_supported_bg_extension(ext: &str) -> bool {
     let lower = ext.to_ascii_lowercase();
     SUPPORTED_BG_EXTENSIONS.iter().any(|&e| e == lower)
 }
 
-fn validate_bg_filename(name: &str) -> CmdResult<()> {
-    let clean = name.trim();
-    if clean.is_empty()
-        || clean.len() > 200
+fn is_reserved_windows_name(stem: &str) -> bool {
+    let upper = stem.trim().to_ascii_uppercase();
+    RESERVED_NAMES.iter().any(|r| upper == *r)
+}
+
+/// Drops everything a file name cannot hold, keeping letters, digits, spaces, `-`, `_` and `.`.
+fn clean_file_name(name: &str) -> String {
+    name.chars()
+        .filter(|c| c.is_alphanumeric() || matches!(*c, '-' | '_' | '.' | ' '))
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
+/// The one check used for saving, reading and deleting a background (P2-32).
+///
+/// Returns the name to use on disk. Rejects path separators, `..`, reserved device names and
+/// names Windows would silently change (a trailing dot or space).
+fn validate_bg_filename(name: &str) -> CmdResult<String> {
+    // Windows drops a trailing space or dot silently; such a name would be saved under another
+    // name than the one asked for.
+    if name != name.trim() || name.ends_with('.') {
+        return Err("Недопустимое имя файла".into());
+    }
+    let clean = name;
+    if clean.is_empty() {
+        return Err("Имя файла не может быть пустым".into());
+    }
+    if clean.len() > 200
         || clean.contains(['/', '\\', ':'])
         || clean.contains("..")
+        || clean.ends_with(' ')
     {
         return Err("Недопустимое имя файла".into());
     }
@@ -832,11 +943,81 @@ fn validate_bg_filename(name: &str) -> CmdResult<()> {
     if p.file_name() != Some(std::ffi::OsStr::new(clean)) {
         return Err("Недопустимое имя файла".into());
     }
+    let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+    if stem.is_empty() || is_reserved_windows_name(stem) {
+        return Err("Недопустимое имя файла".into());
+    }
     let ext = p.extension().and_then(|s| s.to_str()).unwrap_or("");
     if !is_supported_bg_extension(ext) {
         return Err("Недопустимый тип файла изображения".into());
     }
-    Ok(())
+    Ok(clean.to_string())
+}
+
+/// The name a saved background gets: cleaned, with `.png` added when the name has no known
+/// image extension, then validated like every other background name.
+fn background_file_name(name: &str) -> CmdResult<String> {
+    let clean = clean_file_name(name);
+    if clean.is_empty() {
+        return Err("Имя файла не может быть пустым".into());
+    }
+    let ext = std::path::Path::new(&clean)
+        .extension()
+        .and_then(|s| s.to_str());
+    let candidate = match ext {
+        Some(e) if is_supported_bg_extension(e) => clean,
+        _ => format!("{clean}.png"),
+    };
+    validate_bg_filename(&candidate)
+}
+
+/// The part of a data URL after `;base64,` (or the whole text).
+fn base64_payload(data: &str) -> &str {
+    match data.find(";base64,") {
+        Some(i) => data[i + 8..].trim(),
+        None => data.trim(),
+    }
+}
+
+/// The longest base64 text that can hold `max_bytes` bytes, with room for the data-URL header.
+fn base64_limit(max_bytes: usize) -> usize {
+    // 3 bytes per 4 characters.
+    (max_bytes / 3 + 1) * 4 + 4096
+}
+
+fn decode_base64(payload: &str, max_bytes: usize, what: &str) -> CmdResult<Vec<u8>> {
+    if payload.len() > base64_limit(max_bytes) {
+        return Err(format!(
+            "Файл слишком большой (максимум {} МБ)",
+            max_bytes / (1024 * 1024)
+        ));
+    }
+    use base64::Engine;
+    let bytes = base64::prelude::BASE64_STANDARD
+        .decode(payload)
+        .map_err(|e| format!("Не удалось декодировать {what}: {e}"))?;
+    if bytes.is_empty() {
+        return Err("Файл пуст".into());
+    }
+    if bytes.len() > max_bytes {
+        return Err(format!(
+            "Файл слишком большой (максимум {} МБ)",
+            max_bytes / (1024 * 1024)
+        ));
+    }
+    Ok(bytes)
+}
+
+/// Writes bytes next to their final place, flushes them, then renames: a crash leaves either
+/// the old file or the complete new one.
+fn write_file_atomic(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    let tmp = path.with_extension("part");
+    {
+        let mut file = std::fs::File::create(&tmp)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+    }
+    std::fs::rename(&tmp, path)
 }
 
 #[tauri::command]
@@ -872,100 +1053,80 @@ pub fn list_backgrounds(state: State<'_, AppState>) -> CmdResult<Vec<BackgroundR
 }
 
 #[tauri::command]
-pub fn save_background(
+pub async fn save_background(
     state: State<'_, AppState>,
     name: String,
     data_base64: String,
 ) -> CmdResult<BackgroundRow> {
+    let filename = background_file_name(&name)?;
+    // Checked before the text is even copied or decoded (P2-31).
+    if base64_payload(&data_base64).len() > base64_limit(MAX_BG_BYTES) {
+        return Err(format!(
+            "Файл слишком большой (максимум {} МБ)",
+            MAX_BG_BYTES / (1024 * 1024)
+        ));
+    }
     let dir = state.dirs.backgrounds();
-    std::fs::create_dir_all(&dir).map_err(err)?;
+    // Decoding and writing 30 MB must not block the thread that serves IPC.
+    tokio::task::spawn_blocking(move || -> CmdResult<BackgroundRow> {
+        let bytes = decode_base64(base64_payload(&data_base64), MAX_BG_BYTES, "изображение")?;
+        std::fs::create_dir_all(&dir).map_err(err)?;
+        write_file_atomic(&dir.join(&filename), &bytes).map_err(err)?;
 
-    let raw_name: String = name
-        .chars()
-        .filter(|c| c.is_alphanumeric() || matches!(*c, '-' | '_' | '.' | ' '))
-        .collect();
-    let clean = raw_name.trim();
-    if clean.is_empty() {
-        return Err("Имя файла не может быть пустым".into());
-    }
-
-    let ext = std::path::Path::new(clean)
-        .extension()
-        .and_then(|s| s.to_str())
-        .map(|s| s.to_ascii_lowercase());
-
-    let final_filename = match ext {
-        Some(e) if is_supported_bg_extension(&e) => clean.to_string(),
-        _ => format!("{clean}.png"),
-    };
-
-    let payload = if let Some(idx) = data_base64.find(";base64,") {
-        &data_base64[idx + 8..]
-    } else {
-        &data_base64
-    };
-
-    use base64::Engine;
-    let bytes = base64::prelude::BASE64_STANDARD
-        .decode(payload.trim())
-        .map_err(|e| format!("Не удалось декодировать изображение: {e}"))?;
-
-    if bytes.is_empty() {
-        return Err("Файл пуст".into());
-    }
-    if bytes.len() > 30 * 1024 * 1024 {
-        return Err("Файл слишком большой (максимум 30 МБ)".into());
-    }
-
-    let file_path = dir.join(&final_filename);
-    std::fs::write(&file_path, &bytes).map_err(err)?;
-
-    let file_size = bytes.len() as u64;
-    let name_stem = std::path::Path::new(&final_filename)
-        .file_stem()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| final_filename.clone());
-
-    Ok(BackgroundRow {
-        id: final_filename,
-        name: name_stem,
-        file_size,
+        let name_stem = std::path::Path::new(&filename)
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| filename.clone());
+        Ok(BackgroundRow {
+            id: filename,
+            name: name_stem,
+            file_size: bytes.len() as u64,
+        })
     })
+    .await
+    .map_err(err)?
 }
 
 #[tauri::command]
-pub fn get_background(state: State<'_, AppState>, name: String) -> CmdResult<String> {
-    validate_bg_filename(&name)?;
+pub async fn get_background(state: State<'_, AppState>, name: String) -> CmdResult<String> {
+    let name = validate_bg_filename(&name)?;
     let path = state.dirs.backgrounds().join(&name);
-    let bytes = std::fs::read(&path).map_err(err)?;
-    let ext = path
-        .extension()
-        .and_then(|s| s.to_str())
-        .unwrap_or("png")
-        .to_ascii_lowercase();
-    let mime = match ext.as_str() {
-        "jpg" | "jpeg" => "image/jpeg",
-        "webp" => "image/webp",
-        "gif" => "image/gif",
-        _ => "image/png",
-    };
-    use base64::Engine;
-    let b64 = base64::prelude::BASE64_STANDARD.encode(&bytes);
-    Ok(format!("data:{mime};base64,{b64}"))
+    tokio::task::spawn_blocking(move || -> CmdResult<String> {
+        let bytes = std::fs::read(&path).map_err(err)?;
+        let ext = path
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("png")
+            .to_ascii_lowercase();
+        let mime = match ext.as_str() {
+            "jpg" | "jpeg" => "image/jpeg",
+            "webp" => "image/webp",
+            "gif" => "image/gif",
+            _ => "image/png",
+        };
+        use base64::Engine;
+        let b64 = base64::prelude::BASE64_STANDARD.encode(&bytes);
+        Ok(format!("data:{mime};base64,{b64}"))
+    })
+    .await
+    .map_err(err)?
 }
 
 #[tauri::command]
 pub fn delete_background(state: State<'_, AppState>, name: String) -> CmdResult<()> {
-    validate_bg_filename(&name)?;
+    let name = validate_bg_filename(&name)?;
     let path = state.dirs.backgrounds().join(&name);
-    if path.is_file() {
-        let _ = std::fs::remove_file(&path);
+    // A background that is already gone is fine; anything else is the user's problem to hear.
+    if let Err(e) = std::fs::remove_file(&path) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            return Err(format!("Не удалось удалить файл: {e}"));
+        }
     }
 
-    let mut settings = state.settings.lock().unwrap();
-    if settings.bg_custom_name.as_deref() == Some(&name) {
+    let mut settings = settings_lock(&state);
+    if settings.bg_custom_name.as_deref() == Some(name.as_str()) {
         settings.bg_custom_name = None;
-        let _ = settings.save(state.dirs.root());
+        settings.save(state.dirs.root()).map_err(err)?;
     }
     Ok(())
 }
@@ -1050,11 +1211,11 @@ pub async fn content_versions(state: State<'_, AppState>) -> CmdResult<Vec<Versi
 /// history, the chosen account and the saved logins stay (P1-21).
 #[tauri::command]
 pub fn reset_settings(state: State<'_, AppState>) -> CmdResult<Settings> {
-    let mut current = state.settings.lock().unwrap();
+    let mut current = settings_lock(&state);
     let fresh = current.reset_keeping_user_data();
     fresh.save(state.dirs.root()).map_err(err)?;
     *current = fresh.clone();
-    *state.settings_seen.lock().unwrap() = fresh.clone();
+    *crate::lock_or_recover(&state.settings_seen) = fresh.clone();
     Ok(fresh)
 }
 
@@ -1189,7 +1350,7 @@ pub struct PackRow {
 #[tauri::command]
 pub async fn list_packs(state: State<'_, AppState>) -> CmdResult<Vec<PackRow>> {
     let dirs = state.dirs.clone();
-    let enabled = state.settings.lock().unwrap().enabled_packs.clone();
+    let enabled = settings_lock(&state).enabled_packs.clone();
     tokio::task::spawn_blocking(move || {
         Ok(packs::scan(&dirs)
             .into_iter()
@@ -1216,6 +1377,8 @@ pub struct PatchRow {
     #[allow(dead_code)]
     file_size: u64,
     enabled: bool,
+    /// False when the file no longer matches the hash recorded at installation (P1-2).
+    verified: bool,
 }
 
 fn validate_patch_id(id: &str) -> CmdResult<String> {
@@ -1224,11 +1387,17 @@ fn validate_patch_id(id: &str) -> CmdResult<String> {
         || clean.len() > 200
         || clean.contains(['/', '\\', ':'])
         || clean.contains("..")
+        || clean.ends_with('.')
+        || clean.ends_with(' ')
     {
         return Err("Недопустимое имя файла мода".into());
     }
     let p = std::path::Path::new(clean);
     if p.file_name() != Some(std::ffi::OsStr::new(clean)) {
+        return Err("Недопустимое имя файла мода".into());
+    }
+    let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+    if stem.is_empty() || is_reserved_windows_name(stem) {
         return Err("Недопустимое имя файла мода".into());
     }
     if !p
@@ -1242,6 +1411,23 @@ fn validate_patch_id(id: &str) -> CmdResult<String> {
     Ok(clean.to_string())
 }
 
+/// The file name a patch gets: cleaned, `.dll` added when the name has no extension, then
+/// validated.
+fn patch_file_name(name: &str) -> CmdResult<String> {
+    let mut clean = clean_file_name(name);
+    if clean.is_empty() {
+        return Err("Имя файла не может быть пустым".into());
+    }
+    let has_extension = std::path::Path::new(&clean)
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some();
+    if !has_extension {
+        clean.push_str(".dll");
+    }
+    validate_patch_id(&clean)
+}
+
 #[tauri::command]
 pub fn delete_patch(state: State<'_, AppState>, id: String) -> CmdResult<()> {
     let clean = validate_patch_id(&id)?;
@@ -1249,82 +1435,65 @@ pub fn delete_patch(state: State<'_, AppState>, id: String) -> CmdResult<()> {
     if path.is_file() {
         std::fs::remove_file(&path).map_err(err)?;
     }
-    let mut settings = state.settings.lock().unwrap();
+    bebra_core::patches::forget(&state.dirs, &clean).map_err(err)?;
+    let mut settings = settings_lock(&state);
     if settings.enabled_patches.contains(&clean) {
         settings.enabled_patches.retain(|p| p != &clean);
-        let _ = settings.save(state.dirs.root());
+        settings.save(state.dirs.root()).map_err(err)?;
     }
     Ok(())
 }
 
 #[tauri::command]
-pub fn install_patch(
+pub async fn install_patch(
     state: State<'_, AppState>,
     name: String,
     data_base64: String,
 ) -> CmdResult<PatchRow> {
-    let dir = state.dirs.patches();
-    std::fs::create_dir_all(&dir).map_err(err)?;
-
-    let raw_name: String = name
-        .chars()
-        .filter(|c| c.is_alphanumeric() || matches!(*c, '-' | '_' | '.' | ' '))
-        .collect();
-    let mut clean = raw_name.trim().to_string();
-    if clean.is_empty() {
-        return Err("Имя файла не может быть пустым".into());
+    let filename = patch_file_name(&name)?;
+    // Checked before decoding a 100 MB request (P2-31).
+    if base64_payload(&data_base64).len() > base64_limit(MAX_PATCH_BYTES) {
+        return Err(format!(
+            "Файл слишком большой (максимум {} МБ)",
+            MAX_PATCH_BYTES / (1024 * 1024)
+        ));
     }
-    if !clean.to_ascii_lowercase().ends_with(".dll") {
-        clean.push_str(".dll");
-    }
-    let filename = validate_patch_id(&clean)?;
-
-    let payload = if let Some(idx) = data_base64.find(";base64,") {
-        &data_base64[idx + 8..]
-    } else {
-        &data_base64
-    };
-
-    use base64::Engine;
-    let bytes = base64::prelude::BASE64_STANDARD
-        .decode(payload.trim())
-        .map_err(|e| format!("Не удалось декодировать файл мода: {e}"))?;
-
-    if bytes.is_empty() {
-        return Err("Файл пуст".into());
-    }
-    if bytes.len() > 100 * 1024 * 1024 {
-        return Err("Файл слишком большой (максимум 100 МБ)".into());
-    }
-
-    let target_path = dir.join(&filename);
-    std::fs::write(&target_path, &bytes).map_err(err)?;
-
-    let file_size = bytes.len() as u64;
-    let patch_name = std::path::Path::new(&filename)
-        .file_stem()
-        .unwrap_or_default()
-        .to_string_lossy()
-        .to_string();
-
-    let mut settings = state.settings.lock().unwrap();
-    if !settings.enabled_patches.contains(&filename) {
-        settings.enabled_patches.push(filename.clone());
-        let _ = settings.save(state.dirs.root());
-    }
-
-    Ok(PatchRow {
-        id: filename,
-        name: patch_name,
-        file_size,
-        enabled: true,
+    let dirs = state.dirs.clone();
+    let dir = dirs.patches();
+    let row = tokio::task::spawn_blocking(move || -> CmdResult<PatchRow> {
+        let bytes = decode_base64(base64_payload(&data_base64), MAX_PATCH_BYTES, "файл мода")?;
+        std::fs::create_dir_all(&dir).map_err(err)?;
+        write_file_atomic(&dir.join(&filename), &bytes).map_err(err)?;
+        // Remember what was installed, so a changed file is not loaded later (P1-2).
+        bebra_core::patches::record_installed(&dirs, &filename, &bytes).map_err(err)?;
+        let patch_name = std::path::Path::new(&filename)
+            .file_stem()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        Ok(PatchRow {
+            id: filename,
+            name: patch_name,
+            file_size: bytes.len() as u64,
+            enabled: true,
+            verified: true,
+        })
     })
+    .await
+    .map_err(err)??;
+
+    let mut settings = settings_lock(&state);
+    if !settings.enabled_patches.contains(&row.id) {
+        settings.enabled_patches.push(row.id.clone());
+        settings.save(state.dirs.root()).map_err(err)?;
+    }
+    Ok(row)
 }
 
 #[tauri::command]
 pub async fn list_patches(state: State<'_, AppState>) -> CmdResult<Vec<PatchRow>> {
     let dirs = state.dirs.clone();
-    let enabled = state.settings.lock().unwrap().enabled_patches.clone();
+    let enabled = settings_lock(&state).enabled_patches.clone();
     tokio::task::spawn_blocking(move || {
         let patches = bebra_core::patches::scan_patches(&dirs).map_err(err)?;
         Ok(patches
@@ -1334,6 +1503,7 @@ pub async fn list_patches(state: State<'_, AppState>) -> CmdResult<Vec<PatchRow>
                 id: p.id,
                 name: p.name,
                 file_size: p.file_size,
+                verified: p.verified,
             })
             .collect())
     })
@@ -1344,27 +1514,81 @@ pub async fn list_patches(state: State<'_, AppState>) -> CmdResult<Vec<PatchRow>
 /// How long the news feed is kept before it is read again.
 const NEWS_TTL: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
-#[tauri::command]
-pub async fn news(state: State<'_, AppState>) -> CmdResult<Vec<NewsItem>> {
-    if let Some((at, items)) = state.news.lock().unwrap().as_ref() {
-        if at.elapsed() < NEWS_TTL {
-            return Ok(items.clone());
-        }
+/// Most of the feed that is read. The blog's feed is a few hundred kilobytes; a hostile or
+/// broken one must not be able to fill memory (P2-41).
+const NEWS_MAX_BYTES: usize = 2 * 1024 * 1024;
+const NEWS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// The feed kept from the last success, fresh or not.
+fn cached_news(state: &AppState) -> Option<Vec<NewsItem>> {
+    crate::lock_or_recover(&state.news)
+        .as_ref()
+        .map(|(_, items)| items.clone())
+}
+
+/// The feed kept from the last success, if it is still young enough.
+fn fresh_news(state: &AppState) -> Option<Vec<NewsItem>> {
+    match crate::lock_or_recover(&state.news).as_ref() {
+        Some((at, items)) if at.elapsed() < NEWS_TTL => Some(items.clone()),
+        _ => None,
     }
+}
+
+/// Reads at most [`NEWS_MAX_BYTES`] of the feed, giving up when the server stalls.
+async fn fetch_news(state: &AppState) -> CmdResult<Vec<NewsItem>> {
     let resp = state
         .client
         .get(news::FEED_URL)
-        .timeout(std::time::Duration::from_secs(10))
+        .timeout(NEWS_TIMEOUT)
         .send()
         .await
         .map_err(err)?;
     if !resp.status().is_success() {
         return Err(format!("HTTP {}", resp.status().as_u16()));
     }
-    let text = resp.text().await.map_err(err)?;
-    let items = news::parse_feed(&text);
-    *state.news.lock().unwrap() = Some((std::time::Instant::now(), items.clone()));
-    Ok(items)
+    let mut resp = resp;
+    let mut body: Vec<u8> = Vec::new();
+    loop {
+        let chunk = tokio::time::timeout(NEWS_TIMEOUT, resp.chunk())
+            .await
+            .map_err(|_| "Сервер новостей не ответил вовремя".to_string())?
+            .map_err(err)?;
+        let Some(chunk) = chunk else {
+            break;
+        };
+        if body.len() + chunk.len() > NEWS_MAX_BYTES {
+            crate::applog::line("news: the feed is larger than 2 MiB, reading no more");
+            break;
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(news::parse_feed(&String::from_utf8_lossy(&body)))
+}
+
+#[tauri::command]
+pub async fn news(state: State<'_, AppState>) -> CmdResult<Vec<NewsItem>> {
+    if let Some(items) = fresh_news(&state) {
+        return Ok(items);
+    }
+    // One request at a time: two calls while the feed is stale would both go to the network.
+    let _gate = state.news_gate.lock().await;
+    if let Some(items) = fresh_news(&state) {
+        return Ok(items);
+    }
+    match fetch_news(&state).await {
+        Ok(items) => {
+            *crate::lock_or_recover(&state.news) = Some((std::time::Instant::now(), items.clone()));
+            Ok(items)
+        }
+        // An old feed is better than an empty tab.
+        Err(e) => match cached_news(&state) {
+            Some(items) => {
+                crate::applog::line(&format!("news: cannot refresh, showing the old feed ({e})"));
+                Ok(items)
+            }
+            None => Err(e),
+        },
+    }
 }
 
 #[derive(Serialize)]
@@ -1379,6 +1603,80 @@ pub struct PingRow {
 /// Most servers measured in one call, and most requests in flight at once.
 const PING_MAX_SERVERS: usize = 200;
 const PING_PARALLEL: usize = 12;
+/// After this the call returns what answered so far; the UI paints the column at once.
+const PING_DEADLINE: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Is this a name or address on this machine or in a local network?
+fn is_local_or_private_host(host: &str) -> bool {
+    let h = host.trim().trim_start_matches('[').trim_end_matches(']');
+    if h.is_empty() {
+        return true;
+    }
+    if let Ok(ip) = h.parse::<std::net::IpAddr>() {
+        return !is_public_ip(ip);
+    }
+    let lower = h.to_ascii_lowercase();
+    // `localhost.` is the same name with the root label written out.
+    let lower = lower.trim_end_matches('.');
+    lower == "localhost"
+        || lower.ends_with(".localhost")
+        || lower.ends_with(".local")
+        || lower.ends_with(".localdomain")
+        || lower.ends_with(".internal")
+        || lower.ends_with(".lan")
+        || lower.ends_with(".home.arpa")
+}
+
+fn is_public_ip(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            let o = v4.octets();
+            !(v4.is_unspecified()
+                || v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_broadcast()
+                || v4.is_documentation()
+                || v4.is_multicast()
+                // 100.64.0.0/10: carrier-grade NAT, never a public game server.
+                || (o[0] == 100 && (64..128).contains(&o[1]))
+                // 0.0.0.0/8: "this network", not routable.
+                || o[0] == 0)
+        }
+        std::net::IpAddr::V6(v6) => {
+            !(v6.is_unspecified()
+                || v6.is_loopback()
+                || v6.is_multicast()
+                || v6.is_unique_local()
+                || v6.is_unicast_link_local()
+                || v6
+                    .to_ipv4_mapped()
+                    .is_some_and(|v4| !is_public_ip(std::net::IpAddr::V4(v4))))
+        }
+    }
+}
+
+/// The servers a ping may ask about: what the last hub answer listed, the favourites and the
+/// history. Anything else is refused, so the command cannot be used to scan a network (P2-33).
+fn ping_allowed(state: &AppState) -> std::collections::HashSet<String> {
+    let mut allowed = std::collections::HashSet::new();
+    for row in read_server_cache(state) {
+        if let Some(a) = settings::canonical_address(&row.address) {
+            allowed.insert(a);
+        }
+    }
+    let s = settings_lock(state);
+    for address in s
+        .favorites
+        .iter()
+        .chain(s.history.iter().map(|h| &h.address))
+    {
+        if let Some(a) = settings::canonical_address(address) {
+            allowed.insert(a);
+        }
+    }
+    allowed
+}
 
 /// Asks each server for its `/status` and times the answer. This is what the list's ping
 /// column shows, and how favourite servers that are not on the hub get their numbers.
@@ -1387,33 +1685,63 @@ pub async fn ping_servers(
     state: State<'_, AppState>,
     addresses: Vec<String>,
 ) -> CmdResult<Vec<PingRow>> {
+    let allowed = ping_allowed(&state);
     let gate = std::sync::Arc::new(tokio::sync::Semaphore::new(PING_PARALLEL));
     let mut tasks = tokio::task::JoinSet::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut skipped = 0usize;
     for address in addresses.into_iter().take(PING_MAX_SERVERS) {
         let Ok(addr) = ServerAddr::parse(&address) else {
             continue;
         };
+        let Some(canonical) = settings::canonical_address(&address) else {
+            continue;
+        };
+        if !allowed.contains(&canonical) || is_local_or_private_host(addr.host()) {
+            skipped += 1;
+            continue;
+        }
+        if !seen.insert(canonical) {
+            continue;
+        }
         let client = state.client.clone();
         let gate = gate.clone();
         tasks.spawn(async move {
-            let _slot = gate.acquire().await;
+            // The semaphore is never closed, but do not panic if it ever is.
+            let Ok(_slot) = gate.acquire().await else {
+                return None;
+            };
             let started = std::time::Instant::now();
             let status = server::fetch_status(&client, &addr).await.ok();
             let ms = status
                 .is_some()
                 .then(|| started.elapsed().as_millis().min(u128::from(u32::MAX)) as u32);
             let status = status.map(|s| ServerRow::from_status(address.clone(), s, Vec::new()));
-            PingRow {
+            Some(PingRow {
                 address,
                 ms,
                 status,
-            }
+            })
         });
     }
+    let deadline = tokio::time::Instant::now() + PING_DEADLINE;
+    if skipped > 0 {
+        // Details are not logged: a caller could otherwise spray address text into the log.
+        crate::applog::line(&format!(
+            "ping: {skipped} address(es) refused (unknown server or a local network)"
+        ));
+    }
     let mut rows = Vec::new();
-    while let Some(done) = tasks.join_next().await {
-        if let Ok(row) = done {
-            rows.push(row);
+    loop {
+        match tokio::time::timeout_at(deadline, tasks.join_next()).await {
+            Ok(Some(Ok(Some(row)))) => rows.push(row),
+            Ok(Some(Ok(None) | Err(_))) => {}
+            Ok(None) => break,
+            Err(_) => {
+                crate::applog::line("ping: the deadline passed, returning partial results");
+                tasks.abort_all();
+                break;
+            }
         }
     }
     Ok(rows)
@@ -1463,4 +1791,168 @@ pub fn set_update_token(token: String) -> CmdResult<bool> {
 #[tauri::command]
 pub fn changelog() -> &'static str {
     crate::changelog::TEXT
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn background_names_are_checked_before_use() {
+        for ok in ["wall.png", "my photo.JPG", "a_b-c.webp", "image.v2.gif"] {
+            assert!(validate_bg_filename(ok).is_ok(), "{ok} should be accepted");
+        }
+        for bad in [
+            "",
+            "  ",
+            "a..b.png",
+            "dir/wall.png",
+            "C:\\wall.png",
+            "wall.txt",
+            "CON.png",
+            "nul.jpg",
+            "com1.gif",
+            "wall.png ",
+            "wall.png.",
+            "lpt9.webp",
+        ] {
+            assert!(
+                validate_bg_filename(bad).is_err(),
+                "{bad:?} should be refused"
+            );
+        }
+    }
+
+    /// A name without a known image extension gets `.png`, and the result is validated like
+    /// any other name (P2-32).
+    #[test]
+    fn saved_background_names_get_an_image_extension() {
+        assert_eq!(background_file_name("wall").unwrap(), "wall.png");
+        assert_eq!(background_file_name("wall.JPG").unwrap(), "wall.JPG");
+        assert_eq!(background_file_name(" my wall ").unwrap(), "my wall.png");
+        assert!(background_file_name("NUL").is_err());
+        assert!(background_file_name("a..b").is_err());
+        assert!(background_file_name("").is_err());
+    }
+
+    #[test]
+    fn patch_names_must_be_plain_dll_names() {
+        assert_eq!(patch_file_name("mod").unwrap(), "mod.dll");
+        assert_eq!(patch_file_name("my.mod.dll").unwrap(), "my.mod.dll");
+        assert!(patch_file_name("con").is_err());
+        assert!(patch_file_name("../mod").is_err());
+        assert!(patch_file_name("mod.exe").is_err());
+    }
+
+    #[test]
+    fn a_data_url_payload_is_split_off() {
+        assert_eq!(base64_payload("data:image/png;base64,AAAA"), "AAAA");
+        assert_eq!(base64_payload("  AAAA  "), "AAAA");
+        assert_eq!(base64_payload(""), "");
+    }
+
+    /// An oversized body is refused by its text length, before anything is decoded (P2-31).
+    #[test]
+    fn an_oversized_base64_text_is_refused() {
+        let limit = base64_limit(MAX_BG_BYTES);
+        assert!(limit > MAX_BG_BYTES);
+        let too_long = "A".repeat(limit + 1);
+        let error = decode_base64(&too_long, MAX_BG_BYTES, "изображение").unwrap_err();
+        assert!(error.contains("слишком большой"));
+    }
+
+    #[test]
+    fn a_small_base64_body_is_decoded() {
+        use base64::Engine;
+        assert_eq!(decode_base64("aGk=", 1024, "файл").unwrap(), b"hi");
+        assert!(decode_base64("", 1024, "файл").is_err());
+        assert!(decode_base64("!!!!", 1024, "файл").is_err());
+        // Valid base64 that decodes to more than the limit.
+        let over = base64::prelude::BASE64_STANDARD.encode(vec![0u8; 64]);
+        assert!(decode_base64(&over, 10, "файл").is_err());
+    }
+
+    /// The cached server list is written whole and read back; a damaged file gives nothing
+    /// instead of a panic (P2-36).
+    #[test]
+    fn the_server_cache_roundtrips_and_survives_damage() {
+        let dir = std::env::temp_dir().join(format!("bebra-cache-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("servers-cache.json");
+
+        let rows = vec![ServerRow {
+            address: "ss14://a.test".into(),
+            name: Some("A".into()),
+            players: 1,
+            soft_max_players: 2,
+            tags: vec!["lang:ru".into()],
+            map: None,
+            preset: None,
+            run_level: None,
+            round_start_time: None,
+            panic_bunker: None,
+        }];
+        let json = serde_json::to_vec(&rows).unwrap();
+        store_cache_file(&path, &json).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), json);
+        assert!(
+            !path.with_extension("json.tmp").exists(),
+            "the temporary file is gone after the rename"
+        );
+        assert_eq!(
+            parse_cached_rows(&std::fs::read(&path).unwrap())
+                .unwrap()
+                .len(),
+            1
+        );
+
+        assert!(parse_cached_rows(b"{ not json").is_err());
+        assert!(parse_cached_rows(b"").is_err());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn addresses_are_canonicalized() {
+        assert_eq!(
+            server_address(" http://a.test:1212 ").unwrap(),
+            "ss14://a.test:1212"
+        );
+        assert_eq!(
+            server_address("https://b.test/").unwrap(),
+            "ss14s://b.test/"
+        );
+        assert_eq!(server_address("c.test").unwrap(), "ss14://c.test");
+        assert!(server_address("not a server").is_err());
+    }
+
+    /// Ping may not be turned into a port scanner (P2-33).
+    #[test]
+    fn local_and_private_addresses_are_not_pinged() {
+        for host in [
+            "127.0.0.1",
+            "10.1.2.3",
+            "192.168.0.1",
+            "172.16.5.4",
+            "169.254.1.1",
+            "0.0.0.0",
+            "100.64.1.1",
+            "::1",
+            "fd00::1",
+            "fe80::1",
+            "localhost",
+            "hub.local",
+            "box.internal",
+            "printer.lan",
+        ] {
+            assert!(is_local_or_private_host(host), "{host} must be refused");
+        }
+        for host in [
+            "hub.spacestation14.com",
+            "8.8.8.8",
+            "2a00:1450:4001:80f::200e",
+        ] {
+            assert!(!is_local_or_private_host(host), "{host} should be allowed");
+        }
+    }
 }

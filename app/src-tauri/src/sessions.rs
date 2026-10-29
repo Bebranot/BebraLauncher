@@ -73,17 +73,17 @@ pub struct SessionJournal {
 
 impl SessionJournal {
     pub fn load(&self, root: &Path) -> Vec<GameSession> {
-        let _guard = self.lock.lock().unwrap();
+        let _guard = crate::lock_or_recover(&self.lock);
         load_sessions(root)
     }
 
     pub fn record_start(&self, root: &Path, session: GameSession) {
-        let _guard = self.lock.lock().unwrap();
+        let _guard = crate::lock_or_recover(&self.lock);
         record_start(root, session);
     }
 
     pub fn record_end(&self, root: &Path, pid: u32) -> Option<GameSession> {
-        let _guard = self.lock.lock().unwrap();
+        let _guard = crate::lock_or_recover(&self.lock);
         record_end(root, pid)
     }
 }

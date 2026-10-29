@@ -25,12 +25,61 @@ fn unescape(s: &str) -> String {
     {
         return inner.trim().to_string();
     }
-    s.replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&apos;", "'")
-        .replace("&#39;", "'")
-        .replace("&amp;", "&")
+    // One pass over every entity: named ones (`&amp;`) and numeric ones (`&#8217;`, `&#x2019;`).
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(i) = rest.find('&') {
+        out.push_str(&rest[..i]);
+        let tail = &rest[i..];
+        // An entity is short; anything longer is a stray `&`.
+        let Some(semi) = tail
+            .char_indices()
+            .take(12)
+            .find(|(_, c)| *c == ';')
+            .map(|(j, _)| j)
+        else {
+            out.push('&');
+            rest = &tail[1..];
+            continue;
+        };
+        match decode_entity(&tail[1..semi]) {
+            Some(c) => {
+                out.push(c);
+                rest = &tail[semi + 1..];
+            }
+            None => {
+                out.push('&');
+                rest = &tail[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+fn decode_entity(entity: &str) -> Option<char> {
+    Some(match entity {
+        "lt" => '<',
+        "gt" => '>',
+        "quot" => '"',
+        "apos" => '\'',
+        "amp" => '&',
+        "nbsp" => '\u{a0}',
+        "mdash" => '\u{2014}',
+        "ndash" => '\u{2013}',
+        "hellip" => '\u{2026}',
+        _ => return decode_numeric_entity(entity),
+    })
+}
+
+/// `#8217` or `#x2019`.
+fn decode_numeric_entity(entity: &str) -> Option<char> {
+    let number = entity.strip_prefix('#')?;
+    let code = match number.strip_prefix(['x', 'X']) {
+        Some(hex) => u32::from_str_radix(hex, 16).ok()?,
+        None => number.parse::<u32>().ok()?,
+    };
+    char::from_u32(code).filter(|c| !c.is_control())
 }
 
 /// The text between `<tag>` and `</tag>` in `block`, if the tag is there.
@@ -125,6 +174,21 @@ mod tests {
         assert!(parse_feed("").is_empty());
         assert!(parse_feed("<html>no feed</html>").is_empty());
         assert!(parse_feed("<item><title>cut off").is_empty());
+    }
+
+    #[test]
+    fn numeric_and_named_entities_are_decoded() {
+        assert_eq!(
+            unescape("It&#8217;s fine&nbsp;now"),
+            "It\u{2019}s fine\u{a0}now"
+        );
+        assert_eq!(unescape("a &#x2014; b &amp; c"), "a \u{2014} b & c");
+        assert_eq!(unescape("5 &lt; 6 &gt; 4"), "5 < 6 > 4");
+        // Not an entity: kept as written, and the rest is still decoded.
+        assert_eq!(unescape("Tom & Jerry &amp; Co"), "Tom & Jerry & Co");
+        assert_eq!(unescape("100&"), "100&");
+        // Control characters are refused instead of being put into a title.
+        assert_eq!(unescape("x&#1;y"), "x&#1;y");
     }
 
     #[test]

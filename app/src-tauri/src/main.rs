@@ -23,6 +23,17 @@ use tauri::Manager;
 use crate::game::GameState;
 use crate::settings::Settings;
 
+/// Locks a mutex, ignoring poisoning.
+///
+/// A panic inside one command poisons its mutex; without this every later command would panic
+/// too and the launcher would look frozen (P2-38). The data behind these mutexes is either
+/// replaced wholesale or read after a panic is harmless.
+pub fn lock_or_recover<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// Shared by every command.
 pub struct AppState {
     pub client: Client,
@@ -39,6 +50,10 @@ pub struct AppState {
     pub sessions: sessions::SessionJournal,
     /// The news feed of the last successful read, to not ask for it on every visit of the tab.
     pub news: Mutex<Option<(std::time::Instant, Vec<news::NewsItem>)>>,
+    /// Makes the news feed single-flight: one request, the others wait for its result (P2-41).
+    pub news_gate: tokio::sync::Mutex<()>,
+    /// Guards the server list cache file: write to a temporary name, then rename (P2-36).
+    pub servers_cache: Mutex<()>,
     /// The launcher's own update: what was found, downloaded, started.
     pub update: selfupdate::UpdateState,
 }
@@ -71,6 +86,8 @@ fn main() {
         pending: pending::PendingActions::default(),
         sessions: sessions::SessionJournal::default(),
         news: Mutex::new(None),
+        news_gate: tokio::sync::Mutex::new(()),
+        servers_cache: Mutex::new(()),
         update: selfupdate::UpdateState::default(),
     };
     // Installers of versions that are already installed are of no use.
@@ -169,4 +186,29 @@ fn main() {
                 selfupdate::install_on_exit(app);
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A command that panics poisons its mutex; later commands must still work (P2-38).
+    #[test]
+    fn a_poisoned_mutex_is_recovered() {
+        let shared = Arc::new(Mutex::new(1));
+        let writer = shared.clone();
+        let crashed = std::thread::spawn(move || {
+            let _guard = writer.lock().unwrap();
+            panic!("a command panicked");
+        })
+        .join()
+        .is_err();
+        assert!(crashed, "the worker thread panicked as planned");
+
+        let mut value = lock_or_recover(&shared);
+        assert_eq!(*value, 1);
+        *value = 2;
+        drop(value);
+        assert_eq!(*lock_or_recover(&shared), 2);
+    }
 }

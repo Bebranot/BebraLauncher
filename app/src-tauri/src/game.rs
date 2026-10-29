@@ -24,7 +24,7 @@ use uuid::Uuid;
 pub const EVENT: &str = "play";
 
 /// Returned by [`start`] while another game is being prepared or run.
-pub const BUSY: &str = "Игра уже запускается или запущена";
+pub const BUSY: &str = "РРіСЂР° СѓР¶Рµ Р·Р°РїСѓСЃРєР°РµС‚СЃСЏ РёР»Рё Р·Р°РїСѓС‰РµРЅР°";
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -99,7 +99,7 @@ pub struct GameState {
 impl GameState {
     /// Takes the preparation slot, or says that another game is currently preparing.
     fn begin_prepare(&self) -> Result<Arc<Notify>, String> {
-        let mut prep = self.preparing.lock().unwrap();
+        let mut prep = crate::lock_or_recover(&self.preparing);
         if prep.is_some() {
             return Err(BUSY.into());
         }
@@ -109,11 +109,11 @@ impl GameState {
     }
 
     fn end_prepare(&self) {
-        *self.preparing.lock().unwrap() = None;
+        *crate::lock_or_recover(&self.preparing) = None;
     }
 
     pub fn is_preparing(&self) -> bool {
-        self.preparing.lock().unwrap().is_some()
+        crate::lock_or_recover(&self.preparing).is_some()
     }
 
     pub fn register_running(&self, pid: u32, image_path: impl Into<String>) {
@@ -121,13 +121,13 @@ impl GameState {
             pid,
             image_path: image_path.into(),
         };
-        let mut running = self.running.lock().unwrap();
+        let mut running = crate::lock_or_recover(&self.running);
         running.retain(|g| g.pid != pid);
         running.push(game);
     }
 
     pub fn unregister_running(&self, pid: u32) -> usize {
-        let mut running = self.running.lock().unwrap();
+        let mut running = crate::lock_or_recover(&self.running);
         running.retain(|g| g.pid != pid);
         prune_with(&mut running, RunningGame::is_alive);
         running.len()
@@ -135,7 +135,7 @@ impl GameState {
 
     /// How many games are actually running now.
     pub fn running_count(&self) -> usize {
-        let mut running = self.running.lock().unwrap();
+        let mut running = crate::lock_or_recover(&self.running);
         prune_with(&mut running, RunningGame::is_alive);
         running.len()
     }
@@ -147,9 +147,15 @@ impl GameState {
 
     /// Stops the preparation (downloads). Does nothing once the game itself is running.
     pub fn cancel(&self) {
-        if let Some(c) = self.preparing.lock().unwrap().as_ref() {
+        if let Some(c) = crate::lock_or_recover(&self.preparing).as_ref() {
             c.notify_one();
         }
+    }
+
+    /// The lock held while a token is read and written: the game renews one before launch, and
+    /// `login`/`logout`/`select_account` must not race that renewal (P2-35).
+    pub async fn lock_tokens(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.token_refresh_lock.lock().await
     }
 }
 
@@ -211,57 +217,93 @@ pub fn start(app: AppHandle, game: Arc<GameState>, params: PlayParams) -> Result
     let spawned = std::thread::Builder::new()
         .name("play".into())
         .spawn(move || {
-            let release = PrepareRelease(game_clone.clone());
-
-            let emit = |event: PlayEvent| {
-                // Kept when the page is not listening yet (cold start with `--commands`).
-                crate::pending::emit(&app, EVENT, event);
-            };
-            let rt = match tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-            {
-                Ok(rt) => rt,
-                Err(e) => {
-                    emit(PlayEvent::failed("other", format!("runtime: {e}")));
-                    return;
-                }
-            };
-
-            let prepared = rt.block_on(async {
-                tokio::select! {
-                    () = cancel.notified() => Err(None),
-                    r = prepare(&app, &game_clone, &params) => r.map_err(Some),
-                }
-            });
-
-            // Preparation finished: release the preparation lock so other games can prepare.
-            drop(release);
-
-            match prepared {
-                Ok(prepared_game) if params.preview => {
-                    crate::applog::line("launch preview");
-                    emit(PlayEvent::Preview {
-                        command: prepared_game.command.describe(),
-                    });
-                }
-                Ok(prepared_game) => {
-                    if params.verbose {
-                        crate::applog::line(&format!(
-                            "launch command: {}",
-                            prepared_game.command.describe()
-                        ));
-                    }
-                    run_game(&app, &emit, &params, &game_clone, prepared_game);
-                }
-                Err(None) => emit(PlayEvent::Cancelled),
-                Err(Some(failure)) => emit(PlayEvent::failed(failure.code, failure.message)),
+            // A panic anywhere below would leave the preparation slot taken (the release guard
+            // drops during unwinding, so that part is fine) and the UI waiting forever. Say
+            // that the launch failed instead (P2-38).
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                run_play(&app, &game_clone, &params, cancel);
+            }));
+            if result.is_err() {
+                crate::applog::line("play: the launch thread panicked");
+                crate::pending::emit(
+                    &app,
+                    EVENT,
+                    PlayEvent::failed(
+                        "other",
+                        "РІРЅСѓС‚СЂРµРЅРЅСЏСЏ РѕС€РёР±РєР° РїСЂРё Р·Р°РїСѓСЃРєРµ РёРіСЂС‹",
+                    ),
+                );
             }
         });
     spawned.map(drop).map_err(|e| {
         game.end_prepare();
-        format!("не удалось запустить поток: {e}")
+        format!("РЅРµ СѓРґР°Р»РѕСЃСЊ Р·Р°РїСѓСЃС‚РёС‚СЊ РїРѕС‚РѕРє: {e}")
     })
+}
+
+/// The body of the launch thread: prepare, then run (or report what would be run).
+fn run_play(
+    app: &AppHandle,
+    game_clone: &Arc<GameState>,
+    params: &PlayParams,
+    cancel: Arc<Notify>,
+) {
+    let release = PrepareRelease(game_clone.clone());
+
+    let emit = |event: PlayEvent| {
+        // Kept when the page is not listening yet (cold start with `--commands`).
+        crate::pending::emit(app, EVENT, event);
+    };
+    let rt = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            emit(PlayEvent::failed("other", format!("runtime: {e}")));
+            return;
+        }
+    };
+
+    let prepared = rt.block_on(async {
+        tokio::select! {
+            () = cancel.notified() => Err(None),
+            r = prepare(app, game_clone, params) => r.map_err(Some),
+        }
+    });
+
+    // Preparation finished: release the preparation lock so other games can prepare.
+    drop(release);
+
+    match prepared {
+        Ok(prepared_game) if params.preview => {
+            crate::applog::line("launch preview");
+            emit(PlayEvent::Preview {
+                command: prepared_game.command.describe(),
+            });
+        }
+        Ok(prepared_game) => {
+            if params.verbose {
+                crate::applog::line(&format!(
+                    "launch command: {}",
+                    prepared_game.command.describe()
+                ));
+            }
+            // A panic while starting or watching the game must also be reported.
+            let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                run_game(app, &emit, params, game_clone, prepared_game);
+            }));
+            if run.is_err() {
+                crate::applog::line("play: run_game panicked");
+                emit(PlayEvent::failed(
+                    "other",
+                    "РІРЅСѓС‚СЂРµРЅРЅСЏСЏ РѕС€РёР±РєР° РїСЂРё Р·Р°РїСѓСЃРєРµ РёРіСЂС‹",
+                ));
+            }
+        }
+        Err(None) => emit(PlayEvent::Cancelled),
+        Err(Some(failure)) => emit(PlayEvent::failed(failure.code, failure.message)),
+    }
 }
 
 /// Why the game could not be started: a code for the UI and the technical detail.
@@ -459,7 +501,7 @@ fn set_minimized(app: &AppHandle, minimized: bool) {
 /// one to preselect next time.
 fn remember_game(app: &AppHandle, params: &PlayParams) {
     let state = app.state::<crate::AppState>();
-    let mut settings = state.settings.lock().unwrap();
+    let mut settings = crate::lock_or_recover(&state.settings);
     // An empty string means: the player chose to play as a guest.
     settings.last_account = Some(params.account.map_or_else(String::new, |a| a.to_string()));
     let now = time::OffsetDateTime::now_utc()
@@ -474,12 +516,26 @@ fn remember_game(app: &AppHandle, params: &PlayParams) {
 /// Adds the time of this game to the server's total.
 fn record_play_time(app: &AppHandle, key: &str, seconds: u64) {
     let state = app.state::<crate::AppState>();
-    let mut settings = state.settings.lock().unwrap();
+    let mut settings = crate::lock_or_recover(&state.settings);
     settings.add_play_time(key, seconds);
     let _ = settings.save(state.dirs.root());
 }
 
 static SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+/// The log files for one game: always a name of its own.
+///
+/// A fixed name (`client.stdout.log`) is shared by every game, so a second game started while
+/// the first was still closing overwrote its log and the tail shown for a crash belonged to
+/// somebody else (P2-40).
+fn client_log_paths(dirs: &DataDirs, session_id: u64, started_at: u64) -> (PathBuf, PathBuf) {
+    (
+        dirs.logs()
+            .join(format!("client-{started_at}-{session_id}.stdout.log")),
+        dirs.logs()
+            .join(format!("client-{started_at}-{session_id}.stderr.log")),
+    )
+}
 
 fn run_game(
     app: &AppHandle,
@@ -492,17 +548,11 @@ fn run_game(
     emit(PlayEvent::Stage { stage: "starting" });
 
     let session_id = SESSION_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let (out_log, err_log) = if game.running_count() == 0 {
-        (
-            dirs.logs().join("client.stdout.log"),
-            dirs.logs().join("client.stderr.log"),
-        )
-    } else {
-        (
-            dirs.logs().join(format!("client-{session_id}.stdout.log")),
-            dirs.logs().join(format!("client-{session_id}.stderr.log")),
-        )
-    };
+    let started_at_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let (out_log, err_log) = client_log_paths(dirs, session_id, started_at_secs);
 
     let mut child = match launch::spawn(&prepared_game.command, &out_log, &err_log) {
         Ok(c) => c,
@@ -526,10 +576,7 @@ fn run_game(
         account: params.account.map(|a| a.to_string()),
         plays_as: prepared_game.plays_as.clone(),
         log_path: out_log.clone(),
-        started_at_secs: std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs(),
+        started_at_secs,
     };
     app.state::<crate::AppState>()
         .sessions
@@ -565,10 +612,8 @@ fn run_game(
     let log_tail = if code == Some(0) {
         Vec::new()
     } else {
-        let log = std::fs::read_to_string(&out_log).unwrap_or_default();
-        let mut tail: Vec<String> = log.lines().rev().take(15).map(str::to_string).collect();
-        tail.reverse();
-        tail
+        // Only the end of the file is needed: read it backwards, not the whole log (P2-40).
+        crate::applog::tail(&out_log, 15)
     };
     if params.minimize_on_play && remaining == 0 {
         set_minimized(app, false);
@@ -628,5 +673,19 @@ mod tests {
         state.register_running(u32::MAX - 9, "");
         state.register_running(u32::MAX - 9, "");
         assert_eq!(state.running_count(), 1);
+    }
+
+    /// Every game writes a log of its own, whatever else is running (P2-40).
+    #[test]
+    fn every_game_gets_its_own_log_files() {
+        let dirs = DataDirs::at(std::env::temp_dir());
+        let (out1, err1) = client_log_paths(&dirs, 1, 1_700_000_000);
+        let (out2, err2) = client_log_paths(&dirs, 2, 1_700_000_000);
+        let (out3, err3) = client_log_paths(&dirs, 1, 1_700_000_001);
+        let all = [&out1, &err1, &out2, &err2, &out3, &err3];
+        let unique: std::collections::HashSet<_> = all.iter().collect();
+        assert_eq!(unique.len(), all.len(), "no two games share a log file");
+        assert!(out1.to_string_lossy().contains("client-1700000000-1"));
+        assert!(err1.to_string_lossy().ends_with("stderr.log"));
     }
 }

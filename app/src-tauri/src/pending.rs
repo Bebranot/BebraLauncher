@@ -41,7 +41,7 @@ impl PendingActions {
     /// Keeps the action until the UI asks for it. Returns `false` once the UI is listening:
     /// then the caller emits it live.
     fn push(&self, action: PendingAction) -> bool {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = crate::lock_or_recover(&self.inner);
         if inner.ui_ready {
             return false;
         }
@@ -55,14 +55,14 @@ impl PendingActions {
     /// Everything kept so far, oldest first, and marks the UI as listening: the next events
     /// are emitted live and are not repeated here.
     pub fn take(&self) -> Vec<PendingAction> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = crate::lock_or_recover(&self.inner);
         inner.ui_ready = true;
         std::mem::take(&mut inner.actions)
     }
 
     #[cfg(test)]
     fn is_ui_ready(&self) -> bool {
-        self.inner.lock().unwrap().ui_ready
+        crate::lock_or_recover(&self.inner).ui_ready
     }
 }
 

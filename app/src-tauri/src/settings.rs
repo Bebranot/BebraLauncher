@@ -1,15 +1,132 @@
 //! User settings: one small JSON file in the launcher's data folder.
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use bebra_core::launch::FALLBACK_USERNAME;
 use serde::{Deserialize, Serialize};
 
+/// The shape of `settings.json` this build understands.
+///
+/// Older files had no `schema_version` at all (version 0); `parse` brings them up to this
+/// number before they are read (P2-39).
 pub const CURRENT_SCHEMA_VERSION: u32 = 1;
+
+/// How many favourite servers are kept. The ping call and the list do not need more.
+pub const FAVORITES_LIMIT: usize = 200;
+/// How many server notes are kept.
+pub const SERVER_NOTES_LIMIT: usize = 200;
+/// Longest favourite name / server name kept in the history, in characters.
+pub const NAME_LIMIT: usize = 120;
 
 fn default_schema_version() -> u32 {
     CURRENT_SCHEMA_VERSION
 }
+
+/// A server address in one spelling, or `None` if it is not a server address.
+///
+/// The hub identifies servers by its own spelling of the address, so only the parts that
+/// cannot change meaning are normalized: the scheme becomes `ss14`/`ss14s`, the host is
+/// lowercased, `http(s)://` becomes `ss14(s)://`, and a missing path stays missing (the hub
+/// lists some servers with a trailing slash and some without).
+pub fn canonical_address(input: &str) -> Option<String> {
+    let trimmed = input.trim();
+    let addr = bebra_core::ServerAddr::parse(trimmed).ok()?;
+    let mut out = addr.normalized();
+    let after_scheme = trimmed
+        .find("://")
+        .map(|i| &trimmed[i + 3..])
+        .unwrap_or(trimmed);
+    if !after_scheme.contains('/') && out.ends_with('/') {
+        out.pop();
+    }
+    Some(out)
+}
+
+/// Removes control characters and shortens text the UI shows as a name.
+fn clean_name(text: &str) -> String {
+    text.chars()
+        .filter(|c| !c.is_control())
+        .take(NAME_LIMIT)
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
+/// Single-line text for a note: line breaks are allowed, other controls are not.
+fn clean_note(text: &str, limit: usize) -> String {
+    text.chars()
+        .filter(|c| !c.is_control() || matches!(*c, '\n' | '\r' | '\t'))
+        .take(limit)
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
+/// The canonical form when the text is a server address, the trimmed text otherwise.
+fn canonical_or_trimmed(address: &str) -> String {
+    canonical_address(address).unwrap_or_else(|| address.trim().to_string())
+}
+
+/// Where the schema version of a read file stands relative to this build.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SchemaSource {
+    /// Written by this schema version.
+    Current,
+    /// Written before the version field existed (or by an older one) and migrated.
+    Older,
+    /// Written by a newer launcher; unknown fields are kept as they are.
+    Newer,
+}
+
+/// Reads `settings.json` bytes, migrating an older schema first (P2-39).
+pub fn parse(bytes: &[u8]) -> Result<(Settings, SchemaSource), serde_json::Error> {
+    let value: serde_json::Value = serde_json::from_slice(bytes)?;
+    let found = value
+        .get("schema_version")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|v| u32::try_from(v).ok())
+        .unwrap_or(0);
+    let source = match found.cmp(&CURRENT_SCHEMA_VERSION) {
+        std::cmp::Ordering::Less => SchemaSource::Older,
+        std::cmp::Ordering::Equal => SchemaSource::Current,
+        std::cmp::Ordering::Greater => SchemaSource::Newer,
+    };
+    let value = migrate(found, value);
+    let settings: Settings = serde_json::from_value(value)?;
+    Ok((settings, source))
+}
+
+/// Brings a settings value written by schema `from` up to [`CURRENT_SCHEMA_VERSION`].
+///
+/// Every step only changes what a newer build reads differently; values that are merely out of
+/// range are left to [`Settings::sanitized`]. A file from a newer launcher is returned
+/// untouched: those fields are unknown here, and dropping them would lose the user's data.
+fn migrate(from: u32, mut value: serde_json::Value) -> serde_json::Value {
+    let mut version = from;
+    let mut steps = 0;
+    // A bound as well: a corrupt version number must not spin here.
+    while version < CURRENT_SCHEMA_VERSION && steps < 100 {
+        match version {
+            // 0 -> 1: the version field itself was added. A version-0 file has the same
+            // fields otherwise, so there is nothing to move; the defaults fill the rest.
+            0 => {}
+            _ => break,
+        }
+        version += 1;
+        steps += 1;
+        if let Some(obj) = value.as_object_mut() {
+            obj.insert(
+                "schema_version".to_string(),
+                serde_json::Value::from(version),
+            );
+        }
+    }
+    value
+}
+
+/// One save at a time: the temporary file name is fixed.
+static SAVE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -300,8 +417,16 @@ impl Settings {
 
         if path.exists() {
             match std::fs::read(&path) {
-                Ok(bytes) => match serde_json::from_slice::<Settings>(&bytes) {
-                    Ok(settings) => return Self::cleaned(root, settings),
+                Ok(bytes) => match parse(&bytes) {
+                    Ok((settings, source)) => {
+                        if source == SchemaSource::Newer {
+                            crate::applog::line(&format!(
+                                "settings.json comes from a newer launcher (schema {}); using it as it is",
+                                settings.schema_version
+                            ));
+                        }
+                        return Self::cleaned(root, settings, source == SchemaSource::Older);
+                    }
                     Err(e) => {
                         crate::applog::line(&format!(
                             "settings.json is corrupted ({e}); quarantining and attempting recovery"
@@ -323,9 +448,9 @@ impl Settings {
         // Try recovering from backup
         if bak.exists() {
             if let Ok(bytes) = std::fs::read(&bak) {
-                if let Ok(settings) = serde_json::from_slice::<Settings>(&bytes) {
+                if let Ok((settings, _)) = parse(&bytes) {
                     crate::applog::line("settings restored successfully from settings.json.bak");
-                    return Self::cleaned(root, settings);
+                    return Self::cleaned(root, settings, true);
                 }
             }
         }
@@ -340,13 +465,13 @@ impl Settings {
     /// hand edit or an old version, but it is read at start, before the reset button exists, so
     /// the same cleaning as in `set_settings` has to happen here (P1-19). An already clean file
     /// is left untouched, so a normal start does not rewrite it.
-    fn cleaned(root: &Path, settings: Settings) -> Self {
+    fn cleaned(root: &Path, settings: Settings, migrated: bool) -> Self {
         let clean = settings.clone().sanitized();
         let same = match (serde_json::to_vec(&settings), serde_json::to_vec(&clean)) {
             (Ok(before), Ok(after)) => before == after,
             _ => false,
         };
-        if !same {
+        if migrated || !same {
             if let Err(e) = clean.save(root) {
                 crate::applog::line(&format!("cannot save cleaned settings.json ({e})"));
             }
@@ -355,24 +480,43 @@ impl Settings {
     }
 
     /// Saves settings atomically, keeping a backup of the previous valid settings.json.
+    ///
+    /// The temporary file is written and flushed to disk before the rename, so a power loss
+    /// leaves either the old file or the complete new one — never a truncated one (P2-43).
     pub fn save(&self, root: &Path) -> std::io::Result<()> {
         std::fs::create_dir_all(root)?;
         let path = Self::path(root);
         let bak = Self::backup_path(root);
         let tmp = path.with_extension("json.tmp");
+        // Two saves at once would both use the same temporary name.
+        let _guard = crate::lock_or_recover(&SAVE_LOCK);
 
-        std::fs::write(&tmp, serde_json::to_vec_pretty(self)?)?;
-
-        if path.exists() {
-            // Keep previous valid version as backup
-            let _ = std::fs::copy(&path, &bak);
+        let bytes = serde_json::to_vec_pretty(self)?;
+        {
+            let mut file = std::fs::File::create(&tmp)?;
+            file.write_all(&bytes)?;
+            file.sync_all()?;
         }
 
-        std::fs::rename(tmp, path)
+        if path.exists() {
+            // Keep the previous valid version as a backup. A failed copy must not keep the new
+            // settings from being saved, but it is worth a line in the log.
+            if let Err(e) = std::fs::copy(&path, &bak) {
+                crate::applog::line(&format!("cannot back up settings.json ({e})"));
+            }
+        }
+
+        if let Err(e) = std::fs::rename(&tmp, &path) {
+            crate::applog::line(&format!("cannot replace settings.json ({e})"));
+            return Err(e);
+        }
+        Ok(())
     }
 
     /// Moves the server to the top of the history.
     pub fn remember_played(&mut self, address: &str, name: Option<String>, when: String) {
+        let address = canonical_or_trimmed(address);
+        let name = name.map(|n| clean_name(&n)).filter(|n| !n.is_empty());
         let (play_seconds, account) = self
             .history
             .iter()
@@ -382,7 +526,7 @@ impl Settings {
         self.history.insert(
             0,
             HistoryEntry {
-                address: address.to_string(),
+                address,
                 name,
                 last_played: when,
                 play_seconds,
@@ -394,6 +538,7 @@ impl Settings {
 
     /// Notes which account was used on a server that is in the history.
     pub fn remember_account(&mut self, address: &str, account: &str) {
+        let address = canonical_or_trimmed(address);
         if let Some(h) = self.history.iter_mut().find(|h| h.address == address) {
             h.account = Some(account.to_string());
         }
@@ -402,6 +547,7 @@ impl Settings {
     /// Adds time played to a server that is in the history (a server that dropped off the
     /// list in the meantime is simply not counted).
     pub fn add_play_time(&mut self, address: &str, seconds: u64) {
+        let address = canonical_or_trimmed(address);
         if let Some(h) = self.history.iter_mut().find(|h| h.address == address) {
             h.play_seconds = h.play_seconds.saturating_add(seconds);
         }
@@ -409,19 +555,43 @@ impl Settings {
 
     /// Adds or removes a favourite. Returns whether it is a favourite now.
     pub fn toggle_favorite(&mut self, address: &str) -> bool {
-        if let Some(i) = self.favorites.iter().position(|a| a == address) {
+        let address = canonical_or_trimmed(address);
+        if let Some(i) = self.favorites.iter().position(|a| *a == address) {
             self.favorites.remove(i);
-            self.favorite_names.remove(address);
+            self.favorite_names.remove(&address);
             false
-        } else {
-            self.favorites.push(address.to_string());
+        } else if self.favorites.len() < FAVORITES_LIMIT {
+            self.favorites.push(address);
             true
+        } else {
+            crate::applog::line(&format!(
+                "favorites: the list is full ({FAVORITES_LIMIT}), {address} not added"
+            ));
+            false
         }
+    }
+
+    /// Adds a favourite unless it is already there or the list is full. Returns whether it is
+    /// in the list afterwards.
+    pub fn add_favorite(&mut self, address: &str) -> bool {
+        let address = canonical_or_trimmed(address);
+        if self.favorites.contains(&address) {
+            return true;
+        }
+        if self.favorites.len() >= FAVORITES_LIMIT {
+            crate::applog::line(&format!(
+                "favorites: the list is full ({FAVORITES_LIMIT}), {address} not added"
+            ));
+            return false;
+        }
+        self.favorites.push(address);
+        true
     }
 
     /// Moves a favourite server up (delta < 0) or down (delta > 0) in the list.
     pub fn move_favorite(&mut self, address: &str, delta: i32) {
-        if let Some(i) = self.favorites.iter().position(|a| a == address) {
+        let address = canonical_or_trimmed(address);
+        if let Some(i) = self.favorites.iter().position(|a| *a == address) {
             let len = self.favorites.len();
             if len <= 1 {
                 return;
@@ -441,51 +611,49 @@ impl Settings {
         new_address: &str,
         new_name: Option<String>,
     ) {
-        if let Some(i) = self.favorites.iter().position(|a| a == old_address) {
-            let saved_name = new_name.or_else(|| self.favorite_names.remove(old_address));
-            self.favorites[i] = new_address.to_string();
-            if let Some(n) = saved_name {
-                let trimmed = n.trim();
-                if !trimmed.is_empty() {
-                    self.favorite_names
-                        .insert(new_address.to_string(), trimmed.chars().take(100).collect());
-                } else {
-                    self.favorite_names.remove(new_address);
+        let old_address = canonical_or_trimmed(old_address);
+        let new_address = canonical_or_trimmed(new_address);
+        if let Some(i) = self.favorites.iter().position(|a| *a == old_address) {
+            // The old alias goes away in every case: the address it belonged to is gone.
+            let old_name = self.favorite_names.remove(&old_address);
+            let saved_name = match new_name {
+                Some(name) => Some(name),
+                None => old_name,
+            };
+            self.favorites[i] = new_address.clone();
+            match saved_name {
+                Some(name) => self.set_favorite_name(&new_address, Some(name)),
+                None => {
+                    self.favorite_names.remove(&new_address);
                 }
             }
+            // One address can only be a favourite once.
+            let mut seen = std::collections::HashSet::new();
+            self.favorites.retain(|a| seen.insert(a.clone()));
         }
     }
 
     /// Sets or clears a custom alias for a favourite server.
     pub fn set_favorite_name(&mut self, address: &str, name: Option<String>) {
+        let address = canonical_or_trimmed(address);
         if let Some(n) = name {
-            let trimmed = n.trim();
+            let trimmed = clean_name(&n);
             if !trimmed.is_empty() {
-                self.favorite_names
-                    .insert(address.to_string(), trimmed.chars().take(100).collect());
+                self.favorite_names.insert(address, trimmed);
                 return;
             }
         }
-        self.favorite_names.remove(address);
+        self.favorite_names.remove(&address);
     }
 
     /// Sets or removes a personal note for a server address.
     pub fn set_server_note(&mut self, address: &str, note: &str) {
-        let trimmed = note.trim();
-        if trimmed.is_empty() {
-            self.server_notes.remove(address);
+        let address = canonical_or_trimmed(address);
+        let final_text = clean_note(note, 500);
+        if final_text.is_empty() {
+            self.server_notes.remove(&address);
         } else {
-            let clean: String = trimmed
-                .chars()
-                .filter(|c| !c.is_control() || *c == '\n' || *c == '\r' || *c == '\t')
-                .take(500)
-                .collect();
-            let final_text = clean.trim().to_string();
-            if final_text.is_empty() {
-                self.server_notes.remove(address);
-            } else {
-                self.server_notes.insert(address.to_string(), final_text);
-            }
+            self.server_notes.insert(address, final_text);
         }
     }
 
@@ -623,18 +791,44 @@ impl Settings {
 
         self.launcher_ui_scale = self.launcher_ui_scale.clamp(75, 200);
 
-        let mut clean_notes = std::collections::HashMap::new();
-        for (addr, note) in self.server_notes {
-            let addr = addr.trim().to_string();
-            if addr.is_empty() || addr.len() > 256 {
+        // Favourites are server addresses: one spelling each, no duplicates, and no more than
+        // the list is ever asked to ping (P2-37).
+        let mut seen_favorites = std::collections::HashSet::new();
+        self.favorites = self
+            .favorites
+            .iter()
+            .filter_map(|a| canonical_address(a))
+            .filter(|a| seen_favorites.insert(a.clone()))
+            .take(FAVORITES_LIMIT)
+            .collect();
+
+        let mut seen_history = std::collections::HashSet::new();
+        let mut clean_history = Vec::new();
+        for mut h in std::mem::take(&mut self.history) {
+            let Some(addr) = canonical_address(&h.address) else {
+                continue;
+            };
+            if !seen_history.insert(addr.clone()) {
                 continue;
             }
-            let clean_note: String = note
-                .chars()
-                .filter(|c| !c.is_control() || *c == '\n' || *c == '\r' || *c == '\t')
-                .take(500)
-                .collect();
-            let trimmed = clean_note.trim().to_string();
+            h.address = addr;
+            h.name = h.name.map(|n| clean_name(&n)).filter(|n| !n.is_empty());
+            clean_history.push(h);
+            if clean_history.len() >= HISTORY_LIMIT {
+                break;
+            }
+        }
+        self.history = clean_history;
+
+        let mut clean_notes = std::collections::HashMap::new();
+        for (addr, note) in std::mem::take(&mut self.server_notes) {
+            if clean_notes.len() >= SERVER_NOTES_LIMIT {
+                break;
+            }
+            let Some(addr) = canonical_address(&addr) else {
+                continue;
+            };
+            let trimmed = clean_note(&note, 500);
             if !trimmed.is_empty() {
                 clean_notes.insert(addr, trimmed);
             }
@@ -642,17 +836,14 @@ impl Settings {
         self.server_notes = clean_notes;
 
         let mut clean_fav_names = std::collections::HashMap::new();
-        for (addr, name) in self.favorite_names {
-            let addr = addr.trim().to_string();
-            if addr.is_empty() || addr.len() > 256 {
-                continue;
+        for (addr, name) in std::mem::take(&mut self.favorite_names) {
+            if clean_fav_names.len() >= FAVORITES_LIMIT {
+                break;
             }
-            let clean_name: String = name
-                .chars()
-                .filter(|c| !c.is_control() || *c == ' ')
-                .take(100)
-                .collect();
-            let trimmed = clean_name.trim().to_string();
+            let Some(addr) = canonical_address(&addr) else {
+                continue;
+            };
+            let trimmed = clean_name(&name);
             if !trimmed.is_empty() {
                 clean_fav_names.insert(addr, trimmed);
             }
@@ -722,7 +913,8 @@ impl Settings {
 
     /// Moves a favourite to the top of the list.
     pub fn raise_favorite(&mut self, address: &str) {
-        if let Some(i) = self.favorites.iter().position(|a| a == address) {
+        let address = canonical_or_trimmed(address);
+        if let Some(i) = self.favorites.iter().position(|a| *a == address) {
             let item = self.favorites.remove(i);
             self.favorites.insert(0, item);
         }
@@ -886,30 +1078,30 @@ mod tests {
     #[test]
     fn history_is_newest_first_without_duplicates_and_limited() {
         let mut s = Settings::default();
-        s.remember_played("a", None, "1".into());
-        s.remember_played("b", Some("B".into()), "2".into());
-        s.remember_played("a", Some("A".into()), "3".into());
+        s.remember_played("ss14://a.test", None, "1".into());
+        s.remember_played("ss14://b.test", Some("B".into()), "2".into());
+        s.remember_played("ss14://a.test", Some("A".into()), "3".into());
         let order: Vec<&str> = s.history.iter().map(|h| h.address.as_str()).collect();
-        assert_eq!(order, ["a", "b"]);
+        assert_eq!(order, ["ss14://a.test", "ss14://b.test"]);
         assert_eq!(s.history[0].name.as_deref(), Some("A"));
 
         for i in 0..50 {
-            s.remember_played(&format!("s{i}"), None, i.to_string());
+            s.remember_played(&format!("ss14://s{i}.test"), None, i.to_string());
         }
         assert_eq!(s.history.len(), HISTORY_LIMIT);
-        assert_eq!(s.history[0].address, "s49");
+        assert_eq!(s.history[0].address, "ss14://s49.test");
     }
 
     #[test]
     fn play_time_accumulates_and_survives_replaying() {
         let mut s = Settings::default();
-        s.remember_played("a", None, "1".into());
-        s.add_play_time("a", 60);
-        s.add_play_time("a", 30);
-        s.add_play_time("unknown", 999);
-        s.remember_played("b", None, "2".into());
-        s.remember_played("a", None, "3".into());
-        assert_eq!(s.history[0].address, "a");
+        s.remember_played("ss14://a.test", None, "1".into());
+        s.add_play_time("ss14://a.test", 60);
+        s.add_play_time("ss14://a.test", 30);
+        s.add_play_time("ss14://unknown.test", 999);
+        s.remember_played("ss14://b.test", None, "2".into());
+        s.remember_played("ss14://a.test", None, "3".into());
+        assert_eq!(s.history[0].address, "ss14://a.test");
         assert_eq!(s.history[0].play_seconds, 90);
         assert_eq!(s.history[1].play_seconds, 0);
     }
@@ -917,14 +1109,22 @@ mod tests {
     #[test]
     fn the_account_is_remembered_per_server() {
         let mut s = Settings::default();
-        s.remember_played("a", None, "1".into());
-        s.remember_account("a", "user-1");
-        s.remember_account("unknown", "x");
-        s.remember_played("b", None, "2".into());
-        s.remember_account("b", "");
-        s.remember_played("a", None, "3".into());
-        let a = s.history.iter().find(|h| h.address == "a").unwrap();
-        let b = s.history.iter().find(|h| h.address == "b").unwrap();
+        s.remember_played("ss14://a.test", None, "1".into());
+        s.remember_account("ss14://a.test", "user-1");
+        s.remember_account("ss14://unknown.test", "x");
+        s.remember_played("ss14://b.test", None, "2".into());
+        s.remember_account("ss14://b.test", "");
+        s.remember_played("ss14://a.test", None, "3".into());
+        let a = s
+            .history
+            .iter()
+            .find(|h| h.address == "ss14://a.test")
+            .unwrap();
+        let b = s
+            .history
+            .iter()
+            .find(|h| h.address == "ss14://b.test")
+            .unwrap();
         assert_eq!(
             a.account.as_deref(),
             Some("user-1"),
@@ -997,12 +1197,15 @@ mod tests {
     #[test]
     fn raising_a_favorite_moves_it_to_the_top() {
         let mut s = Settings::default();
-        for a in ["a", "b", "c"] {
+        for a in ["ss14://a.test", "ss14://b.test", "ss14://c.test"] {
             s.toggle_favorite(a);
         }
-        s.raise_favorite("c");
-        s.raise_favorite("missing");
-        assert_eq!(s.favorites, ["c", "a", "b"]);
+        s.raise_favorite("ss14://c.test");
+        s.raise_favorite("ss14://missing.test");
+        assert_eq!(
+            s.favorites,
+            ["ss14://c.test", "ss14://a.test", "ss14://b.test"]
+        );
     }
 
     #[test]
@@ -1017,6 +1220,133 @@ mod tests {
         assert_eq!(s.extra_args, "");
         assert!(s.enabled_patches.is_empty());
         assert!(s.discord_rpc);
+    }
+
+    /// A file written before the schema field existed is version 0: it is migrated, marked as
+    /// the current version and written back, and its values survive (P2-39).
+    #[test]
+    fn a_version_zero_file_is_migrated_and_kept() {
+        let dir = tempdir();
+        let old = br#"{"guest_name":"Old","theme":"light","favorites":["ss14s://a.test"]}"#;
+        let (settings, source) = parse(old).unwrap();
+        assert_eq!(source, SchemaSource::Older);
+        assert_eq!(settings.schema_version, CURRENT_SCHEMA_VERSION);
+
+        std::fs::write(Settings::path(&dir), old).unwrap();
+        let loaded = Settings::load(&dir);
+        assert_eq!(loaded.guest_name, "Old");
+        assert_eq!(loaded.theme, "light");
+        assert_eq!(loaded.favorites, ["ss14s://a.test"]);
+
+        // The migrated file is on disk, so the next start does not migrate again.
+        let (_, source) = parse(&std::fs::read(Settings::path(&dir)).unwrap()).unwrap();
+        assert_eq!(source, SchemaSource::Current);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A file from a newer launcher is read as it is and not rewritten (unknown fields would be
+    /// lost otherwise).
+    #[test]
+    fn a_newer_file_is_not_downgraded() {
+        let dir = tempdir();
+        let json = br#"{"schema_version":99,"guest_name":"New","future_option":true}"#;
+        let (settings, source) = parse(json).unwrap();
+        assert_eq!(source, SchemaSource::Newer);
+        assert_eq!(settings.guest_name, "New");
+
+        std::fs::write(Settings::path(&dir), json).unwrap();
+        let loaded = Settings::load(&dir);
+        assert_eq!(loaded.schema_version, 99);
+        let on_disk = std::fs::read(Settings::path(&dir)).unwrap();
+        assert!(
+            String::from_utf8_lossy(&on_disk).contains("future_option"),
+            "the file is left alone"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Favourites, history, names and notes are cleaned on load: one spelling of an address,
+    /// no duplicates, no control characters, and no more entries than the UI handles (P2-37).
+    #[test]
+    fn favorites_history_and_notes_are_validated() {
+        let mut s = Settings {
+            favorites: vec![
+                " http://a.test:1212 ".into(),
+                "ss14://a.test:1212".into(), // the same server, other spelling
+                "ss14s://b.test/".into(),
+                "not an address \u{7}".into(),
+                "ss14://nul".into(),
+            ],
+            history: vec![
+                HistoryEntry {
+                    address: "ss14://a.test:1212".into(),
+                    name: Some(format!("{}{}", "\u{7}", "x".repeat(400))),
+                    last_played: "1".into(),
+                    play_seconds: 5,
+                    account: None,
+                },
+                HistoryEntry {
+                    address: "  ss14://a.test:1212  ".into(),
+                    name: None,
+                    last_played: "2".into(),
+                    play_seconds: 9,
+                    account: None,
+                },
+            ],
+            favorite_names: [
+                (
+                    " ss14://a.test:1212 ".to_string(),
+                    "  Имя \u{7} ".to_string(),
+                ),
+                ("not a server".to_string(), "nope".to_string()),
+            ]
+            .into_iter()
+            .collect(),
+            server_notes: [
+                ("ss14://a.test:1212".to_string(), "note".to_string()),
+                ("  ".to_string(), "orphan".to_string()),
+            ]
+            .into_iter()
+            .collect(),
+            ..Settings::default()
+        };
+        for i in 0..(FAVORITES_LIMIT + 10) {
+            s.favorites.push(format!("ss14://s{i}.test"));
+        }
+
+        let s = s.sanitized();
+        assert_eq!(s.favorites[0], "ss14://a.test:1212");
+        assert_eq!(s.favorites[1], "ss14s://b.test/");
+        assert!(s.favorites.len() <= FAVORITES_LIMIT);
+        assert_eq!(
+            s.favorites
+                .iter()
+                .filter(|a| *a == "ss14://a.test:1212")
+                .count(),
+            1,
+            "one server is one favourite"
+        );
+
+        assert_eq!(s.history.len(), 1, "the same server is remembered once");
+        assert_eq!(s.history[0].address, "ss14://a.test:1212");
+        let name = s.history[0].name.as_deref().unwrap();
+        assert_eq!(name.chars().count(), NAME_LIMIT);
+        assert!(!name.chars().any(char::is_control));
+
+        assert_eq!(
+            s.favorite_names
+                .get("ss14://a.test:1212")
+                .map(String::as_str),
+            Some("Имя")
+        );
+        assert_eq!(s.favorite_names.len(), 1, "a non-address key is dropped");
+        assert_eq!(
+            s.server_notes.get("ss14://a.test:1212").map(String::as_str),
+            Some("note")
+        );
+        assert_eq!(s.server_notes.len(), 1);
     }
 
     #[test]
@@ -1059,10 +1389,10 @@ mod tests {
     #[test]
     fn favorites_toggle() {
         let mut s = Settings::default();
-        assert!(s.toggle_favorite("a"));
-        assert!(s.toggle_favorite("b"));
-        assert!(!s.toggle_favorite("a"));
-        assert_eq!(s.favorites, ["b"]);
+        assert!(s.toggle_favorite("ss14://a.test"));
+        assert!(s.toggle_favorite("ss14://b.test"));
+        assert!(!s.toggle_favorite("ss14://a.test"));
+        assert_eq!(s.favorites, ["ss14://b.test"]);
     }
 
     #[test]
@@ -1170,29 +1500,45 @@ mod tests {
     #[test]
     fn moving_and_editing_favorites() {
         let mut s = Settings::default();
-        s.toggle_favorite("a");
-        s.toggle_favorite("b");
-        s.toggle_favorite("c");
-        assert_eq!(s.favorites, ["a", "b", "c"]);
+        s.toggle_favorite("ss14://a.test");
+        s.toggle_favorite("ss14://b.test");
+        s.toggle_favorite("ss14://c.test");
+        assert_eq!(
+            s.favorites,
+            ["ss14://a.test", "ss14://b.test", "ss14://c.test"]
+        );
 
-        s.set_favorite_name("a", Some("Alpha".into()));
-        assert_eq!(s.favorite_names.get("a").map(String::as_str), Some("Alpha"));
+        s.set_favorite_name("ss14://a.test", Some("Alpha".into()));
+        assert_eq!(
+            s.favorite_names.get("ss14://a.test").map(String::as_str),
+            Some("Alpha")
+        );
 
         // Move b down
-        s.move_favorite("b", 1);
-        assert_eq!(s.favorites, ["a", "c", "b"]);
+        s.move_favorite("ss14://b.test", 1);
+        assert_eq!(
+            s.favorites,
+            ["ss14://a.test", "ss14://c.test", "ss14://b.test"]
+        );
 
         // Move b up twice
-        s.move_favorite("b", -2);
-        assert_eq!(s.favorites, ["b", "a", "c"]);
+        s.move_favorite("ss14://b.test", -2);
+        assert_eq!(
+            s.favorites,
+            ["ss14://b.test", "ss14://a.test", "ss14://c.test"]
+        );
 
         // Edit favorite a -> a2 with new name
-        s.edit_favorite("a", "a2", Some("Alpha 2".into()));
-        assert_eq!(s.favorites, ["b", "a2", "c"]);
+        s.edit_favorite("ss14://a.test", "ss14://a2.test", Some("Alpha 2".into()));
         assert_eq!(
-            s.favorite_names.get("a2").map(String::as_str),
+            s.favorites,
+            ["ss14://b.test", "ss14://a2.test", "ss14://c.test"]
+        );
+        assert_eq!(
+            s.favorite_names.get("ss14://a2.test").map(String::as_str),
             Some("Alpha 2")
         );
+        assert!(!s.favorite_names.contains_key("ss14://a.test"));
 
         // Sanitization of favorite names and launcher UI scale
         s.favorite_names

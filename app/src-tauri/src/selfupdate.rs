@@ -85,7 +85,7 @@ impl From<&Release> for ReleaseRow {
 
 impl UpdateState {
     fn status(&self, playing: bool) -> Status {
-        let i = self.inner.lock().unwrap();
+        let i = crate::lock_or_recover(&self.inner);
         let phase = i.phase.unwrap_or(Phase::Idle);
         Status {
             phase,
@@ -99,11 +99,21 @@ impl UpdateState {
     }
 
     fn edit(&self, f: impl FnOnce(&mut Inner)) {
-        f(&mut self.inner.lock().unwrap());
+        f(&mut crate::lock_or_recover(&self.inner));
     }
 
-    fn phase(&self) -> Phase {
-        self.inner.lock().unwrap().phase.unwrap_or(Phase::Idle)
+    /// Claims the update for a check: unless it is idle, the caller gets no claim.
+    ///
+    /// Phase and claim are set in one critical section, so a click and the background check
+    /// cannot both start a request to GitHub (P2-34).
+    fn begin_check(&self) -> bool {
+        let mut i = crate::lock_or_recover(&self.inner);
+        if i.phase.unwrap_or(Phase::Idle) != Phase::Idle {
+            return false;
+        }
+        i.phase = Some(Phase::Checking);
+        i.error = None;
+        true
     }
 }
 
@@ -148,20 +158,14 @@ fn updates_dir(app: &AppHandle) -> PathBuf {
 /// Asks GitHub for the newest release. With "automatic" on, a newer one is downloaded at once.
 pub async fn check(app: &AppHandle) -> Status {
     let state = app.state::<AppState>();
-    if matches!(
-        state.update.phase(),
-        Phase::Checking | Phase::Downloading | Phase::Ready
-    ) {
+    if !state.update.begin_check() {
+        // Somebody is already checking, downloading or has something ready.
         return status_of(app);
     }
-    state.update.edit(|i| {
-        i.phase = Some(Phase::Checking);
-        i.error = None;
-    });
     emit(app);
 
     let (repo, auto) = {
-        let s = state.settings.lock().unwrap();
+        let s = crate::lock_or_recover(&state.settings);
         (s.update_repo.clone(), s.update_auto)
     };
     let result = self_update::latest(&state.client, &repo, token().as_ref()).await;
@@ -198,7 +202,7 @@ pub async fn check(app: &AppHandle) -> Status {
 pub fn download(app: AppHandle) {
     let state = app.state::<AppState>();
     let release = {
-        let mut i = state.update.inner.lock().unwrap();
+        let mut i = crate::lock_or_recover(&state.update.inner);
         let phase = i.phase.unwrap_or(Phase::Idle);
         let Some(release) = i.release.clone() else {
             return;
@@ -280,7 +284,7 @@ pub fn install_now(app: &AppHandle, restart: bool) -> Result<(), String> {
         return Err("идёт подготовка или работа игры: закройте её и повторите".into());
     }
     let path = {
-        let mut i = state.update.inner.lock().unwrap();
+        let mut i = crate::lock_or_recover(&state.update.inner);
         let (Some(Phase::Ready), Some(path)) = (i.phase, i.ready.clone()) else {
             return Err("обновление ещё не скачано".into());
         };
@@ -306,11 +310,12 @@ pub fn install_on_exit(app: &AppHandle) {
         return;
     }
     let state = app.state::<AppState>();
-    if !state.settings.lock().unwrap().update_auto || state.game.is_active() {
+    let auto = crate::lock_or_recover(&state.settings).update_auto;
+    if !auto || state.game.is_active() {
         return;
     }
     let path = {
-        let mut i = state.update.inner.lock().unwrap();
+        let mut i = crate::lock_or_recover(&state.update.inner);
         let (Some(Phase::Ready), Some(path)) = (i.phase, i.ready.clone()) else {
             return;
         };
@@ -331,12 +336,7 @@ pub fn start_background_checks(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_secs(8)).await;
         loop {
-            let on = app
-                .state::<AppState>()
-                .settings
-                .lock()
-                .unwrap()
-                .update_check;
+            let on = crate::lock_or_recover(&app.state::<AppState>().settings).update_check;
             if on {
                 check(&app).await;
             }
