@@ -527,7 +527,12 @@ mod tests {
             .save(&account("mallory", 9, NOW + Duration::days(30)))
             .unwrap();
         // Something under our prefix that isn't one of our accounts.
-        cred::write(&format!("{}garbage", t.store.prefix), "x", b"this is not json").unwrap();
+        cred::write(
+            &format!("{}garbage", t.store.prefix),
+            "x",
+            b"this is not json",
+        )
+        .unwrap();
 
         let listed = t.store.list().unwrap();
         assert_eq!(listed.len(), 1, "junk is skipped");

@@ -509,9 +509,11 @@ mod tests {
         );
         assert!(!dirs.engines().join("9.9.9.zip.part").exists());
         assert!(
-            std::fs::read_dir(dirs.engines())
+            std::fs::read_dir(dirs.engines()).unwrap().all(|e| !e
                 .unwrap()
-                .all(|e| !e.unwrap().file_name().to_string_lossy().contains(".old-")),
+                .file_name()
+                .to_string_lossy()
+                .contains(".old-")),
             "no stale backup is left behind"
         );
     }
