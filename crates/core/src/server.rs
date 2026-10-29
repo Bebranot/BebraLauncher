@@ -5,6 +5,7 @@ use std::time::Duration;
 use reqwest::Client;
 use serde::{Deserialize, Deserializer, Serialize};
 
+use crate::http::{read_json_limited, MAX_JSON_BYTES};
 use crate::{Error, Result, ServerAddr};
 
 /// Timeout for `/status` and hub info requests.
@@ -214,7 +215,7 @@ async fn get_json<T: serde::de::DeserializeOwned>(
             url: url.to_string(),
         });
     }
-    Ok(resp.json().await?)
+    read_json_limited(resp, MAX_JSON_BYTES, timeout).await
 }
 
 /// `GET {api}/status`.
@@ -485,5 +486,24 @@ mod tests {
         };
         b.apply_self_hosting(&addr);
         assert_eq!(b.download_url(), Some("https://cdn/x.zip"));
+    }
+
+    #[tokio::test]
+    async fn status_rejects_an_oversized_body() {
+        use crate::http::build_client;
+        use crate::test_util::serve;
+
+        // Valid JSON, just far bigger than any real /status response.
+        let big = format!("{{\"name\":\"{}\"}}", "a".repeat(MAX_JSON_BYTES)).into_bytes();
+        let (base, _) = serve(move |_| (200, vec![], big.clone())).await;
+        let addr = ServerAddr::parse(base.trim_end_matches('/')).unwrap();
+        let err = fetch_status(&build_client().unwrap(), &addr)
+            .await
+            .unwrap_err();
+        let text = err.to_string();
+        assert!(
+            text.contains("larger") || text.contains("too large"),
+            "{text}"
+        );
     }
 }

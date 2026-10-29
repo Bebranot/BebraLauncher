@@ -6,7 +6,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use url::form_urlencoded;
 
-use crate::http::UrlFallbackSet;
+use crate::http::{read_json_limited, sanitize_url, UrlFallbackSet, MAX_JSON_BYTES};
 use crate::server::{ServerInfo, ServerStatus, STATUS_TIMEOUT};
 use crate::{Error, Result};
 
@@ -59,10 +59,7 @@ impl HubClient {
             .await
             .map_err(|_| Error::Other("hub server list request timed out".into()))??;
         check_status(&resp)?;
-        let body = tokio::time::timeout(LIST_TIMEOUT, resp.bytes())
-            .await
-            .map_err(|_| Error::Other("hub server list download timed out".into()))??;
-        serde_json::from_slice(&body).map_err(|e| Error::Other(format!("bad hub response: {e}")))
+        read_json_limited(resp, MAX_JSON_BYTES, LIST_TIMEOUT).await
     }
 
     /// `/info` of a hub-listed server, proxied by the hub (`address` exactly as listed).
@@ -75,26 +72,36 @@ impl HubClient {
             .await
             .map_err(|_| Error::Other("hub info request timed out".into()))??;
         check_status(&resp)?;
-        let body = resp.bytes().await?;
-        serde_json::from_slice(&body)
-            .map_err(|e| Error::Other(format!("bad hub info response: {e}")))
+        read_json_limited(resp, MAX_JSON_BYTES, STATUS_TIMEOUT).await
     }
 }
 
-/// Checks whether a string is a valid HTTP(S) URL for a server hub.
+/// Checks whether a string is a valid hub URL. Plain `http` is only allowed on this machine
+/// (a local hub); a remote hub must be `https`, otherwise anyone on the path can replace the
+/// server list. Credentials in the address are not accepted: they would be logged.
 pub fn is_valid_hub_url(url: &str) -> bool {
     let s = url.trim();
     if s.is_empty() || s.len() > 300 {
         return false;
     }
-    match url::Url::parse(s) {
-        Ok(u) => {
-            (u.scheme() == "http" || u.scheme() == "https")
-                && u.has_host()
-                && u.query().is_none()
-                && u.fragment().is_none()
-        }
-        Err(_) => false,
+    let Ok(u) = url::Url::parse(s) else {
+        return false;
+    };
+    if !u.has_host()
+        || !u.username().is_empty()
+        || u.password().is_some()
+        || u.query().is_some()
+        || u.fragment().is_some()
+    {
+        return false;
+    }
+    match u.scheme() {
+        "https" => true,
+        "http" => matches!(
+            u.host_str(),
+            Some("localhost" | "127.0.0.1" | "::1" | "[::1]")
+        ),
+        _ => false,
     }
 }
 
@@ -190,7 +197,7 @@ pub async fn list_servers_from_hubs(
                 }
             }
             Ok((hub_url, Err(e))) => {
-                last_err = Some(Error::Other(format!("hub {hub_url}: {e}")));
+                last_err = Some(hub_failure(&hub_url, &e));
             }
             Err(e) => {
                 last_err = Some(Error::Other(e.to_string()));
@@ -220,8 +227,20 @@ fn check_status(resp: &reqwest::Response) -> Result<()> {
     } else {
         Err(Error::HttpStatus {
             status: resp.status().as_u16(),
-            url: resp.url().to_string(),
+            url: sanitize_url(resp.url().as_str()),
         })
+    }
+}
+
+/// A hub error that never repeats credentials from the hub address.
+fn hub_failure(hub_url: &str, e: &Error) -> Error {
+    let safe = sanitize_url(hub_url);
+    let has_userinfo =
+        url::Url::parse(hub_url).is_ok_and(|u| !u.username().is_empty() || u.password().is_some());
+    if has_userinfo {
+        Error::Other(format!("hub {safe}: request failed (details hidden)"))
+    } else {
+        Error::Other(format!("hub {safe}: {e}"))
     }
 }
 
@@ -267,12 +286,18 @@ mod tests {
         assert!(is_valid_hub_url("https://hub.spacestation14.com/"));
         assert!(is_valid_hub_url("https://hub.corvax.fun"));
         assert!(is_valid_hub_url("http://localhost:8080/hub"));
+        assert!(is_valid_hub_url("http://127.0.0.1:8080/"));
+        assert!(is_valid_hub_url("http://[::1]:8080/"));
 
         assert!(!is_valid_hub_url(""));
         assert!(!is_valid_hub_url("ftp://hub.example.com"));
         assert!(!is_valid_hub_url("https://hub.example.com?query=1"));
         assert!(!is_valid_hub_url("https://hub.example.com#fragment"));
         assert!(!is_valid_hub_url("not a url"));
+        // Plain http is only for a hub on this machine, and credentials are never allowed.
+        assert!(!is_valid_hub_url("http://hub.example.com/"));
+        assert!(!is_valid_hub_url("https://user:pass@hub.example.com/"));
+        assert!(!is_valid_hub_url("https://user@hub.example.com/"));
 
         assert_eq!(
             normalize_hub_url("https://hub.corvax.fun"),
@@ -283,5 +308,39 @@ mod tests {
             Some("https://hub.corvax.fun/".into())
         );
         assert_eq!(normalize_hub_url("invalid"), None);
+    }
+
+    #[tokio::test]
+    async fn hub_info_rejects_an_oversized_body() {
+        use crate::http::build_client;
+        use crate::test_util::serve;
+
+        let big = format!(
+            "{{\"auth\":{{\"mode\":\"Disabled\",\"public_key\":\"k\"}},\"desc\":\"{}\"}}",
+            "a".repeat(MAX_JSON_BYTES)
+        )
+        .into_bytes();
+        let (base, _) = serve(move |_| (200, vec![], big.clone())).await;
+        let hub = HubClient::new(build_client().unwrap(), UrlFallbackSet::new([base]));
+        let err = hub.server_info("ss14://example.com").await.unwrap_err();
+        let text = err.to_string();
+        assert!(
+            text.contains("larger") || text.contains("too large"),
+            "{text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn hub_errors_do_not_repeat_credentials() {
+        use crate::http::build_client;
+
+        // Nothing listens on port 1, so the request fails at the transport level.
+        let hub = "http://user:secret@127.0.0.1:1/".to_string();
+        let err = list_servers_from_hubs(&build_client().unwrap(), &[hub])
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(!err.contains("secret"), "{err}");
+        assert!(err.contains("127.0.0.1"), "{err}");
     }
 }

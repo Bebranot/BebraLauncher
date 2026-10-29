@@ -21,9 +21,11 @@ const CLEARED_ENV: &[&str] = &[
     "ROBUST_AUTH_USERID",
     "ROBUST_AUTH_PUBKEY",
     "ROBUST_AUTH_SERVER",
+    "ROBUST_AUTH_SERVERS",
     "SS14_LOADER_CONTENT_DB",
     "SS14_LOADER_CONTENT_VERSION",
     "SS14_LOADER_OVERLAY_ZIP",
+    "SS14_LOADER_PATCHES",
     "SS14_DISABLE_SIGNING",
     "SS14_LAUNCHER_PATH",
     "SS14_LOG_CLIENT",
@@ -144,21 +146,45 @@ pub struct LaunchCommand {
 
 const SECRET_ENV: &[&str] = &["ROBUST_AUTH_TOKEN"];
 
+/// Environment variables whose values may be printed by [`LaunchCommand::describe_verbose`].
+/// Empty on purpose: these logs are attached to bug reports, so only a deliberate addition
+/// should put a value (a path, a token) into them.
+const SHOWN_ENV_VALUES: &[&str] = &[];
+
 impl LaunchCommand {
-    /// A log-safe one-line description: program, arguments and environment names,
-    /// with secret values replaced.
+    /// A log-safe one-line description: program, arguments and the names of the environment
+    /// variables. Values are never included; use [`describe_verbose`](Self::describe_verbose)
+    /// when the exact values are needed for debugging.
     pub fn describe(&self) -> String {
+        self.describe_with(|_, _| None)
+    }
+
+    /// Like [`describe`](Self::describe), but prints values for the few variables in the
+    /// explicit `SHOWN_ENV_VALUES` allowlist. Everything else, secrets in particular, stays hidden.
+    pub fn describe_verbose(&self) -> String {
+        self.describe_with(|k, v| {
+            let shown = SHOWN_ENV_VALUES.contains(&k) && !SECRET_ENV.contains(&k);
+            Some(if shown {
+                v.to_string()
+            } else {
+                "<hidden>".into()
+            })
+        })
+    }
+
+    fn describe_with<F>(&self, value_for: F) -> String
+    where
+        F: Fn(&str, &str) -> Option<String>,
+    {
         let mut out = self.program.display().to_string();
         for (i, a) in self.args.iter().enumerate() {
             out.push_str(&format!(" [{i}] {a}"));
         }
         for (k, v) in &self.env {
-            let v = if SECRET_ENV.contains(&k.as_str()) {
-                "<hidden>"
-            } else {
-                v
-            };
-            out.push_str(&format!(" {k}={v}"));
+            match value_for(k, v) {
+                Some(value) => out.push_str(&format!(" {k}={value}")),
+                None => out.push_str(&format!(" {k}")),
+            }
         }
         if self.priority != ProcessPriority::Normal {
             out.push_str(&format!(" [priority={:?}]", self.priority));
@@ -209,6 +235,57 @@ pub fn split_args(input: &str) -> Vec<String> {
         args.push(current);
     }
     args
+}
+
+/// CVar names the engine accepts: dotted identifiers, e.g. `display.vsync` or `net.predict`.
+fn is_valid_cvar_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 100
+        && name.split('.').all(|part| {
+            !part.is_empty()
+                && part.len() <= 50
+                && part.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        })
+}
+
+/// A `name=value` assignment with a valid name and a printable value.
+fn is_cvar_assignment(token: &str) -> bool {
+    let Some((name, value)) = token.split_once('=') else {
+        return false;
+    };
+    is_valid_cvar_name(name) && value.len() <= 500 && !value.chars().any(char::is_control)
+}
+
+/// Keeps only `--cvar name=value` from user-supplied arguments. `--connect-address`,
+/// `--username`, `--ss14-address` and anything else are dropped: a settings file or an imported
+/// profile must not be able to point the game at another server or rename the player.
+fn safe_extra_args(extra: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut pending_cvar = false;
+    for raw in extra {
+        let token = raw.trim();
+        if token.is_empty() {
+            continue;
+        }
+        if pending_cvar {
+            pending_cvar = false;
+            if is_cvar_assignment(token) {
+                out.push("--cvar".into());
+                out.push(token.to_string());
+            }
+            continue;
+        }
+        if token == "--cvar" {
+            pending_cvar = true;
+        } else if let Some(rest) = token.strip_prefix("--cvar ") {
+            let rest = rest.trim();
+            if is_cvar_assignment(rest) {
+                out.push("--cvar".into());
+                out.push(rest.to_string());
+            }
+        }
+    }
+    out
 }
 
 pub fn build_command(spec: &LaunchSpec) -> LaunchCommand {
@@ -328,11 +405,8 @@ pub fn build_command(spec: &LaunchSpec) -> LaunchCommand {
         }
     }
 
-    for extra in &spec.extra_args {
-        let trimmed = extra.trim();
-        if !trimmed.is_empty() {
-            args.push(trimmed.to_string());
-        }
+    for extra in safe_extra_args(&spec.extra_args) {
+        args.push(extra);
     }
 
     let mut env: Vec<(String, String)> = Vec::new();
@@ -720,6 +794,8 @@ mod tests {
         for name in [
             "ROBUST_AUTH_TOKEN",
             "ROBUST_AUTH_USERID",
+            "ROBUST_AUTH_SERVERS",
+            "SS14_LOADER_PATCHES",
             "SS14_DISABLE_SIGNING",
             "DOTNET_ROLL_FORWARD",
         ] {
@@ -760,6 +836,14 @@ mod tests {
             Some("https://auth.example/")
         );
         assert_eq!(
+            env_of(&cmd, "ROBUST_AUTH_SERVERS").as_deref(),
+            Some("unset@https://auth.example/")
+        );
+        assert!(
+            !cmd.env_remove.iter().any(|n| n == "ROBUST_AUTH_SERVERS"),
+            "a variable we set is not also removed"
+        );
+        assert_eq!(
             env_of(&cmd, "ROBUST_MODULE_ROBUST_CLIENT_WEBVIEW").as_deref(),
             Some(r"C:\data\modules\wv")
         );
@@ -780,10 +864,23 @@ mod tests {
             auth_server_url: "https://auth.example/".into(),
         });
         let cmd = build_command(&s);
-        for text in [cmd.describe(), format!("{cmd:?}"), format!("{:?}", s.auth)] {
+        for text in [cmd.describe(), cmd.describe_verbose(), format!("{cmd:?}")] {
             assert!(!text.contains("SECRET-TOKEN"), "leaked: {text}");
+            assert!(!text.contains("=PUBKEY"), "leaked: {text}");
+            assert!(!text.contains("https://auth.example/"), "leaked: {text}");
         }
-        assert!(cmd.describe().contains("ROBUST_AUTH_TOKEN=<hidden>"));
+        assert!(!format!("{:?}", s.auth).contains("SECRET-TOKEN"));
+        // By default only the names are logged; no `=value` pairs at all.
+        let plain = cmd.describe();
+        assert!(plain.contains("ROBUST_AUTH_TOKEN"));
+        assert!(!plain.contains("ROBUST_AUTH_TOKEN="), "{plain}");
+        assert!(!plain.contains("SS14_LOADER_CONTENT_DB="), "{plain}");
+        assert!(
+            cmd.describe_verbose()
+                .contains("ROBUST_AUTH_TOKEN=<hidden>"),
+            "{}",
+            cmd.describe_verbose()
+        );
     }
 
     #[test]
@@ -874,6 +971,47 @@ mod tests {
         let cmd = build_command(&s);
         assert!(cmd.args.contains(&"--cvar".to_string()));
         assert!(cmd.args.contains(&"display.vsync=false".to_string()));
+    }
+
+    #[test]
+    fn extra_args_cannot_override_the_target_or_the_username() {
+        let mut s = spec();
+        s.extra_args = vec![
+            "--connect-address".into(),
+            "udp://evil.example:1212/".into(),
+            "--username".into(),
+            "Other".into(),
+            "--ss14-address".into(),
+            "ss14://evil.example/".into(),
+            "--cvar".into(),
+            "display.vsync=false".into(),
+            "--cvar".into(),
+            "bad name=1".into(),
+            "--cvar display.max_fps=60".into(),
+        ];
+        let cmd = build_command(&s);
+
+        assert!(cmd.args.contains(&"display.vsync=false".to_string()));
+        assert!(cmd.args.contains(&"display.max_fps=60".to_string()));
+        assert!(!cmd.args.iter().any(|a| a.contains("evil.example")));
+        assert!(!cmd.args.iter().any(|a| a == "Other"));
+        assert_eq!(
+            cmd.args
+                .iter()
+                .filter(|a| *a == "--connect-address")
+                .count(),
+            1,
+            "only our own address may be given"
+        );
+        assert_eq!(
+            cmd.args.iter().filter(|a| *a == "--username").count(),
+            1,
+            "only our own username may be given"
+        );
+        assert_eq!(
+            cmd.args.iter().filter(|a| *a == "--ss14-address").count(),
+            1
+        );
     }
 
     #[test]

@@ -5,13 +5,17 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub use reqwest::Client;
-use reqwest::{RequestBuilder, Response};
+use reqwest::{RequestBuilder, Response, StatusCode};
+use serde::de::DeserializeOwned;
 use tokio::task::JoinSet;
 
 use crate::{Error, Result};
 
 /// How long the first mirror gets before the next one is tried in parallel.
 pub const ATTEMPT_DELAY: Duration = Duration::from_secs(3);
+
+/// Upper bound for JSON bodies we read from game servers and hubs (they are small).
+pub const MAX_JSON_BYTES: usize = 4 * 1024 * 1024;
 
 pub fn build_client() -> Result<Client> {
     build_client_with_proxy(None)
@@ -29,6 +33,57 @@ pub fn is_valid_proxy(url: &str) -> bool {
         && reqwest::Url::parse(&lower).is_ok_and(|u| u.host_str().is_some())
 }
 
+/// A log-safe form of a URL: `scheme://host[:port]`, with userinfo, path, query and fragment
+/// dropped. Proxy addresses may carry `user:password`, and those must never reach a log.
+pub fn sanitize_url(url: &str) -> String {
+    let Ok(u) = reqwest::Url::parse(url.trim()) else {
+        return "<invalid url>".into();
+    };
+    let Some(host) = u.host_str() else {
+        return "<invalid url>".into();
+    };
+    let mut out = format!("{}://{host}", u.scheme());
+    if let Some(port) = u.port() {
+        out.push(':');
+        out.push_str(&port.to_string());
+    }
+    out
+}
+
+/// Reads a JSON body with an idle timeout and a hard size limit. Without it a server can send
+/// headers and then stall (or stream a huge body) and the caller waits or allocates forever.
+pub async fn read_json_limited<T: DeserializeOwned>(
+    resp: Response,
+    max_bytes: usize,
+    idle_timeout: Duration,
+) -> Result<T> {
+    if let Some(len) = resp.content_length() {
+        if len > max_bytes as u64 {
+            return Err(Error::Other(format!(
+                "the response is too large ({len} bytes)"
+            )));
+        }
+    }
+    let mut resp = resp;
+    let mut body = Vec::new();
+    loop {
+        let chunk = tokio::time::timeout(idle_timeout, resp.chunk())
+            .await
+            .map_err(|_| Error::Other("the response body timed out".into()))??;
+        let Some(chunk) = chunk else {
+            break;
+        };
+        if body.len() + chunk.len() > max_bytes {
+            return Err(Error::Other(format!(
+                "the response is larger than {max_bytes} bytes"
+            )));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    serde_json::from_slice(&body)
+        .map_err(|e| Error::Other(format!("the response is not valid JSON: {e}")))
+}
+
 /// Like [`build_client`], optionally sending everything through a proxy. This is for the
 /// launcher's own requests (server list, login, downloads); the game connects by itself.
 pub fn build_client_with_proxy(proxy: Option<&str>) -> Result<Client> {
@@ -41,9 +96,15 @@ pub fn build_client_with_proxy(proxy: Option<&str>) -> Result<Client> {
         .pool_idle_timeout(Duration::from_secs(90));
     if let Some(url) = proxy.map(str::trim).filter(|p| !p.is_empty()) {
         if !is_valid_proxy(url) {
-            return Err(Error::Other(format!("not a usable proxy address: {url}")));
+            return Err(Error::Other(format!(
+                "not a usable proxy address: {}",
+                sanitize_url(url)
+            )));
         }
-        builder = builder.proxy(reqwest::Proxy::all(url)?);
+        builder = builder.proxy(
+            reqwest::Proxy::all(url)
+                .map_err(|_| Error::Other("the proxy address was rejected".into()))?,
+        );
     }
     Ok(builder.build()?)
 }
@@ -117,6 +178,9 @@ impl UrlFallbackSet {
     /// Starts with the first mirror. If it has not answered within the attempt delay (or failed),
     /// the next one starts alongside it. The first response wins, whatever its HTTP status;
     /// callers check the status. Losing requests are cancelled.
+    ///
+    /// Only successful responses count towards [`most_successful`](Self::most_successful):
+    /// a mirror that keeps answering 5xx is not a good auth server for the client.
     pub async fn send<F>(&self, build: F) -> Result<Response>
     where
         F: Fn(&str) -> RequestBuilder,
@@ -142,7 +206,9 @@ impl UrlFallbackSet {
             tokio::select! {
                 joined = tasks.join_next() => match joined {
                     Some(Ok((index, Ok(resp)))) => {
-                        self.wins[index].fetch_add(1, Ordering::Relaxed);
+                        if resp.status().is_success() {
+                            self.wins[index].fetch_add(1, Ordering::Relaxed);
+                        }
                         return Ok(resp);
                     }
                     Some(Ok((_, Err(e)))) => last_err = Some(e.into()),
@@ -156,6 +222,39 @@ impl UrlFallbackSet {
             }
         }
 
+        Err(last_err.unwrap_or_else(|| Error::Other("no mirrors to try".into())))
+    }
+
+    /// Sends one request at a time and returns the first response whose status `accept` allows.
+    /// A transport error, a timeout or a rejected status moves on to the next mirror. This is the
+    /// only safe way to send a non-idempotent request (POST login/refresh): two mirrors must never
+    /// both see it, because a rotating token endpoint would invalidate its own answer.
+    ///
+    /// Only successful (`2xx`) responses count towards
+    /// [`most_successful`](Self::most_successful), even when `accept` also allows e.g. `401`.
+    pub async fn send_ordered<F, A>(&self, build: F, accept: A) -> Result<Response>
+    where
+        F: Fn(&str) -> RequestBuilder,
+        A: Fn(StatusCode) -> bool,
+    {
+        let mut last_err: Option<Error> = None;
+        for (index, url) in self.urls.iter().enumerate() {
+            match build(url).send().await {
+                Ok(resp) => {
+                    if resp.status().is_success() {
+                        self.wins[index].fetch_add(1, Ordering::Relaxed);
+                    }
+                    if accept(resp.status()) {
+                        return Ok(resp);
+                    }
+                    last_err = Some(Error::HttpStatus {
+                        status: resp.status().as_u16(),
+                        url: sanitize_url(resp.url().as_str()),
+                    });
+                }
+                Err(e) => last_err = Some(e.into()),
+            }
+        }
         Err(last_err.unwrap_or_else(|| Error::Other("no mirrors to try".into())))
     }
 
@@ -183,6 +282,7 @@ mod tests {
 
     enum Behavior {
         Reply(&'static str),
+        Status(u16),
         Hang,
     }
 
@@ -204,6 +304,16 @@ mod tests {
                             let resp = format!(
                                 "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                                 body.len()
+                            );
+                            let _ = sock.write_all(resp.as_bytes()).await;
+                        });
+                    }
+                    Behavior::Status(status) => {
+                        tokio::spawn(async move {
+                            let mut buf = [0u8; 4096];
+                            let _ = sock.read(&mut buf).await;
+                            let resp = format!(
+                                "HTTP/1.1 {status} X\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                             );
                             let _ = sock.write_all(resp.as_bytes()).await;
                         });
@@ -247,6 +357,25 @@ mod tests {
         assert!(build_client_with_proxy(Some("")).is_ok());
         assert!(build_client_with_proxy(Some("socks5://127.0.0.1:1080")).is_ok());
         assert!(build_client_with_proxy(Some("nonsense")).is_err());
+    }
+
+    #[test]
+    fn urls_in_messages_lose_credentials() {
+        assert_eq!(
+            sanitize_url("socks5h://user:pass@proxy.example:1080/"),
+            "socks5h://proxy.example:1080"
+        );
+        assert_eq!(
+            sanitize_url("https://user:pass@hub.example/api/x?y=1"),
+            "https://hub.example"
+        );
+        assert_eq!(sanitize_url("not a url"), "<invalid url>");
+
+        // A broken proxy address with a password in it must not leak into the error.
+        for bad in ["http://user:secret@", "http://user:secret@exa mple"] {
+            let err = build_client_with_proxy(Some(bad)).unwrap_err().to_string();
+            assert!(!err.contains("secret"), "{err}");
+        }
     }
 
     #[test]
@@ -341,5 +470,93 @@ mod tests {
     async fn all_mirrors_dead_is_an_error() {
         let set = UrlFallbackSet::new([dead_url().await, dead_url().await]);
         assert!(set.get(&build_client().unwrap()).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn ordered_requests_skip_5xx_and_count_only_successes() {
+        let bad = spawn_server(Behavior::Status(500)).await;
+        let good = spawn_server(Behavior::Reply("{\"ok\":true}")).await;
+        let set =
+            UrlFallbackSet::new([bad, good.clone()]).with_attempt_delay(Duration::from_millis(20));
+        let client = build_client().unwrap();
+
+        let resp = set
+            .send_ordered(|url| client.post(url), |status| status.is_success())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        assert_eq!(
+            set.most_successful(),
+            good,
+            "a mirror answering 5xx must not win"
+        );
+    }
+
+    #[tokio::test]
+    async fn ordered_requests_report_an_error_when_every_mirror_fails() {
+        let only = spawn_server(Behavior::Status(503)).await;
+        let set = UrlFallbackSet::new([only]);
+        let client = build_client().unwrap();
+        let err = set
+            .send_ordered(|url| client.post(url), |s| s.is_success())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::HttpStatus { status: 503, .. }),
+            "{err:?}"
+        );
+    }
+
+    /// Writes one fixed raw response and, optionally, keeps the socket open (a stalled body).
+    async fn spawn_raw(response: &'static str, keep_open: bool) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let Ok((mut sock, _)) = listener.accept().await else {
+                return;
+            };
+            let mut buf = [0u8; 4096];
+            let _ = sock.read(&mut buf).await;
+            let _ = sock.write_all(response.as_bytes()).await;
+            if keep_open {
+                tokio::time::sleep(Duration::from_secs(30)).await;
+            }
+        });
+        format!("http://{addr}/")
+    }
+
+    #[tokio::test]
+    async fn json_bodies_are_size_limited() {
+        let declared = spawn_raw(
+            "HTTP/1.1 200 OK\r\nContent-Length: 10\r\nConnection: close\r\n\r\n0123456789",
+            false,
+        )
+        .await;
+        let resp = build_client().unwrap().get(declared).send().await.unwrap();
+        let err = read_json_limited::<serde_json::Value>(resp, 4, Duration::from_secs(1))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("too large"), "{err}");
+
+        let streamed = spawn_raw(
+            "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n0123456789",
+            false,
+        )
+        .await;
+        let resp = build_client().unwrap().get(streamed).send().await.unwrap();
+        let err = read_json_limited::<serde_json::Value>(resp, 4, Duration::from_secs(1))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("larger"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_stalled_body_times_out() {
+        let stalled = spawn_raw("HTTP/1.1 200 OK\r\nContent-Length: 50\r\n\r\n{", true).await;
+        let resp = build_client().unwrap().get(stalled).send().await.unwrap();
+        let err = read_json_limited::<serde_json::Value>(resp, 1024, Duration::from_millis(100))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("timed out"), "{err}");
     }
 }

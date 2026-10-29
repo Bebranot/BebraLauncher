@@ -172,7 +172,10 @@ impl AuthClient {
         let resp = self
             .urls
             .join("api/auth/authenticate")
-            .send(|url| self.client.post(url).timeout(REQUEST_TIMEOUT).json(&body))
+            .send_ordered(
+                |url| self.client.post(url).timeout(REQUEST_TIMEOUT).json(&body),
+                |status| status.is_success() || status == StatusCode::UNAUTHORIZED,
+            )
             .await?;
 
         match resp.status() {
@@ -205,7 +208,10 @@ impl AuthClient {
         let resp = self
             .urls
             .join("api/auth/refresh")
-            .send(|url| self.client.post(url).timeout(REQUEST_TIMEOUT).json(&body))
+            .send_ordered(
+                |url| self.client.post(url).timeout(REQUEST_TIMEOUT).json(&body),
+                |status| status.is_success() || status == StatusCode::UNAUTHORIZED,
+            )
             .await?;
 
         match resp.status() {
@@ -253,7 +259,10 @@ impl AuthClient {
         let resp = self
             .urls
             .join("api/auth/logout")
-            .send(|url| self.client.post(url).timeout(REQUEST_TIMEOUT).json(&body))
+            .send_ordered(
+                |url| self.client.post(url).timeout(REQUEST_TIMEOUT).json(&body),
+                |status| status.is_success(),
+            )
             .await?;
         if resp.status().is_success() {
             Ok(())
@@ -491,5 +500,42 @@ mod tests {
         assert_eq!(c.most_successful_url(), dead);
         c.logout(&Token::new("x")).await.unwrap();
         assert_eq!(c.most_successful_url(), good);
+    }
+
+    #[tokio::test]
+    async fn login_and_refresh_skip_a_5xx_mirror() {
+        let (bad, bad_seen) = serve(|_| (500, vec![], b"boom".to_vec())).await;
+        let (good, good_seen) = serve(|req| {
+            let body = if req.path == "/api/auth/refresh" {
+                json!({"newToken": "new-token", "expireTime": "2027-01-01T00:00:00Z"})
+                    .to_string()
+                    .into_bytes()
+            } else {
+                ok_login()
+            };
+            (200, vec![], body)
+        })
+        .await;
+        let c = AuthClient::new(
+            build_client().unwrap(),
+            UrlFallbackSet::new([bad, good.clone()]),
+        );
+
+        let out = c
+            .authenticate(Identity::Username("Player"), "pw", None)
+            .await
+            .unwrap();
+        assert!(matches!(out, AuthenticateOutcome::Success(_)));
+        assert_eq!(bad_seen.lock().unwrap().len(), 1, "one POST per mirror");
+        assert_eq!(good_seen.lock().unwrap().len(), 1);
+
+        let (token, _) = c.refresh(&Token::new("old")).await.unwrap().unwrap();
+        assert_eq!(token.expose(), "new-token");
+        assert_eq!(bad_seen.lock().unwrap().len(), 2);
+        assert_eq!(
+            c.most_successful_url(),
+            good,
+            "a mirror answering 5xx must not become the auth server"
+        );
     }
 }

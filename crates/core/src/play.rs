@@ -160,9 +160,7 @@ pub async fn prepare(
 
     // Preflight checks: verify auth requirement and free disk space
     // before starting heavy content downloads.
-    if info.auth.mode == AuthMode::Required && req.account.is_none() {
-        return Err(PlayError::AuthRequired);
-    }
+    check_auth(info.auth.mode, req.account.is_some(), req.no_connect)?;
     if let Some(free_bytes) = free_disk_space_bytes(dirs.root()) {
         if free_bytes < 500 * 1024 * 1024 {
             return Err(PlayError::DiskFull);
@@ -291,6 +289,20 @@ pub async fn prepare(
     })
 }
 
+/// A server that requires an account refuses guests. Starting without connecting (`--no-connect`,
+/// or previewing the main menu) is fine: no account is sent and no join is attempted.
+fn check_auth(
+    mode: AuthMode,
+    has_account: bool,
+    no_connect: bool,
+) -> std::result::Result<(), PlayError> {
+    if mode == AuthMode::Required && !has_account && !no_connect {
+        Err(PlayError::AuthRequired)
+    } else {
+        Ok(())
+    }
+}
+
 #[cfg(windows)]
 fn free_disk_space_bytes(path: &std::path::Path) -> Option<u64> {
     use std::os::windows::ffi::OsStrExt;
@@ -379,5 +391,17 @@ mod tests {
         info.auth.mode = AuthMode::Required;
         assert!(auth_env(Some(&account()), &info, true, "u".into()).is_none());
         assert!(auth_env(None, &info, false, "u".into()).is_none());
+    }
+
+    #[test]
+    fn no_connect_needs_no_account_even_when_auth_is_required() {
+        assert!(check_auth(AuthMode::Required, false, true).is_ok());
+        // Without connecting there is no join, so a guest is allowed.
+        assert!(check_auth(AuthMode::Required, true, false).is_ok());
+        assert!(check_auth(AuthMode::Optional, false, false).is_ok());
+        assert!(check_auth(AuthMode::Disabled, false, false).is_ok());
+
+        let err = check_auth(AuthMode::Required, false, false).unwrap_err();
+        assert_eq!(err.code(), "auth_required");
     }
 }
