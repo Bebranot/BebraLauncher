@@ -58,6 +58,68 @@ impl Compression {
     }
 }
 
+/// A blob that is ready for [`ContentDb::store_prepared_blob`]: hash known, compression decided.
+///
+/// Building one does the CPU work (hashing, zstd) outside any transaction, so a slow network read
+/// never holds the write lock and the work can be moved to a blocking thread.
+pub struct PreparedBlob {
+    hash: Hash256,
+    size: usize,
+    compression: Compression,
+    data: Vec<u8>,
+}
+
+impl PreparedBlob {
+    /// Hashes `data` and rejects it when the hash is not `hash`.
+    pub fn verify(hash: &Hash256, data: Vec<u8>) -> Result<Self> {
+        let actual = blake2b256(&data);
+        if &actual != hash {
+            return Err(Error::HashMismatch {
+                expected: to_hex(hash),
+                actual: to_hex(&actual),
+            });
+        }
+        Self::from_hashed(*hash, data)
+    }
+
+    /// Like [`PreparedBlob::verify`], for callers that already computed `hash` over exactly `data`.
+    pub fn from_hashed(hash: Hash256, data: Vec<u8>) -> Result<Self> {
+        let size = data.len();
+        if !data.is_empty() {
+            let compressed = zstd::bulk::compress(&data, ZSTD_LEVEL)?;
+            if compressed.len() + COMPRESSION_SAVINGS_THRESHOLD < data.len() {
+                return Ok(Self {
+                    hash,
+                    size,
+                    compression: Compression::ZStd,
+                    data: compressed,
+                });
+            }
+        }
+        Ok(Self {
+            hash,
+            size,
+            compression: Compression::None,
+            data,
+        })
+    }
+
+    /// Bytes as delivered by the server; the caller has checked the hash and the size.
+    pub fn precompressed(hash: Hash256, size: usize, zstd_data: Vec<u8>) -> Self {
+        Self {
+            hash,
+            size,
+            compression: Compression::ZStd,
+            data: zstd_data,
+        }
+    }
+
+    /// Uncompressed size.
+    pub fn size(&self) -> usize {
+        self.size
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ContentVersion {
     pub id: i64,
@@ -144,8 +206,9 @@ impl ContentDb {
         }
     }
 
-    /// Manual transaction control, for code that awaits between writes
-    /// (a closure for [`ContentDb::transaction`] can't). Never nest.
+    /// Manual transaction control. Never keep one open across a network await: collect the blobs
+    /// first and insert them in a short transaction (see [`crate::content_db::PreparedBlob`]).
+    /// Never nest.
     pub fn begin(&self) -> Result<()> {
         Ok(self.conn.execute_batch("BEGIN IMMEDIATE")?)
     }
@@ -231,27 +294,17 @@ impl ContentDb {
     /// Stores a file after checking that it really has `hash`. Compresses with zstd when that saves
     /// enough space. Returns the content id and whether a new row was created.
     pub fn store_blob(&self, hash: &Hash256, data: &[u8]) -> Result<(i64, bool)> {
-        // Fast path: if already stored, skip duplicate hashing and compression
-        if let Some(id) = self.find_content_id(hash)? {
+        let prepared = PreparedBlob::verify(hash, data.to_vec())?;
+        self.store_prepared_blob(&prepared)
+    }
+
+    /// Inserts an already verified and compressed blob. Short and CPU-free, so it is safe to call
+    /// inside a short write transaction.
+    pub fn store_prepared_blob(&self, blob: &PreparedBlob) -> Result<(i64, bool)> {
+        if let Some(id) = self.find_content_id(&blob.hash)? {
             return Ok((id, false));
         }
-
-        let actual = blake2b256(data);
-        if &actual != hash {
-            return Err(Error::HashMismatch {
-                expected: to_hex(hash),
-                actual: to_hex(&actual),
-            });
-        }
-
-        if !data.is_empty() {
-            let compressed = zstd::bulk::compress(data, ZSTD_LEVEL)?;
-            if compressed.len() + COMPRESSION_SAVINGS_THRESHOLD < data.len() {
-                let id = self.insert_content(hash, data.len(), Compression::ZStd, &compressed)?;
-                return Ok((id, true));
-            }
-        }
-        let id = self.insert_content(hash, data.len(), Compression::None, data)?;
+        let id = self.insert_content(&blob.hash, blob.size, blob.compression, &blob.data)?;
         Ok((id, true))
     }
 
@@ -263,10 +316,8 @@ impl ContentDb {
         size: usize,
         zstd_data: &[u8],
     ) -> Result<i64> {
-        if let Some(id) = self.find_content_id(hash)? {
-            return Ok(id);
-        }
-        self.insert_content(hash, size, Compression::ZStd, zstd_data)
+        let blob = PreparedBlob::precompressed(*hash, size, zstd_data.to_vec());
+        Ok(self.store_prepared_blob(&blob)?.0)
     }
 
     fn insert_content(

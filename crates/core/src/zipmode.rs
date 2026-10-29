@@ -4,13 +4,15 @@
 //! checked against the SHA-256 from `/info`, then every file is hashed and stored like in
 //! manifest mode, so both modes end up with the same kind of version in the database.
 
+use std::collections::HashSet;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use reqwest::Client;
 
-use crate::content_db::ContentDb;
-use crate::download::{download_to_file, ProgressFn};
+use crate::content_db::{ContentDb, PreparedBlob};
+use crate::download::{download_to_file, Progress, ProgressFn, ProgressUnit};
 use crate::hash::{blake2b256, parse_hash_hex, to_hex};
 use crate::server::BuildInfo;
 use crate::updater::{DownloadMode, InstalledContent};
@@ -18,6 +20,14 @@ use crate::{Error, Result};
 
 /// A single file inside a zip may not unpack to more than this (zip bombs).
 const MAX_ENTRY_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+/// Everything one client zip may unpack to, in total.
+const MAX_TOTAL_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+
+/// One blocking batch: at most this many entries or this many prepared bytes.
+const BATCH_FILES: usize = 64;
+const BATCH_BYTES: u64 = 32 * 1024 * 1024;
+/// Size of one read from a zip entry.
+const READ_CHUNK: usize = 64 * 1024;
 
 /// Deletes the scratch file when dropped, on every path out of the install.
 struct ScratchFile(PathBuf);
@@ -26,6 +36,12 @@ impl Drop for ScratchFile {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.0);
     }
+}
+
+/// One file of the client zip, ready to be linked to a version.
+pub struct IngestedFile {
+    pub path: String,
+    pub content_id: i64,
 }
 
 pub async fn install_zip(
@@ -58,58 +74,220 @@ pub async fn install_zip(
         }
     }
 
-    // One transaction: either the whole version exists afterwards or nothing does.
-    let (version_id, files) = db.transaction(|db| {
+    // Blobs are committed in batches while the zip is read (see `ingest_zip`); only the version row
+    // and its file list go in at the end, in one short transaction.
+    let files = ingest_zip(db, &scratch.0, progress).await?;
+    let file_count = files.len();
+
+    let version_id = db.transaction(|db| {
         let id = db.create_version(&build.fork_id, &build.version)?;
         db.set_zip_hash(id, &zip_hash)?;
-        let files = ingest_zip(db, id, &scratch.0)?;
+        for file in &files {
+            db.add_manifest_entry(id, &file.path, file.content_id)?;
+        }
         let manifest_hash = db.compute_manifest_hash(id)?;
         db.set_version_hash(id, &manifest_hash)?;
         db.add_engine_dependency(id, "Robust", &build.engine_version)?;
-        Ok((id, files))
+        Ok(id)
     })?;
 
     Ok(InstalledContent {
         version_id,
         mode: DownloadMode::Zip,
-        files,
-        downloaded: files,
+        files: file_count,
+        downloaded: file_count,
         reused: false,
     })
 }
 
-/// Stores every file of the zip and links it to `version_id`. Directory entries are skipped.
-/// Returns the number of files. Blocking: call from a thread that may block.
-pub fn ingest_zip(db: &ContentDb, version_id: i64, zip_path: &Path) -> Result<usize> {
-    let file = std::fs::File::open(zip_path)?;
-    let mut archive =
-        zip::ZipArchive::new(file).map_err(|e| Error::Other(format!("bad client zip: {e}")))?;
+/// Rejects a path that could escape the virtual file system or upset the Loader. The same rules the
+/// Loader's manifest expects: relative, `/`-separated, no drive letters, no NUL or control chars.
+fn check_entry_path(name: &str) -> Result<()> {
+    let bad = name.is_empty()
+        || name.starts_with('/')
+        || name.contains('\\')
+        || name.contains(':')
+        || name.contains('\0')
+        || name.chars().any(char::is_control);
+    let bad_component = name
+        .split('/')
+        .any(|part| part.is_empty() || part == "." || part == "..");
+    if bad || bad_component {
+        return Err(Error::Other(format!(
+            "client zip entry {name:?} is not a safe relative path"
+        )));
+    }
+    Ok(())
+}
 
-    let mut count = 0;
-    for i in 0..archive.len() {
-        let entry = archive
-            .by_index(i)
-            .map_err(|e| Error::Other(format!("bad client zip entry {i}: {e}")))?;
-        let name = entry.name().to_string();
-        if name.is_empty() || name.ends_with('/') {
-            continue;
+/// Stores every file of the zip in the database and returns them. Directory entries are skipped.
+///
+/// The zip is read, hashed and compressed on blocking threads; the async side only inserts the
+/// finished blobs (short transactions), reports progress and yields between batches.
+pub async fn ingest_zip(
+    db: &ContentDb,
+    zip_path: &Path,
+    progress: Option<ProgressFn<'_>>,
+) -> Result<Vec<IngestedFile>> {
+    let archive = std::fs::File::open(zip_path)?;
+    let archive =
+        zip::ZipArchive::new(archive).map_err(|e| Error::Other(format!("bad client zip: {e}")))?;
+    let total = archive.len();
+    let archive = Arc::new(Mutex::new(archive));
+
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut files: Vec<IngestedFile> = Vec::new();
+    let mut batch: Vec<(String, PreparedBlob)> = Vec::new();
+    let mut batch_bytes = 0u64;
+    let mut unpacked = 0u64;
+    let mut next = 0usize;
+
+    while next < total {
+        let share = Arc::clone(&archive);
+        let remaining_budget = MAX_TOTAL_BYTES.saturating_sub(unpacked);
+        let (taken, bytes, items) =
+            tokio::task::spawn_blocking(move || read_batch(&share, next, remaining_budget))
+                .await
+                .map_err(|e| Error::Other(format!("unpack task failed: {e}")))??;
+        next = taken;
+        unpacked += bytes;
+
+        for (path, blob) in items {
+            claim_path(&mut seen, &path)?;
+            batch_bytes += blob.size() as u64;
+            batch.push((path, blob));
+
+            if let Some(p) = progress {
+                p(Progress {
+                    done: files.len() as u64 + batch.len() as u64,
+                    total: total as u64,
+                    unit: ProgressUnit::Items,
+                });
+            }
         }
 
-        // Don't trust the size in the header for the allocation.
-        let mut data = Vec::with_capacity(entry.size().min(16 * 1024 * 1024) as usize);
-        let read = entry.take(MAX_ENTRY_BYTES + 1).read_to_end(&mut data)?;
-        if read as u64 > MAX_ENTRY_BYTES {
+        if batch_bytes >= BATCH_BYTES || batch.len() >= BATCH_FILES || next >= total {
+            flush_batch(db, &mut batch, &mut files)?;
+            batch_bytes = 0;
+        }
+
+        tokio::task::yield_now().await;
+    }
+
+    Ok(files)
+}
+
+/// Claims a path for this version. A second file with the same path would fail on the manifest
+/// unique index with a raw SQLite error in the middle of an install, so it is refused here.
+fn claim_path(seen: &mut HashSet<String>, path: &str) -> Result<()> {
+    if !seen.insert(path.to_string()) {
+        return Err(Error::Other(format!(
+            "client zip contains the path {path:?} twice"
+        )));
+    }
+    Ok(())
+}
+
+/// Inserts the prepared blobs of one batch in a single short transaction.
+fn flush_batch(
+    db: &ContentDb,
+    batch: &mut Vec<(String, PreparedBlob)>,
+    files: &mut Vec<IngestedFile>,
+) -> Result<()> {
+    if batch.is_empty() {
+        return Ok(());
+    }
+    db.transaction(|db| {
+        for (path, blob) in batch.iter() {
+            let (content_id, _) = db.store_prepared_blob(blob)?;
+            files.push(IngestedFile {
+                path: path.clone(),
+                content_id,
+            });
+        }
+        Ok(())
+    })?;
+    batch.clear();
+    Ok(())
+}
+
+/// One blocking batch: the entries read, the bytes they used and the index to continue from.
+type ZipBatch = (usize, u64, Vec<(String, PreparedBlob)>);
+
+/// Reads the next batch of non-directory entries. Runs on a blocking thread.
+///
+/// Returns `(next entry index, bytes read, files)`. Sizes are counted while data really arrives, so
+/// a lying header cannot make us allocate or store more than the limits allow.
+fn read_batch(
+    archive: &Mutex<zip::ZipArchive<std::fs::File>>,
+    start: usize,
+    budget: u64,
+) -> Result<ZipBatch> {
+    let mut items = Vec::new();
+    let mut bytes = 0u64;
+    let mut bytes_in_batch = 0u64;
+    let mut i = start;
+
+    {
+        let mut guard = archive
+            .lock()
+            .map_err(|_| Error::Other("client zip is poisoned".into()))?;
+        let total = guard.len();
+
+        while i < total && items.len() < BATCH_FILES && bytes_in_batch < BATCH_BYTES {
+            let index = i;
+            i += 1;
+
+            let mut entry = guard
+                .by_index(index)
+                .map_err(|e| Error::Other(format!("bad client zip entry {index}: {e}")))?;
+            let name = entry.name().to_string();
+            if name.is_empty() || name.ends_with('/') {
+                continue;
+            }
+            check_entry_path(&name)?;
+
+            let data = read_entry(
+                &name,
+                &mut entry,
+                MAX_ENTRY_BYTES,
+                budget.saturating_sub(bytes),
+            )?;
+            bytes += data.len() as u64;
+            bytes_in_batch += data.len() as u64;
+
+            let hash = blake2b256(&data);
+            let blob = PreparedBlob::from_hashed(hash, data)?;
+            items.push((name, blob));
+        }
+    }
+
+    Ok((i, bytes, items))
+}
+
+/// Reads one entry in chunks, checking the per-file and total limits as the data arrives.
+fn read_entry<R: Read>(name: &str, entry: &mut R, max_entry: u64, budget: u64) -> Result<Vec<u8>> {
+    let mut data = Vec::new();
+    let mut chunk = [0u8; READ_CHUNK];
+    loop {
+        let got = entry.read(&mut chunk)?;
+        if got == 0 {
+            break;
+        }
+        let grown = data.len() as u64 + got as u64;
+        if grown > max_entry {
             return Err(Error::Other(format!(
                 "{name}: unpacks to an unreasonable size"
             )));
         }
-
-        let hash = blake2b256(&data);
-        let (content_id, _) = db.store_blob(&hash, &data)?;
-        db.add_manifest_entry(version_id, &name, content_id)?;
-        count += 1;
+        if grown > budget {
+            return Err(Error::Other(
+                "client zip unpacks to an unreasonable size".into(),
+            ));
+        }
+        data.extend_from_slice(&chunk[..got]);
     }
-    Ok(count)
+    Ok(data)
 }
 
 #[cfg(test)]
@@ -291,5 +469,168 @@ pub(crate) mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, Error::HttpStatus { status: 404, .. }));
+    }
+
+    // ---- P1-8: path checks, duplicates, unpack budget ----
+
+    #[test]
+    fn entry_paths_must_be_plain_relative_paths() {
+        for good in ["a.txt", "Resources/my file.txt", "Assemblies/a.dll"] {
+            check_entry_path(good).unwrap();
+        }
+        for bad in [
+            "",
+            "../evil.txt",
+            "a/../../evil.txt",
+            "a//b",
+            "./a",
+            "/abs.txt",
+            "C:evil.txt",
+            "a\\b.txt",
+            "nul\0.txt",
+            "bell\u{7}.txt",
+        ] {
+            assert!(check_entry_path(bad).is_err(), "{bad:?} must be refused");
+        }
+    }
+
+    async fn install_from_zip(files: &[(&str, &[u8])]) -> Result<InstalledContent> {
+        let zip = make_zip(files);
+        let body = zip.clone();
+        let (base, _) = serve(move |_| (200, vec![], body.clone())).await;
+        let db = ContentDb::open_in_memory().unwrap();
+        let scratch = tempfile::tempdir().unwrap();
+        let got = install_zip(
+            &build_client().unwrap(),
+            &db,
+            &build_for(&base, &zip),
+            scratch.path(),
+            None,
+        )
+        .await;
+        if got.is_err() {
+            let versions: i64 = db
+                .connection()
+                .query_row("SELECT COUNT(*) FROM ContentVersion", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(versions, 0, "a refused zip leaves no version");
+        }
+        got
+    }
+
+    #[tokio::test]
+    async fn unsafe_paths_are_refused_by_name() {
+        for bad in ["../evil.txt", "a\\b.txt", "/abs.txt", "C:evil.txt"] {
+            let err = install_from_zip(&[("fine.txt", b"ok"), (bad, b"gotcha")])
+                .await
+                .unwrap_err();
+            assert!(
+                err.to_string().contains("safe relative path"),
+                "{bad:?}: {err}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn duplicate_paths_are_refused_with_a_readable_error() {
+        // The zip reader already collapses duplicate names, so the guard is checked directly.
+        let mut seen = HashSet::new();
+        claim_path(&mut seen, "a/b.txt").unwrap();
+        let err = claim_path(&mut seen, "a/b.txt").unwrap_err();
+        // Before, this surfaced as a raw "UNIQUE constraint failed" from SQLite.
+        assert!(err.to_string().contains("twice"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn the_unpacked_size_is_capped_per_file_and_in_total() {
+        let mut file = std::io::Cursor::new(vec![b'x'; 100]);
+        let err = read_entry("a.bin", &mut file, 10, 1000).unwrap_err();
+        assert!(err.to_string().contains("unreasonable size"), "{err}");
+
+        let mut file = std::io::Cursor::new(vec![b'x'; 100]);
+        let err = read_entry("a.bin", &mut file, 1000, 10).unwrap_err();
+        assert!(err.to_string().contains("unreasonable size"), "{err}");
+
+        // A whole zip is stopped once the shared budget is used up.
+        let mut file = std::io::Cursor::new(vec![b'x'; 100]);
+        assert!(read_entry("a.bin", &mut file, 1000, 100).is_ok());
+    }
+
+    // ---- P1-5/P1-11: batching and progress ----
+
+    #[tokio::test]
+    async fn files_before_a_bad_entry_are_kept() {
+        // More than one batch, so the good files are committed before the failure.
+        let mut owned: Vec<(String, Vec<u8>)> = (0..BATCH_FILES + 6)
+            .map(|i| (format!("f{i}.txt"), format!("file {i}").into_bytes()))
+            .collect();
+        owned.push(("../evil.txt".into(), b"gotcha".to_vec()));
+        let refs: Vec<(&str, &[u8])> = owned
+            .iter()
+            .map(|(n, d)| (n.as_str(), d.as_slice()))
+            .collect();
+        let zip = make_zip(&refs);
+
+        let body = zip.clone();
+        let (base, _) = serve(move |_| (200, vec![], body.clone())).await;
+        let db = ContentDb::open_in_memory().unwrap();
+        let scratch = tempfile::tempdir().unwrap();
+        let err = install_zip(
+            &build_client().unwrap(),
+            &db,
+            &build_for(&base, &zip),
+            scratch.path(),
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("safe relative path"), "{err}");
+
+        let stored: i64 = db
+            .connection()
+            .query_row("SELECT COUNT(*) FROM Content", [], |r| r.get(0))
+            .unwrap();
+        assert!(
+            stored >= BATCH_FILES as i64,
+            "verified blobs of the finished batches stay, got {stored}"
+        );
+        let versions: i64 = db
+            .connection()
+            .query_row("SELECT COUNT(*) FROM ContentVersion", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(versions, 0, "no half-built version");
+    }
+
+    #[tokio::test]
+    async fn the_zip_install_reports_item_progress() {
+        let zip = zip_bytes();
+        let body = zip.clone();
+        let (base, _) = serve(move |_| (200, vec![], body.clone())).await;
+        let db = ContentDb::open_in_memory().unwrap();
+        let scratch = tempfile::tempdir().unwrap();
+
+        let seen = std::sync::Mutex::new(Vec::new());
+        let report = |p: Progress| seen.lock().unwrap().push(p);
+        let got = install_zip(
+            &build_client().unwrap(),
+            &db,
+            &build_for(&base, &zip),
+            scratch.path(),
+            Some(&report),
+        )
+        .await
+        .unwrap();
+
+        let seen = seen.into_inner().unwrap();
+        let items: Vec<&Progress> = seen
+            .iter()
+            .filter(|p| p.unit == ProgressUnit::Items)
+            .collect();
+        assert_eq!(
+            items.len(),
+            got.files,
+            "one item event per stored file, not one event for the whole install"
+        );
+        assert_eq!(items.last().unwrap().done, got.files as u64);
     }
 }

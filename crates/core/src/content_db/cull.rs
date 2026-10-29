@@ -1,11 +1,40 @@
 //! Keeping the content database from growing forever (docs/protocol.md, section 5.4).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use rusqlite::params;
 
 use super::ContentDb;
+use crate::process::ProcessState;
 use crate::Result;
+
+/// What to do with a `RunningClient` row after probing its process.
+///
+/// Only a process that is definitely gone may be dropped: a failed probe (`Unknown`, e.g. access
+/// denied or a protected process) must keep the row, otherwise cull can delete a version out from
+/// under a running client.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RowAction {
+    Keep,
+    Drop,
+}
+
+pub fn running_client_action(state: ProcessState) -> RowAction {
+    match state {
+        ProcessState::Gone => RowAction::Drop,
+        ProcessState::Alive | ProcessState::Unknown => RowAction::Keep,
+    }
+}
+
+/// A foreign key violation on `DELETE FROM ContentVersion` means a running client still uses the
+/// version, not that the cull failed.
+fn is_constraint_violation(e: &rusqlite::Error) -> bool {
+    matches!(
+        e,
+        rusqlite::Error::SqliteFailure(f, _)
+            if f.code == rusqlite::ErrorCode::ConstraintViolation
+    )
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct CullPolicy {
@@ -38,38 +67,75 @@ pub struct CullReport {
 }
 
 impl ContentDb {
-    /// Version ids used by clients that are still running. `is_alive(pid, main_module)` decides
-    /// whether a `RunningClient` row still describes a live process; rows of dead ones are deleted.
+    /// Version ids used by clients that are still running. `state` reports whether a `RunningClient`
+    /// row still describes a live process; rows of processes that are definitely gone are deleted,
+    /// rows whose process could not be checked are kept (see [`running_client_action`]).
     /// (The Loader writes these rows itself when the client starts and removes them on exit.)
+    ///
+    /// Reading and deleting `RunningClient` rows happens in one transaction.
+    pub fn running_client_versions_with(
+        &self,
+        state: impl Fn(u32, &str) -> ProcessState,
+    ) -> Result<Vec<i64>> {
+        self.transaction(|db| {
+            let rows: Vec<(i64, String, i64)> = db
+                .conn
+                .prepare("SELECT ProcessId, MainModule, UsedVersion FROM RunningClient")?
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+                .collect::<std::result::Result<_, _>>()?;
+
+            let mut used = Vec::new();
+            for (pid, module, version) in rows {
+                let probe = u32::try_from(pid).map_or(ProcessState::Gone, |p| state(p, &module));
+                match running_client_action(probe) {
+                    RowAction::Keep => used.push(version),
+                    RowAction::Drop => {
+                        db.conn
+                            .execute("DELETE FROM RunningClient WHERE ProcessId = ?1", [pid])?;
+                    }
+                }
+            }
+            Ok(used)
+        })
+    }
+
+    /// [`ContentDb::running_client_versions_with`] for callers that only have a boolean check
+    /// (`true` = alive). Prefer the three-state version: this one treats "could not check" as gone.
     pub fn running_client_versions(
         &self,
         is_alive: impl Fn(u32, &str) -> bool,
     ) -> Result<Vec<i64>> {
-        let rows: Vec<(i64, String, i64)> = self
-            .conn
-            .prepare("SELECT ProcessId, MainModule, UsedVersion FROM RunningClient")?
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
-            .collect::<std::result::Result<_, _>>()?;
-
-        let mut used = Vec::new();
-        for (pid, module, version) in rows {
-            if u32::try_from(pid).is_ok_and(|p| is_alive(p, &module)) {
-                used.push(version);
+        self.running_client_versions_with(|pid, module| {
+            if is_alive(pid, module) {
+                ProcessState::Alive
             } else {
-                self.conn
-                    .execute("DELETE FROM RunningClient WHERE ProcessId = ?1", [pid])?;
+                ProcessState::Gone
             }
-        }
-        Ok(used)
+        })
     }
 
     /// Removes old versions, old interrupted downloads and blobs nobody refers to any more.
     ///
     /// The newest versions are kept, at most `max_versions` in total and `max_versions_per_fork` per
-    /// fork. A version in `in_use` is never removed. Runs in one transaction.
+    /// fork. A version in `in_use`, or one a `RunningClient` row points at, is never removed. Runs in
+    /// one transaction.
     pub fn cull(&self, policy: CullPolicy, in_use: &[i64]) -> Result<CullReport> {
         self.transaction(|db| {
             let mut report = CullReport::default();
+
+            // Rows that survived the liveness check above, plus any a client inserted meanwhile:
+            // either way a live client uses the version, and the foreign key would refuse to
+            // delete it anyway.
+            let mut protected: HashSet<i64> = in_use.iter().copied().collect();
+            {
+                let mut stmt = db
+                    .conn
+                    .prepare("SELECT DISTINCT UsedVersion FROM RunningClient")?;
+                let rows = stmt.query_map([], |r| r.get::<_, i64>(0))?;
+                for row in rows {
+                    protected.insert(row?);
+                }
+            }
 
             let versions: Vec<(i64, Option<String>)> = db
                 .conn
@@ -84,12 +150,19 @@ impl ContentDb {
                 if *count < policy.max_versions_per_fork && total < policy.max_versions {
                     *count += 1;
                     total += 1;
-                } else if in_use.contains(&id) {
+                } else if protected.contains(&id) {
                     report.versions_in_use += 1;
                 } else {
-                    db.conn
-                        .execute("DELETE FROM ContentVersion WHERE Id = ?1", [id])?;
-                    report.versions_removed += 1;
+                    // A row added by a client after `in_use` was computed makes the delete fail
+                    // with a foreign key error: that means "in use", not "cull failed".
+                    match db
+                        .conn
+                        .execute("DELETE FROM ContentVersion WHERE Id = ?1", [id])
+                    {
+                        Ok(_) => report.versions_removed += 1,
+                        Err(e) if is_constraint_violation(&e) => report.versions_in_use += 1,
+                        Err(e) => return Err(e.into()),
+                    }
                 }
             }
 
@@ -297,5 +370,76 @@ mod tests {
         assert!(c
             .execute("DELETE FROM ContentVersion WHERE Id = ?1", [v1])
             .is_err());
+    }
+
+    #[test]
+    fn only_a_definitely_dead_process_loses_its_row() {
+        assert_eq!(
+            running_client_action(ProcessState::Unknown),
+            RowAction::Keep,
+            "a failed probe is not proof that the client is gone"
+        );
+        assert_eq!(running_client_action(ProcessState::Alive), RowAction::Keep);
+        assert_eq!(running_client_action(ProcessState::Gone), RowAction::Drop);
+    }
+
+    #[test]
+    fn a_client_that_could_not_be_checked_keeps_its_version() {
+        let db = ContentDb::open_in_memory().unwrap();
+        let v1 = version(&db, "a", "1", 1);
+        db.connection()
+            .execute(
+                "INSERT INTO RunningClient VALUES (100, 'C:\\loader.exe', ?1)",
+                [v1],
+            )
+            .unwrap();
+
+        let used = db
+            .running_client_versions_with(|_, _| ProcessState::Unknown)
+            .unwrap();
+        assert_eq!(used, [v1]);
+        let left: i64 = db
+            .connection()
+            .query_row("SELECT COUNT(*) FROM RunningClient", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(left, 1, "a row for an unchecked process is kept");
+
+        // And a cull that already forgot about it still refuses to delete the version.
+        let report = db.cull(policy(0, 0), &[]).unwrap();
+        assert_eq!(report.versions_removed, 0);
+        assert_eq!(report.versions_in_use, 1);
+        assert_eq!(ids(&db), [v1]);
+    }
+
+    #[test]
+    fn a_client_that_appears_during_the_cull_is_not_a_failure() {
+        let db = ContentDb::open_in_memory().unwrap();
+        let newest = version(&db, "a", "new", 0);
+        let old = version(&db, "a", "old", 5);
+        // The Loader inserts this row after `in_use` was computed.
+        db.connection()
+            .execute(
+                "INSERT INTO RunningClient VALUES (100, 'C:\\loader.exe', ?1)",
+                [old],
+            )
+            .unwrap();
+
+        // The delete really is refused by the foreign key...
+        let err = db
+            .connection()
+            .execute("DELETE FROM ContentVersion WHERE Id = ?1", [old])
+            .unwrap_err();
+        // ...and cull must read that as "in use", not as a failure.
+        assert!(is_constraint_violation(&err), "{err}");
+
+        // Reading RunningClient inside the cull transaction is what keeps the version.
+        let report = db.cull(policy(15, 1), &[]).unwrap();
+        assert_eq!(report.versions_removed, 0);
+        assert_eq!(
+            report.versions_in_use, 1,
+            "the busy version counts as in use"
+        );
+        assert_eq!(ids(&db), [newest, old]);
+        assert_eq!(blob_count(&db), 2, "nothing was collected");
     }
 }

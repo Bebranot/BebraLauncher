@@ -210,6 +210,10 @@ pub fn module_dir(dirs: &DataDirs, name: &str, version: &str) -> Result<PathBuf>
 
 /// Installs `name` at exactly `version` (as found by [`ModuleIndex::version_for_engine`]).
 /// Verifies SHA-256 and the Ed25519 signature before anything is unpacked.
+///
+/// Concurrent installs (another launcher process, the CLI) do not fight over the same files: the
+/// download and the unpack go to names with a pid and a timestamp in them, and the finished folder
+/// appears in one `rename`.
 pub async fn install_module(
     client: &Client,
     index: &ModuleIndex,
@@ -232,19 +236,52 @@ pub async fn install_module(
 
     let build = index.resolve(name, version, preferred_rids())?;
     let want_sha = parse_hash_hex(&build.sha256)?;
+    let (pid, nanos) = unique_suffix();
 
     std::fs::create_dir_all(dirs.scratch())?;
     let part = dirs
         .scratch()
-        .join(format!("module-{name}-{version}.zip.part"));
-    let result = download_check_unpack(client, &build, &want_sha, key, &part, &dir, progress).await;
+        .join(format!("module-{name}-{version}.zip.{pid}-{nanos}.part"));
+    let tmp = dir
+        .parent()
+        .ok_or_else(|| Error::Other(format!("bad module folder {}", dir.display())))?
+        .join(format!("{version}.tmp-{pid}-{nanos}"));
+    let result = download_check_unpack(
+        client,
+        &build,
+        &want_sha,
+        key,
+        &InstallPaths {
+            part: &part,
+            tmp: &tmp,
+            dir: &dir,
+        },
+        progress,
+    )
+    .await;
     let _ = std::fs::remove_file(&part);
     if result.is_err() {
-        // Never leave a half-unpacked module that could be mistaken for a finished one.
-        let _ = std::fs::remove_dir_all(&dir);
+        // Only our own temporary folder: the target may belong to a running client.
+        let _ = std::fs::remove_dir_all(&tmp);
     }
     result?;
     Ok(installed(true))
+}
+
+fn unique_suffix() -> (u32, u128) {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    (std::process::id(), nanos)
+}
+
+/// Where a module install puts its files: the download, the folder being unpacked and the final
+/// folder. All three differ, so two processes never touch the same ones.
+struct InstallPaths<'a> {
+    part: &'a Path,
+    tmp: &'a Path,
+    dir: &'a Path,
 }
 
 async fn download_check_unpack(
@@ -252,26 +289,73 @@ async fn download_check_unpack(
     build: &ResolvedModule,
     want_sha: &[u8; 32],
     key: &VerifyingKey,
-    part: &Path,
-    dir: &Path,
+    paths: &InstallPaths<'_>,
     progress: Option<ProgressFn<'_>>,
 ) -> Result<()> {
-    let actual = download_to_file(client, &build.url, part, progress).await?;
+    let actual = download_to_file(client, &build.url, paths.part, progress).await?;
     if &actual != want_sha {
         return Err(Error::HashMismatch {
             expected: to_hex(want_sha),
             actual: to_hex(&actual),
         });
     }
-    let data = tokio::fs::read(part).await?;
-    signature::verify(key, &data, &build.sig)?;
 
-    if dir.exists() {
-        std::fs::remove_dir_all(dir)?;
+    // Signature check and unpack are CPU and disk work of up to a few hundred MB: keep them off the
+    // async runtime so cancellation and progress stay responsive.
+    let part = paths.part.to_owned();
+    let tmp_dir = paths.tmp.to_owned();
+    let sig = build.sig.clone();
+    let key = *key;
+    let marker = to_hex(want_sha);
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        let data = std::fs::read(&part)?;
+        signature::verify(&key, &data, &sig)?;
+
+        if let Some(parent) = tmp_dir.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        std::fs::create_dir_all(&tmp_dir)?;
+        unpack_zip(&part, &tmp_dir)?;
+        std::fs::write(tmp_dir.join(DONE_MARKER), marker)?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| Error::Other(format!("module unpack task failed: {e}")))??;
+
+    commit_unpack(paths.tmp, paths.dir)
+}
+
+/// Moves a finished unpack into place.
+///
+/// `rename` is atomic, so another process either sees the old state or the complete folder. A folder
+/// without [`DONE_MARKER`] is a leftover from a crash and may be replaced; a folder that is in use
+/// (a running client holds its files) is left alone and reported instead of being deleted.
+fn commit_unpack(tmp: &Path, dir: &Path) -> Result<()> {
+    if dir.exists() && !dir.join(DONE_MARKER).is_file() {
+        std::fs::remove_dir_all(dir).map_err(|e| {
+            Error::Other(format!(
+                "module folder {} is in use and cannot be replaced: {e}",
+                dir.display()
+            ))
+        })?;
     }
-    std::fs::create_dir_all(dir)?;
-    unpack_zip(part, dir)?;
-    std::fs::write(dir.join(DONE_MARKER), to_hex(want_sha))?;
+    if !dir.exists() {
+        match std::fs::rename(tmp, dir) {
+            Ok(()) => return Ok(()),
+            Err(_e) if dir.join(DONE_MARKER).is_file() => {
+                // Another process finished the same module first; its folder is as good as ours.
+                let _ = std::fs::remove_dir_all(tmp);
+                return Ok(());
+            }
+            Err(e) => {
+                let _ = std::fs::remove_dir_all(tmp);
+                return Err(e.into());
+            }
+        }
+    }
+    // Someone else installed the module while we were unpacking.
+    let _ = std::fs::remove_dir_all(tmp);
     Ok(())
 }
 
@@ -614,5 +698,77 @@ mod tests {
         assert!(m.downloaded);
         assert!(!dir.join("stale.bin").exists());
         assert!(dir.join("Robust.Client.WebView.exe").is_file());
+    }
+
+    // ---- P1-9: two processes installing the same module ----
+
+    #[test]
+    fn a_module_finished_by_another_process_is_kept() {
+        let tmp_root = tempfile::tempdir().unwrap();
+        let tmp = tmp_root.path().join("0.90.0.tmp-1-2");
+        let dir = tmp_root.path().join("0.90.0");
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("ours.exe"), b"ours").unwrap();
+        std::fs::write(tmp.join(DONE_MARKER), "aa").unwrap();
+        // The other process won the race and its folder is complete.
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("theirs.exe"), b"theirs").unwrap();
+        std::fs::write(dir.join(DONE_MARKER), "bb").unwrap();
+
+        commit_unpack(&tmp, &dir).unwrap();
+        assert!(!tmp.exists(), "our temporary folder is gone");
+        assert_eq!(std::fs::read(dir.join("theirs.exe")).unwrap(), b"theirs");
+        assert!(!dir.join("ours.exe").exists());
+    }
+
+    #[tokio::test]
+    async fn two_installs_of_one_module_both_succeed() {
+        let zip = module_zip();
+        let f = fixture(
+            zip.clone(),
+            to_hex(&sha256(&zip)),
+            sign_hex(&test_key(), &zip),
+        )
+        .await;
+        let client = build_client().unwrap();
+        let urls = UrlFallbackSet::new([f.base.clone()]);
+        let index = ModuleIndex::fetch(&client, &urls).await.unwrap();
+        let key = test_key().verifying_key();
+
+        let (a, b) = tokio::join!(
+            install_module(
+                &client,
+                &index,
+                &f.dirs,
+                "Robust.Client.WebView",
+                "0.90.0",
+                &key,
+                None
+            ),
+            install_module(
+                &client,
+                &index,
+                &f.dirs,
+                "Robust.Client.WebView",
+                "0.90.0",
+                &key,
+                None
+            ),
+        );
+        assert!(a.is_ok(), "{:?}", a.err());
+        assert!(b.is_ok(), "{:?}", b.err());
+
+        let dir = module_dir(&f.dirs, "Robust.Client.WebView", "0.90.0").unwrap();
+        assert!(dir.join(DONE_MARKER).is_file());
+        assert!(dir.join("Robust.Client.WebView.exe").is_file());
+
+        // No temporary folders and no scratch files survive either install.
+        let leftovers: Vec<String> = std::fs::read_dir(dir.parent().unwrap())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+            .filter(|n| n.contains(".tmp-"))
+            .collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
+        assert_eq!(std::fs::read_dir(f.dirs.scratch()).unwrap().count(), 0);
     }
 }

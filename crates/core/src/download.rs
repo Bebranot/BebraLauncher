@@ -1,6 +1,7 @@
 //! Manifest-mode downloads: the manifest and the missing file contents
 //! (docs/protocol.md, section 3).
 
+use std::future::Future;
 use std::io;
 use std::time::Duration;
 
@@ -14,7 +15,7 @@ use sha2::{Digest, Sha256};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tokio_util::io::StreamReader;
 
-use crate::content_db::ContentDb;
+use crate::content_db::{ContentDb, PreparedBlob};
 use crate::hash::{blake2b256, to_hex, Hash256};
 use crate::manifest::Manifest;
 use crate::{Error, Result};
@@ -23,6 +24,15 @@ use crate::{Error, Result};
 pub const DOWNLOAD_PROTOCOL_VERSION: u32 = 1;
 
 const MANIFEST_TIMEOUT: Duration = Duration::from_secs(120);
+/// A download that sends nothing for this long is treated as dead instead of waiting forever.
+const IDLE_TIMEOUT: Duration = Duration::from_secs(45);
+/// Upper bound for one downloaded file (engine zip, module zip, client zip).
+const MAX_DOWNLOAD_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+/// Upper bound for a single file inside a blob stream. The length comes from the server and is not
+/// covered by the manifest, so it must not drive an allocation on its own.
+const MAX_BLOB_BYTES: usize = 512 * 1024 * 1024;
+/// Upper bound for everything one blob stream may deliver, decompressed.
+const MAX_STREAM_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 /// Safety limits against a hostile or broken server.
 const MAX_MANIFEST_COMPRESSED: u64 = 256 * 1024 * 1024;
 const MAX_MANIFEST_TEXT: u64 = 512 * 1024 * 1024;
@@ -31,6 +41,9 @@ const MAX_MANIFEST_TEXT: u64 = 512 * 1024 * 1024;
 /// keeps most of its work.
 const COMMIT_EVERY_FILES: usize = 200;
 const COMMIT_EVERY_BYTES: u64 = 32 * 1024 * 1024;
+
+/// Size of one read from a network stream.
+const READ_CHUNK: usize = 64 * 1024;
 
 const FLAG_PRE_COMPRESSED: i32 = 1;
 
@@ -68,6 +81,29 @@ fn check_status(resp: &Response) -> Result<()> {
     }
 }
 
+fn too_large(url: &str, limit: u64) -> Error {
+    Error::Other(format!(
+        "{url}: download is larger than the {} MiB limit",
+        limit / (1024 * 1024)
+    ))
+}
+
+fn stalled(url: &str, idle: Duration) -> Error {
+    Error::Io(io::Error::new(
+        io::ErrorKind::TimedOut,
+        format!("{url}: no data received for {}s", idle.as_secs()),
+    ))
+}
+
+/// Runs one read of a body with an idle timeout, so a server that sends headers and stops cannot
+/// hang the download forever.
+async fn idle<T>(what: &str, fut: impl Future<Output = io::Result<T>>) -> Result<T> {
+    tokio::time::timeout(IDLE_TIMEOUT, fut)
+        .await
+        .map_err(|_| stalled(what, IDLE_TIMEOUT))?
+        .map_err(Error::Io)
+}
+
 /// Downloads `url` into `dest` (created or overwritten) and returns the SHA-256 of what arrived.
 /// The caller decides whether that hash is acceptable and deletes `dest` if it is not.
 pub async fn download_to_file(
@@ -76,20 +112,52 @@ pub async fn download_to_file(
     dest: &Path,
     progress: Option<ProgressFn<'_>>,
 ) -> Result<Hash256> {
+    download_to_file_limited(
+        client,
+        url,
+        dest,
+        progress,
+        IDLE_TIMEOUT,
+        MAX_DOWNLOAD_BYTES,
+    )
+    .await
+}
+
+/// [`download_to_file`] with explicit limits, so tests need not wait 45 s.
+async fn download_to_file_limited(
+    client: &Client,
+    url: &str,
+    dest: &Path,
+    progress: Option<ProgressFn<'_>>,
+    idle_timeout: Duration,
+    max_bytes: u64,
+) -> Result<Hash256> {
     let resp = client.get(url).send().await?;
     check_status(&resp)?;
     let total = resp.content_length().unwrap_or(0);
+    if total > max_bytes {
+        return Err(too_large(url, max_bytes));
+    }
 
     let file = tokio::fs::File::create(dest).await?;
     let mut writer = BufWriter::with_capacity(256 * 1024, file);
     let mut hasher = Sha256::new();
     let mut done = 0u64;
     let mut stream = resp.bytes_stream();
-    while let Some(chunk) = stream.next().await {
+    loop {
+        let next = tokio::time::timeout(idle_timeout, stream.next())
+            .await
+            .map_err(|_| stalled(url, idle_timeout))?;
+        let Some(chunk) = next else {
+            break;
+        };
         let chunk = chunk?;
+        done += chunk.len() as u64;
+        if done > max_bytes {
+            return Err(too_large(url, max_bytes));
+        }
         hasher.update(&chunk);
         writer.write_all(&chunk).await?;
-        done += chunk.len() as u64;
         if let Some(p) = progress {
             p(Progress {
                 done,
@@ -237,9 +305,7 @@ pub(crate) async fn read_blob_stream<R: AsyncRead + Unpin>(
 ) -> Result<()> {
     let flags = read_i32(reader).await?;
     let pre_compressed = flags & FLAG_PRE_COMPRESSED != 0;
-
-    db.begin()?;
-    let result = read_files(
+    read_files(
         reader,
         db,
         manifest,
@@ -248,10 +314,42 @@ pub(crate) async fn read_blob_stream<R: AsyncRead + Unpin>(
         pre_compressed,
         progress,
     )
-    .await;
-    // Commit even after an error: every stored blob was verified, and a retry resumes from them.
-    let committed = db.commit();
-    result.and(committed)
+    .await
+}
+
+/// Verified blobs waiting for insertion. The write transaction is opened only while they are
+/// inserted, never while waiting for the network.
+#[derive(Default)]
+struct BlobBatch {
+    blobs: Vec<PreparedBlob>,
+    bytes: u64,
+}
+
+impl BlobBatch {
+    fn push(&mut self, blob: PreparedBlob) {
+        self.bytes += blob.size() as u64;
+        self.blobs.push(blob);
+    }
+
+    fn should_flush(&self) -> bool {
+        self.blobs.len() >= COMMIT_EVERY_FILES || self.bytes >= COMMIT_EVERY_BYTES
+    }
+
+    fn flush(&mut self, db: &ContentDb, download_id: i64) -> Result<()> {
+        if self.blobs.is_empty() {
+            return Ok(());
+        }
+        db.transaction(|db| {
+            for blob in &self.blobs {
+                let (content_id, _) = db.store_prepared_blob(blob)?;
+                db.link_interrupted_blob(download_id, content_id)?;
+            }
+            Ok(())
+        })?;
+        self.blobs.clear();
+        self.bytes = 0;
+        Ok(())
+    }
 }
 
 async fn read_files<R: AsyncRead + Unpin>(
@@ -264,52 +362,31 @@ async fn read_files<R: AsyncRead + Unpin>(
     progress: Option<ProgressFn<'_>>,
 ) -> Result<()> {
     let total = indices.len() as u64;
-    let mut since_commit_files = 0;
-    let mut since_commit_bytes = 0u64;
+    let mut batch = BlobBatch::default();
+    let mut stream_bytes = 0u64;
 
     for (n, &index) in indices.iter().enumerate() {
-        let entry = manifest.entries.get(index).ok_or_else(|| {
-            Error::Other(format!("download index {index} is outside the manifest"))
-        })?;
-
-        let len = read_len(reader).await?;
-        let compressed_len = if pre_compressed {
-            read_len(reader).await?
-        } else {
-            0
-        };
-
-        let content_id = if compressed_len > 0 {
-            let packed = read_exact_vec(reader, compressed_len).await?;
-            let data = zstd::bulk::decompress(&packed, len)
-                .map_err(|e| Error::Other(format!("{}: bad zstd data: {e}", entry.path)))?;
-            if data.len() != len {
-                return Err(Error::Other(format!(
-                    "{}: decompressed to the wrong size",
-                    entry.path
-                )));
+        match read_one_file(
+            reader,
+            manifest,
+            index,
+            pre_compressed,
+            &mut stream_bytes,
+            &mut batch,
+        )
+        .await
+        {
+            Ok(()) => {
+                if batch.should_flush() {
+                    batch.flush(db, download_id)?;
+                }
             }
-            let actual = blake2b256(&data);
-            if actual != entry.hash {
-                return Err(Error::HashMismatch {
-                    expected: to_hex(&entry.hash),
-                    actual: to_hex(&actual),
-                });
+            Err(e) => {
+                // Commit even after an error: every stored blob was verified, and a retry resumes
+                // from them.
+                let _ = batch.flush(db, download_id);
+                return Err(e);
             }
-            db.store_precompressed_blob(&entry.hash, len, &packed)?
-        } else {
-            let data = read_exact_vec(reader, len).await?;
-            db.store_blob(&entry.hash, &data)?.0
-        };
-        db.link_interrupted_blob(download_id, content_id)?;
-
-        since_commit_files += 1;
-        since_commit_bytes += len as u64;
-        if since_commit_files >= COMMIT_EVERY_FILES || since_commit_bytes >= COMMIT_EVERY_BYTES {
-            db.commit()?;
-            db.begin()?;
-            since_commit_files = 0;
-            since_commit_bytes = 0;
         }
 
         if let Some(p) = progress {
@@ -320,12 +397,99 @@ async fn read_files<R: AsyncRead + Unpin>(
             });
         }
     }
+    batch.flush(db, download_id)
+}
+
+/// Reads one file from the stream and adds it to `batch`. The hash is checked before anything is
+/// queued for storage. Blocking work (zstd, BLAKE2b) runs on a blocking thread.
+async fn read_one_file<R: AsyncRead + Unpin>(
+    reader: &mut R,
+    manifest: &Manifest,
+    index: usize,
+    pre_compressed: bool,
+    stream_bytes: &mut u64,
+    batch: &mut BlobBatch,
+) -> Result<()> {
+    let entry = manifest
+        .entries
+        .get(index)
+        .ok_or_else(|| Error::Other(format!("download index {index} is outside the manifest")))?;
+
+    let len = read_len(reader).await?;
+    check_blob_len(&entry.path, len)?;
+    let compressed_len = if pre_compressed {
+        read_len(reader).await?
+    } else {
+        0
+    };
+    check_blob_len(&entry.path, compressed_len)?;
+
+    *stream_bytes += (len + compressed_len) as u64;
+    if *stream_bytes > MAX_STREAM_BYTES {
+        return Err(Error::Other(
+            "blob download is larger than the size limit".into(),
+        ));
+    }
+
+    if compressed_len > 0 {
+        let packed = read_exact_vec(reader, compressed_len).await?;
+        let hash = entry.hash;
+        let (packed, actual) =
+            tokio::task::spawn_blocking(move || -> Result<(Vec<u8>, Hash256)> {
+                let data = decompress_checked(&packed, len)?;
+                Ok((packed, blake2b256(&data)))
+            })
+            .await
+            .map_err(|e| Error::Other(format!("blob task failed: {e}")))??;
+        if actual != hash {
+            return Err(Error::HashMismatch {
+                expected: to_hex(&hash),
+                actual: to_hex(&actual),
+            });
+        }
+        batch.push(PreparedBlob::precompressed(hash, len, packed));
+    } else {
+        let data = read_exact_vec(reader, len).await?;
+        let hash = entry.hash;
+        let prepared = tokio::task::spawn_blocking(move || PreparedBlob::verify(&hash, data))
+            .await
+            .map_err(|e| Error::Other(format!("blob task failed: {e}")))??;
+        batch.push(prepared);
+    }
     Ok(())
+}
+
+/// Checks a length that came from the stream. It decides how much memory we are willing to spend,
+/// so it is capped before any allocation happens.
+fn check_blob_len(path: &str, len: usize) -> Result<()> {
+    if len > MAX_BLOB_BYTES {
+        return Err(Error::Other(format!(
+            "{path}: unpacks to an unreasonable size ({len} bytes)"
+        )));
+    }
+    Ok(())
+}
+
+/// Decompresses `packed` without trusting it to produce exactly `len` bytes: output is collected
+/// only as it really arrives and stops at `len + 1`.
+fn decompress_checked(packed: &[u8], len: usize) -> Result<Vec<u8>> {
+    let decoder = zstd::stream::read::Decoder::new(packed)
+        .map_err(|e| Error::Other(format!("bad zstd data: {e}")))?;
+    let mut out = Vec::with_capacity(len.min(1 << 20));
+    io::Read::read_to_end(&mut io::Read::take(decoder, len as u64 + 1), &mut out)
+        .map_err(|e| Error::Other(format!("bad zstd data: {e}")))?;
+    if out.len() != len {
+        return Err(Error::Other(format!(
+            "zstd data decompressed to the wrong size ({} instead of {len} bytes)",
+            out.len()
+        )));
+    }
+    Ok(out)
 }
 
 async fn read_i32<R: AsyncRead + Unpin>(reader: &mut R) -> Result<i32> {
     let mut buf = [0u8; 4];
-    reader.read_exact(&mut buf).await?;
+    idle("blob download", reader.read_exact(&mut buf)).await?;
     Ok(i32::from_le_bytes(buf))
 }
 
@@ -335,14 +499,19 @@ async fn read_len<R: AsyncRead + Unpin>(reader: &mut R) -> Result<usize> {
 }
 
 /// Reads exactly `len` bytes without trusting `len` for the allocation: memory grows only as
-/// data really arrives.
+/// data really arrives, one chunk at a time.
 async fn read_exact_vec<R: AsyncRead + Unpin>(reader: &mut R, len: usize) -> Result<Vec<u8>> {
     let mut buf = Vec::with_capacity(len.min(1 << 20));
-    let got = AsyncReadExt::take(&mut *reader, len as u64)
-        .read_to_end(&mut buf)
-        .await?;
-    if got != len {
-        return Err(Error::Io(io::Error::from(io::ErrorKind::UnexpectedEof)));
+    let mut chunk = [0u8; READ_CHUNK];
+    let mut remaining = len;
+    while remaining > 0 {
+        let want = remaining.min(READ_CHUNK);
+        let got = idle("blob download", reader.read(&mut chunk[..want])).await?;
+        if got == 0 {
+            return Err(Error::Io(io::Error::from(io::ErrorKind::UnexpectedEof)));
+        }
+        buf.extend_from_slice(&chunk[..got]);
+        remaining -= got;
     }
     Ok(buf)
 }
@@ -539,6 +708,224 @@ mod tests {
             run(&db, &m, &[0], &[]).await.is_err(),
             "missing flags header"
         );
+    }
+
+    // ---- P1-5: no write transaction across network reads ----
+
+    /// Sends one signal on the first read, then blocks the reading thread, which gives a probe on
+    /// another thread a window to try a write.
+    struct SignalReader {
+        data: Vec<u8>,
+        signal: Option<std::sync::mpsc::Sender<()>>,
+    }
+
+    impl tokio::io::AsyncRead for SignalReader {
+        fn poll_read(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+            buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<io::Result<()>> {
+            let this = self.get_mut();
+            if let Some(tx) = this.signal.take() {
+                let _ = tx.send(());
+                // Longer than the probe's own deadline, so a held lock is never released in time.
+                std::thread::sleep(Duration::from_millis(500));
+            }
+            let n = buf.remaining().min(this.data.len());
+            buf.put_slice(&this.data[..n]);
+            this.data.drain(..n);
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn the_write_lock_is_not_held_while_the_stream_is_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("content.db");
+        let db = ContentDb::open(&path).unwrap();
+        let m = manifest_of(&[("a", b"payload")]);
+        let id = db.begin_interrupted_download().unwrap();
+
+        let mut stream = 0i32.to_le_bytes().to_vec();
+        stream.extend((b"payload".len() as i32).to_le_bytes());
+        stream.extend(b"payload");
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut reader = SignalReader {
+            data: stream,
+            signal: Some(tx),
+        };
+
+        let probe_path = path.clone();
+        let probe = std::thread::spawn(move || {
+            // Wait until the download is reading the body, then try to take the write lock.
+            if rx.recv().is_err() {
+                return false;
+            }
+            let conn = rusqlite::Connection::open(&probe_path).unwrap();
+            conn.busy_timeout(Duration::from_millis(0)).unwrap();
+            let deadline = std::time::Instant::now() + Duration::from_millis(400);
+            loop {
+                if conn.execute_batch("BEGIN IMMEDIATE").is_ok() {
+                    let _ = conn.execute_batch("ROLLBACK");
+                    return true;
+                }
+                if std::time::Instant::now() > deadline {
+                    return false;
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        });
+
+        read_blob_stream(&mut reader, &db, &m, &[0], id, None)
+            .await
+            .unwrap();
+        assert!(
+            probe.join().unwrap(),
+            "another writer was locked out while the body was still being downloaded"
+        );
+    }
+
+    // ---- P1-6: idle timeout and size limit on the body ----
+
+    async fn stalling_server() -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}/", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            let Ok((mut sock, _)) = listener.accept().await else {
+                return;
+            };
+            let mut buf = [0u8; 1024];
+            let _ = sock.read(&mut buf).await;
+            let _ = sock
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1000\r\n\r\nfirst")
+                .await;
+            // Send the headers and a little body, then go quiet forever.
+            tokio::time::sleep(Duration::from_secs(30)).await;
+        });
+        base
+    }
+
+    #[tokio::test]
+    async fn a_stalled_body_times_out_instead_of_hanging() {
+        let base = stalling_server().await;
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("stalled.bin");
+        let err = download_to_file_limited(
+            &build_client().unwrap(),
+            &base,
+            &dest,
+            None,
+            Duration::from_millis(100),
+            MAX_DOWNLOAD_BYTES,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(&err, Error::Io(e) if e.kind() == io::ErrorKind::TimedOut),
+            "{err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_body_over_the_size_limit_is_refused() {
+        let body = vec![0u8; 64];
+        let (base, _) = serve(move |_| (200, vec![], body.clone())).await;
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("big.bin");
+
+        // Content-Length already says it is too big: no body is even read.
+        let err = download_to_file_limited(
+            &build_client().unwrap(),
+            &base,
+            &dest,
+            None,
+            IDLE_TIMEOUT,
+            16,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("limit"), "{err}");
+        assert!(!dest.exists(), "nothing is even created");
+    }
+
+    #[tokio::test]
+    async fn a_chunked_body_over_the_size_limit_is_refused() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}/", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            let Ok((mut sock, _)) = listener.accept().await else {
+                return;
+            };
+            let mut buf = [0u8; 1024];
+            let _ = sock.read(&mut buf).await;
+            let _ = sock
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n\
+                      5\r\nhello\r\n5\r\nworld\r\n0\r\n\r\n",
+                )
+                .await;
+        });
+
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("chunked.bin");
+        // No Content-Length, so only the byte counter can stop this.
+        let err = download_to_file_limited(
+            &build_client().unwrap(),
+            &base,
+            &dest,
+            None,
+            IDLE_TIMEOUT,
+            6,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("limit"), "{err}");
+    }
+
+    // ---- P1-7: the size in the stream does not drive the allocation ----
+
+    #[tokio::test]
+    async fn a_file_above_the_per_file_cap_is_refused_before_reading_it() {
+        let db = ContentDb::open_in_memory().unwrap();
+        let m = manifest_of(&[("a", b"x")]);
+        let too_big = (MAX_BLOB_BYTES as i32) + 1;
+
+        let mut raw = 0i32.to_le_bytes().to_vec();
+        raw.extend(too_big.to_le_bytes());
+        let err = run(&db, &m, &[0], &raw).await.unwrap_err();
+        assert!(err.to_string().contains("unreasonable size"), "{err}");
+
+        // Same in the compressed branch: nothing is decompressed into a huge buffer.
+        let mut packed = FLAG_PRE_COMPRESSED.to_le_bytes().to_vec();
+        packed.extend(too_big.to_le_bytes());
+        packed.extend(4i32.to_le_bytes());
+        packed.extend([0u8; 4]);
+        let err = run(&db, &m, &[0], &packed).await.unwrap_err();
+        assert!(err.to_string().contains("unreasonable size"), "{err}");
+        assert_eq!(blob_count(&db), 0);
+    }
+
+    #[tokio::test]
+    async fn zstd_data_that_expands_past_the_claimed_size_is_rejected() {
+        let db = ContentDb::open_in_memory().unwrap();
+        let real = vec![b'a'; 100];
+        let m = manifest_of(&[("a", &real)]);
+        // Claims 10 bytes but the frame expands to 100.
+        let packed = zstd::bulk::compress(&real, 3).unwrap();
+        let mut stream = FLAG_PRE_COMPRESSED.to_le_bytes().to_vec();
+        stream.extend(10i32.to_le_bytes());
+        stream.extend((packed.len() as i32).to_le_bytes());
+        stream.extend(packed);
+
+        let err = run(&db, &m, &[0], &stream).await.unwrap_err();
+        assert!(err.to_string().contains("wrong size"), "{err}");
+        assert_eq!(blob_count(&db), 0);
     }
 
     // ---- HTTP level, against a throwaway local server ----
