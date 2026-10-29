@@ -118,17 +118,15 @@ impl ServerStatus {
 }
 
 /// How the server wants accounts to be handled. A mode we don't know yet must not make the whole
-/// `/info` unreadable, so it falls back to [`AuthMode::Optional`] (the account is sent if there is
-/// one, and a guest is never refused locally).
-///
-/// A separate `Unknown` variant is not used on purpose: `app/src-tauri` matches this enum without a
-/// wildcard, and adding a variant there would break that crate. See docs/CODE_REVIEW.md P2-14.
+/// `/info` unreadable: it becomes [`AuthMode::Unknown`], which behaves like `Optional` (the account
+/// is sent if there is one, and a guest is never refused locally) but is visible to callers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
 pub enum AuthMode {
     #[default]
     Optional,
     Required,
     Disabled,
+    Unknown,
 }
 
 impl<'de> Deserialize<'de> for AuthMode {
@@ -136,9 +134,10 @@ impl<'de> Deserialize<'de> for AuthMode {
         // The server's enum is read case-insensitively by the official launcher; do the same.
         let s = String::deserialize(d)?;
         Ok(match s.trim().to_ascii_lowercase().as_str() {
+            "optional" => Self::Optional,
             "required" => Self::Required,
             "disabled" => Self::Disabled,
-            _ => Self::Optional,
+            _ => Self::Unknown,
         })
     }
 }
@@ -557,7 +556,7 @@ mod tests {
     fn unknown_auth_mode_does_not_sink_the_response() {
         let info: ServerInfo =
             serde_json::from_str(r#"{"auth":{"mode":"SomeFutureMode","public_key":"k"}}"#).unwrap();
-        assert_eq!(info.auth.mode, AuthMode::Optional);
+        assert_eq!(info.auth.mode, AuthMode::Unknown);
 
         let lower: ServerInfo = serde_json::from_str(r#"{"auth":{"mode":"DISABLED"}}"#).unwrap();
         assert_eq!(lower.auth.mode, AuthMode::Disabled);

@@ -185,7 +185,7 @@
 |---|---:|---:|---:|---:|
 | P0 | 2 | 0 | 0 | 0 |
 | P1 | 44 | 1 (P1-43: проверка в скрипте, не в тесте) | 0 | 0 |
-| P2 | 65 | 12 | 1 (P2-66) | 0 |
+| P2 | 66 | 11 | 1 (P2-66) | 0 |
 | P3 | 5 | 0 | 5 | 2 |
 
 Все проверки после последней волны: `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test --workspace` (286 + 74 + 2), `pnpm check` (0/0), `pnpm test` (105), `pnpm build`, `dotnet build -warnaserror` (0/0).

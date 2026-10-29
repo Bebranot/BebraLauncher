@@ -229,6 +229,8 @@ pub async fn server_info(state: State<'_, AppState>, address: String) -> CmdResu
             AuthMode::Optional => "optional",
             AuthMode::Required => "required",
             AuthMode::Disabled => "disabled",
+            // A mode this launcher does not know yet behaves like the permissive default.
+            AuthMode::Unknown => "optional",
         },
     })
 }
