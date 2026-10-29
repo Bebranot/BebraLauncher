@@ -10,9 +10,15 @@ on:
 permissions:
   contents: read
 
+# A new push to the same ref cancels the previous run: no point checking outdated code.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   check:
     runs-on: windows-latest
+    timeout-minutes: 30
     steps:
       # Actions are pinned by commit SHA (the tag is only a comment): a moved tag cannot change
       # what runs with our token.
@@ -51,6 +57,7 @@ jobs:
 
   loader:
     runs-on: windows-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -60,11 +67,16 @@ jobs:
         with:
           dotnet-version: 10.0.x
 
+      # Locked restore: packages.lock.json is committed, so a dependency that changed without
+      # the lock file being updated fails here instead of silently changing the shipped binaries.
+      - name: Restore Loader (locked)
+        run: dotnet restore loader/SS14.Loader/SS14.Loader.csproj --locked-mode
+
       # The Loader is the only way the game starts; a compile error here must fail CI.
       # NU1902/NU1903/NU1904 are errors already (loader/Directory.Build.props), -warnaserror
       # additionally stops the build on any other warning.
       - name: Build Loader
-        run: dotnet build loader/SS14.Loader/SS14.Loader.csproj -c Release -warnaserror
+        run: dotnet build loader/SS14.Loader/SS14.Loader.csproj -c Release -warnaserror --no-restore
 
       # NuGet audit across direct and transitive packages. `dotnet package list` exits 0 even
       # when it finds something, so the JSON is checked explicitly.

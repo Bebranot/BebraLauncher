@@ -108,7 +108,9 @@ internal sealed class SqliteBlobStream : Stream
                 Position += offset;
                 break;
             case SeekOrigin.End:
-                Position = Length - offset;
+                // `SeekOrigin.End` is relative to the end: a negative offset moves backwards.
+                // The old `Length - offset` made every such seek throw or land on the wrong byte.
+                Position = Length + offset;
                 break;
             default:
                 throw new ArgumentOutOfRangeException(nameof(origin), origin, null);
@@ -154,11 +156,13 @@ internal sealed class SqliteBlobStream : Stream
         {
             ThrowIfDisposed();
 
-            var cast = (int)value;
-            if (cast < 0 || cast > _pos)
+            // Bounds are the blob length, not the current position: a stream must be able to
+            // seek forward as well as back. The old check against `_pos` made every forward seek
+            // throw even though the data was there.
+            if (value < 0 || value > _length)
                 throw new ArgumentOutOfRangeException(nameof(value));
 
-            _pos = cast;
+            _pos = (int)value;
         }
     }
 

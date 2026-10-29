@@ -1,3 +1,7 @@
 * text=auto eol=lf
 *.ps1 text eol=crlf
 *.bat text eol=crlf
+*.nsh text eol=crlf
+
+# Copied from the official SS14 launcher; keep it out of language statistics and diffs noise.
+loader/** linguist-vendored

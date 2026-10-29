@@ -17,12 +17,23 @@ $loaderOut = "$root/loader/out-sc"
 if (Test-Path $loaderOut) {
     Remove-Item $loaderOut -Recurse -Force
 }
-dotnet publish loader/SS14.Loader/SS14.Loader.csproj -c Release -r win-x64 --self-contained true `
-    -p:PublishSingleFile=false -o $loaderOut
+# Locked restore: the release must use exactly the dependency graph recorded in
+# loader/**/packages.lock.json, not whatever the feed serves today.
+dotnet restore loader/SS14.Loader/SS14.Loader.csproj -r win-x64 --locked-mode
+if ($LASTEXITCODE -ne 0) { throw 'loader restore failed (packages.lock.json is out of date)' }
+# DebugType=None keeps .pdb files out of the installer: they are debug data, not needed to run.
+dotnet publish loader/SS14.Loader/SS14.Loader.csproj -c Release -r win-x64 --self-contained true --no-restore `
+    -p:PublishSingleFile=false -p:DebugType=None -o $loaderOut
 if ($LASTEXITCODE -ne 0) { throw 'loader publish failed' }
 if (-not (Test-Path (Join-Path $loaderOut 'SS14.Loader.exe'))) {
     throw "loader publish produced no SS14.Loader.exe in $loaderOut"
 }
+
+# Licences of everything shipped inside loader/: tauri packs loader/out-sc as the `loader`
+# resource, so the notice file lands next to the Loader in the installer.
+$notices = Join-Path $root 'loader/THIRD-PARTY-NOTICES.txt'
+if (-not (Test-Path $notices)) { throw "missing $notices" }
+Copy-Item $notices -Destination $loaderOut -Force
 
 # Include VC++ CRT runtime DLLs so the client and native libraries (SDL3, OpenAL, etc.)
 # run cleanly on fresh Windows installations without requiring separate VC++ redist install.

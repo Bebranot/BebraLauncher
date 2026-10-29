@@ -24,6 +24,7 @@ internal sealed class ContentDbFileApi : IFileApi, IDisposable
     private readonly SemaphoreSlim _dbConnectionsSemaphore;
     private readonly ConcurrentBag<ConPoolEntry> _dbConnections = new();
     private readonly int _connectionPoolSize;
+    private bool _disposed;
 
     public unsafe ContentDbFileApi(string contentDbPath, long version)
     {
@@ -36,13 +37,19 @@ internal sealed class ContentDbFileApi : IFileApi, IDisposable
             SQLITE_OPEN_READWRITE | SQLITE_OPEN_NOMUTEX,
             null);
 
+        // Check the handle before touching it: a failed open used to continue and crash on the
+        // next call instead of reporting why the content DB could not be opened.
+        ThrowOpenError(db, err);
+
+        // The launcher may hold a write transaction at this moment; wait for it instead of
+        // silently losing the RunningClient row (which would make cull treat us as dead).
+        sqlite3_busy_timeout(db, 5000);
+
         AddRunningClient(db, version);
 
         // Make sure to have a read transaction on every database connection
         // so that the launcher can't delete anything from underneath us if the user does anything.
         sqlite3_exec(db, "BEGIN");
-
-        CheckThrowSqliteErr(db, err);
 
         LoadManifest(version, db, out var initBlob);
 
@@ -58,7 +65,8 @@ internal sealed class ContentDbFileApi : IFileApi, IDisposable
                 out db,
                 SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX,
                 null);
-            CheckThrowSqliteErr(db, err);
+            ThrowOpenError(db, err);
+            sqlite3_busy_timeout(db, 5000);
 
             sqlite3_exec(db, "BEGIN");
 
@@ -85,13 +93,20 @@ internal sealed class ContentDbFileApi : IFileApi, IDisposable
             """,
             out var stmt);
         CheckThrowSqliteErr(db, err);
-        sqlite3_bind_int(stmt, 1, Environment.ProcessId);
-        sqlite3_bind_text(stmt, 2, Process.GetCurrentProcess().MainModule?.FileName ?? "");
-        sqlite3_bind_int64(stmt, 3, contentVersion);
+        try
+        {
+            sqlite3_bind_int(stmt, 1, Environment.ProcessId);
+            sqlite3_bind_text(stmt, 2, Process.GetCurrentProcess().MainModule?.FileName ?? "");
+            sqlite3_bind_int64(stmt, 3, contentVersion);
 
-        sqlite3_step(stmt);
-
-        stmt.Dispose();
+            // A failed step (for example SQLITE_BUSY) must be reported: otherwise the row is
+            // missing and the launcher's cull considers this version unused.
+            CheckThrowSqliteErr(db, sqlite3_step(stmt), SQLITE_DONE);
+        }
+        finally
+        {
+            stmt.Dispose();
+        }
     }
 
     private static void ClearRunningClient(sqlite3 db)
@@ -107,11 +122,15 @@ internal sealed class ContentDbFileApi : IFileApi, IDisposable
             """,
             out var stmt);
         CheckThrowSqliteErr(db, err);
-        sqlite3_bind_int(stmt, 1, Environment.ProcessId);
-
-        sqlite3_step(stmt);
-
-        stmt.Dispose();
+        try
+        {
+            sqlite3_bind_int(stmt, 1, Environment.ProcessId);
+            CheckThrowSqliteErr(db, sqlite3_step(stmt), SQLITE_DONE);
+        }
+        finally
+        {
+            stmt.Dispose();
+        }
     }
 
     private void LoadManifest(long version, sqlite3 db, out long initBlob)
@@ -152,17 +171,51 @@ internal sealed class ContentDbFileApi : IFileApi, IDisposable
             SqliteException.ThrowExceptionForRC(err, db);
     }
 
-    private static int ConnectionPoolSize()
+    private static void ThrowOpenError(sqlite3? db, int err)
     {
-        var envVar = Environment.GetEnvironmentVariable("SS14_LOADER_CONTENT_POOL_SIZE");
-        if (!string.IsNullOrEmpty(envVar))
-            return int.Parse(envVar);
+        if (err == SQLITE_OK)
+            return;
 
-        return Math.Max(2, Environment.ProcessorCount);
+        if (db != null)
+            SqliteException.ThrowExceptionForRC(err, db);
+
+        throw new InvalidOperationException($"sqlite3_open_v2 failed with code {err}");
     }
 
-    public void Dispose()
+    private static int ConnectionPoolSize()
     {
+        var fallback = Math.Clamp(Environment.ProcessorCount, 2, 8);
+
+        var envVar = Environment.GetEnvironmentVariable("SS14_LOADER_CONTENT_POOL_SIZE");
+        if (string.IsNullOrEmpty(envVar))
+            return fallback;
+
+        // A malformed or non-positive value used to throw or deadlock the semaphore.
+        if (!int.TryParse(envVar, out var requested))
+        {
+            Console.Error.WriteLine(
+                "WARNING: SS14_LOADER_CONTENT_POOL_SIZE is not a number, using {0}", fallback);
+            return fallback;
+        }
+
+        var clamped = Math.Clamp(requested, 1, 8);
+        if (clamped != requested)
+        {
+            Console.Error.WriteLine(
+                "WARNING: SS14_LOADER_CONTENT_POOL_SIZE {0} is out of range, using {1}",
+                requested, clamped);
+        }
+
+        return clamped;
+    }
+
+    public unsafe void Dispose()
+    {
+        if (_disposed)
+            return;
+
+        _disposed = true;
+
         sqlite3? master = null;
         for (var i = 0; i < _connectionPoolSize; i++)
         {
@@ -179,9 +232,14 @@ internal sealed class ContentDbFileApi : IFileApi, IDisposable
                 db.Connection.Close();
 
             db.Blob.Close();
+            if (db.DecompressionContext != null)
+                ZSTD_freeDCtx(db.DecompressionContext);
         }
 
-        Debug.Assert(master != null);
+        // No master means the pool was already emptied (or the constructor failed halfway);
+        // Debug.Assert would have turned this into a NullReferenceException in Release.
+        if (master == null)
+            return;
 
         ClearRunningClient(master);
 
@@ -222,6 +280,15 @@ internal sealed class ContentDbFileApi : IFileApi, IDisposable
                     using var blobStream = new SqliteBlobStream(blob, canWrite: false, ownsBlob: false);
                     using var deflater = new DeflateStream(blobStream, CompressionMode.Decompress);
                     deflater.CopyTo(stream);
+
+                    // The buffer is uninitialized and its length is the declared file size.
+                    // A short blob would leave the tail of the heap visible to the client.
+                    if (stream.Length != length)
+                    {
+                        throw new InvalidOperationException(
+                            $"Deflate blob '{path}' produced {stream.Length} bytes, expected {length}");
+                    }
+
                     stream.Position = 0;
                     break;
                 }
@@ -232,7 +299,7 @@ internal sealed class ContentDbFileApi : IFileApi, IDisposable
 
                     unsafe
                     {
-                        ReadBlobZStd(buffer, blob, db, entry.DecompressionContext);
+                        ReadBlobZStd(buffer, blob, db, entry.DecompressionContext, path);
                     }
                     break;
                 }
@@ -260,15 +327,30 @@ internal sealed class ContentDbFileApi : IFileApi, IDisposable
         }
     }
 
-    private static unsafe void ReadBlobZStd(Span<byte> into, sqlite3_blob blob, sqlite3 db, ZSTD_DCtx* context)
+    private static unsafe void ReadBlobZStd(
+        Span<byte> into,
+        sqlite3_blob blob,
+        sqlite3 db,
+        ZSTD_DCtx* context,
+        string path)
     {
         var remainingInput = sqlite3_blob_bytes(blob);
         var blobOffset = 0;
         var buffer = ArrayPool<byte>.Shared.Rent((int)ZSTD_DStreamInSize());
+        // Each iteration consumes at least one input chunk (or terminates the stream), so a
+        // generous bound on the chunk count keeps a malformed blob from spinning forever.
+        var maxIterations = remainingInput / Math.Max(1, buffer.Length) + 1024;
+        var iterations = 0;
         try
         {
             while (true)
             {
+                if (++iterations > maxIterations)
+                {
+                    throw new InvalidOperationException(
+                        $"zstd blob '{path}' did not finish decompressing after {iterations} iterations");
+                }
+
                 var toRead = Math.Min(buffer.Length, remainingInput);
                 var rc = sqlite3_blob_read(blob, buffer.AsSpan(0, toRead), blobOffset);
                 SqliteException.ThrowExceptionForRC(rc, db);
@@ -295,6 +377,22 @@ internal sealed class ContentDbFileApi : IFileApi, IDisposable
                             throw new InvalidOperationException("Failed to fill buffer!");
                         }
                         return;
+                    }
+
+                    // Input is exhausted but zstd still expects more: the blob is truncated.
+                    // Without this check the loop made no progress and burned a core forever.
+                    if (toRead == 0 && remainingInput == 0)
+                    {
+                        throw new InvalidOperationException(
+                            $"truncated zstd blob '{path}': {into.Length} byte(s) of the declared size are missing");
+                    }
+
+                    // The whole declared size is filled, yet zstd reports more output: the
+                    // declared size is wrong and another zero-length iteration would spin.
+                    if (into.Length == 0)
+                    {
+                        throw new InvalidOperationException(
+                            $"zstd blob '{path}' decompresses to more than the declared size");
                     }
                 }
             }

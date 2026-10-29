@@ -10,8 +10,12 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- Small helpers shared with the official launcher's source tree, copied into ../Shared. -->
-    <Compile Include="..\Shared\*.cs" />
+    <!-- Vendored from the official launcher's source tree, copied into ../Shared. Only the files
+         that are actually used are compiled: ZStd.cs and Libc.cs stay on disk as reference but
+         their unused classes (and the module initializer) must not end up in the binary. -->
+    <Compile Include="..\Shared\ContentCompressionScheme.cs" />
+    <Compile Include="..\Shared\SqliteBlobStream.cs" />
+    <Compile Include="..\Shared\ZStdException.cs" />
   </ItemGroup>
 
   <ItemGroup>

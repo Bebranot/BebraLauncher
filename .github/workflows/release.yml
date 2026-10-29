@@ -9,9 +9,15 @@ on:
 permissions:
   contents: read
 
+# Installer builds are heavy; do not run two for the same branch at once.
+concurrency:
+  group: release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   installer:
     runs-on: windows-latest
+    timeout-minutes: 45
     steps:
       # Pinned by commit SHA; the tag comment is for humans.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4

@@ -35,11 +35,15 @@ CLAUDE.local.md
 AGENTS.md
 NOTES.md
 .mcp.json
-# all markdown is considered AI-written notes, except these (the changelog is shown in the app)
+# Markdown: the project documentation belongs to the repository, so a fresh clone has the
+# protocol, the design notes and the changelog rules. Private agent notes (CLAUDE.md,
+# AGENTS.md, .mcp.json) stay ignored by the rules above.
 *.md
 !README.md
 !CHANGELOG.md
-!docs/CHANGELOG_RULES.md
+!PRODUCT.md
+!NOTES.md
+!docs/**/*.md
 
 # signing keys never go to the repository
 *.key

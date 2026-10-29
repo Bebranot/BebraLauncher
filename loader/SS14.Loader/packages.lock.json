@@ -1,0 +1,191 @@
+{
+  "version": 2,
+  "dependencies": {
+    "net10.0": {
+      "Lib.Harmony": {
+        "type": "Direct",
+        "requested": "[2.3.5, )",
+        "resolved": "2.3.5",
+        "contentHash": "LgVL1EhCYtY39YNp/h1PNraKdQn9Vwyb70bYIVLxz60zRgOTi11YohOjJwk4zXsIAoJLG57lO4aP6WXs2fv23A=="
+      },
+      "libsodium": {
+        "type": "Direct",
+        "requested": "[1.0.20.1, )",
+        "resolved": "1.0.20.1",
+        "contentHash": "pkiceEqJDQFHjbga3k/oPfTVX9g+GKJZ1VrkuiLhaymt9YNw1Dr7cX9hNuZuNaWcr9WD0moW55k4pMwzQ7JaZQ=="
+      },
+      "Microsoft.Data.Sqlite.Core": {
+        "type": "Direct",
+        "requested": "[8.0.12, )",
+        "resolved": "8.0.12",
+        "contentHash": "JGYSYsh9Wu8/50aIP76jPIawlcV2gdEs0Uz9d4y0kYV/J3M+t+yGBvgjsaJzrhwpIpvMHdNt6isNB+xJvECYUQ==",
+        "dependencies": {
+          "SQLitePCLRaw.core": "2.1.6"
+        }
+      },
+      "NSec.Cryptography": {
+        "type": "Direct",
+        "requested": "[25.4.0, )",
+        "resolved": "25.4.0",
+        "contentHash": "Z3wPpG0xefMLmhn9T+Ka/EzAmMQPT0THL/5E4lf9cXI/N9rbGH0G23ZFpRcPnD0ast2k7ieG6QSVNIjmfPCXBQ==",
+        "dependencies": {
+          "libsodium": "[1.0.20.1, 1.0.21)"
+        }
+      },
+      "Robust.Natives": {
+        "type": "Direct",
+        "requested": "[0.2.5, )",
+        "resolved": "0.2.5",
+        "contentHash": "k1Dw9MSGG988M/ioH6TP2p3s20rbZlh8hq94ohbfe3gDFWIEtoF7pXhFqDK8oGdKRoAGGBrNtgUjz34iY8uuiw==",
+        "dependencies": {
+          "Robust.Natives.Angle": "0.1.1-chromium4758",
+          "Robust.Natives.Fluidsynth": "0.2.1-fluidsynth2.4.6",
+          "Robust.Natives.Freetype": "0.2.1-freetype2.13.3",
+          "Robust.Natives.Glfw": "0.2.1",
+          "Robust.Natives.OpenAL": "0.2.1-openal1.24.3",
+          "Robust.Natives.Sdl3": "0.1.3-sdl3.4.8",
+          "Robust.Natives.Swnfd": "0.1.0",
+          "Robust.Natives.Zstd": "0.1.1-zstd1.5.7"
+        }
+      },
+      "Robust.Natives.Zstd": {
+        "type": "Direct",
+        "requested": "[0.1.1-zstd1.5.7, )",
+        "resolved": "0.1.1-zstd1.5.7",
+        "contentHash": "yGeTV0tBtgcT8eLnMAMDEQFBAmnE6ZFdEPuJOts81MSo9L1YNbjxA7CrXaD0o3qFpqS49QMjeU+wUT5jisL8QQ=="
+      },
+      "SharpZstd.Interop": {
+        "type": "Direct",
+        "requested": "[1.5.2-beta2, )",
+        "resolved": "1.5.2-beta2",
+        "contentHash": "woJJXU8x1lIT1dVS+fSKVyk1xOTerB0KyGdpYiu4cjR5ugtAdYWau30uv9H4RSbYFTqKKeQAzAaxV33frqgc4w=="
+      },
+      "SQLitePCLRaw.bundle_e_sqlite3": {
+        "type": "Direct",
+        "requested": "[2.1.14, )",
+        "resolved": "2.1.14",
+        "contentHash": "Y6K7m+7ODFmGwAC/ApJY3c68Rq4WPgoIj4GOceagaTow5tLzaJwD9invSWzU8bSMTcKOR101a1ZaU0LQ5SoX/Q==",
+        "dependencies": {
+          "SQLitePCLRaw.lib.e_sqlite3": "2.1.14",
+          "SQLitePCLRaw.provider.e_sqlite3": "2.1.14"
+        }
+      },
+      "Robust.Natives.Angle": {
+        "type": "Transitive",
+        "resolved": "0.1.1-chromium4758",
+        "contentHash": "JU0TxWaDjJkA/ZslHVJmwpHd64LoLGbk2fpPS8xfhknALbWsUJnlB54KFdK6iSWLYyh3dzrTjYJFlSegMCasuA=="
+      },
+      "Robust.Natives.Fluidsynth": {
+        "type": "Transitive",
+        "resolved": "0.2.1-fluidsynth2.4.6",
+        "contentHash": "qYs0IIz86PYiog6aa13Grdd6+FAGAtXrIyxQlzY+MKxHq2wY/RItzz5O3XfzxLz5BpiWZSss12ZmmvmOt1v12g=="
+      },
+      "Robust.Natives.Freetype": {
+        "type": "Transitive",
+        "resolved": "0.2.1-freetype2.13.3",
+        "contentHash": "qm3/o6XSDfh32MiO0jWU1rh+ytlUNOB/naZZDdwUaawcUB9kt6NhraAbPtsFa+A5zfn97XN8nprtyXTS/oVp7Q=="
+      },
+      "Robust.Natives.Glfw": {
+        "type": "Transitive",
+        "resolved": "0.2.1",
+        "contentHash": "5oaOV4jIqppgJ7NRqXLGPZxwmllrK90LziI3q3jUfgBGaHMwamQG0fZDTCb/JG4GQxqn+RhjtNuLFWIssaommA=="
+      },
+      "Robust.Natives.OpenAL": {
+        "type": "Transitive",
+        "resolved": "0.2.1-openal1.24.3",
+        "contentHash": "NX7rsszjyprjyRXyCco4N7DEGnqUA2K1oIKTCixGCFrXF0bIcIg9nf53ODyv0dVBGshU19MkmRPWLQH9GPS/gg=="
+      },
+      "Robust.Natives.Sdl3": {
+        "type": "Transitive",
+        "resolved": "0.1.3-sdl3.4.8",
+        "contentHash": "vHdiuafGbLngENC6DHQY5ofsBrb2A2bCVWkbhd3SbvJgOyseAdKieQ3udKfl12rUvQ+Y7FFnPnkaBhbqfRyqvg=="
+      },
+      "Robust.Natives.Swnfd": {
+        "type": "Transitive",
+        "resolved": "0.1.0",
+        "contentHash": "3qLwO/GvkcMILM3nfjaZfx1blzLixfs0NdYxh1kG8cAZ2qd12T1l1c7p1gmCAc0M6GKYFBvrsk6ArG2dq7BUfg=="
+      },
+      "SQLitePCLRaw.core": {
+        "type": "Transitive",
+        "resolved": "2.1.14",
+        "contentHash": "LqyPmc38sTnZGivatrJ918DhnohR4SUg+I+9ps+nYrh3VC1sRakjpbJfiRLHRstRT7O9l+BOP/zser8vw+qPPw=="
+      },
+      "SQLitePCLRaw.lib.e_sqlite3": {
+        "type": "Transitive",
+        "resolved": "2.1.14",
+        "contentHash": "h32f78UhMGzr3l2kO8t1+qp7ItqfbmyAFTLjBHqL13/kNeKOR6K6FhOQe/gOzlHnUSFAYNUt3JoVPAEjFRIB9g=="
+      },
+      "SQLitePCLRaw.provider.e_sqlite3": {
+        "type": "Transitive",
+        "resolved": "2.1.14",
+        "contentHash": "53lrHTKoz5jCmwUjiiYD/mZUr34XCAk+Cd2T5fBrCGs7zI956cBSouWoX5owO67QA45YlzsWKSUJE/Ajc5h1bQ==",
+        "dependencies": {
+          "SQLitePCLRaw.core": "2.1.14"
+        }
+      },
+      "robust.loaderapi": {
+        "type": "Project"
+      }
+    },
+    "net10.0/win-x64": {
+      "libsodium": {
+        "type": "Direct",
+        "requested": "[1.0.20.1, )",
+        "resolved": "1.0.20.1",
+        "contentHash": "pkiceEqJDQFHjbga3k/oPfTVX9g+GKJZ1VrkuiLhaymt9YNw1Dr7cX9hNuZuNaWcr9WD0moW55k4pMwzQ7JaZQ=="
+      },
+      "Robust.Natives.Zstd": {
+        "type": "Direct",
+        "requested": "[0.1.1-zstd1.5.7, )",
+        "resolved": "0.1.1-zstd1.5.7",
+        "contentHash": "yGeTV0tBtgcT8eLnMAMDEQFBAmnE6ZFdEPuJOts81MSo9L1YNbjxA7CrXaD0o3qFpqS49QMjeU+wUT5jisL8QQ=="
+      },
+      "SharpZstd.Interop": {
+        "type": "Direct",
+        "requested": "[1.5.2-beta2, )",
+        "resolved": "1.5.2-beta2",
+        "contentHash": "woJJXU8x1lIT1dVS+fSKVyk1xOTerB0KyGdpYiu4cjR5ugtAdYWau30uv9H4RSbYFTqKKeQAzAaxV33frqgc4w=="
+      },
+      "Robust.Natives.Angle": {
+        "type": "Transitive",
+        "resolved": "0.1.1-chromium4758",
+        "contentHash": "JU0TxWaDjJkA/ZslHVJmwpHd64LoLGbk2fpPS8xfhknALbWsUJnlB54KFdK6iSWLYyh3dzrTjYJFlSegMCasuA=="
+      },
+      "Robust.Natives.Fluidsynth": {
+        "type": "Transitive",
+        "resolved": "0.2.1-fluidsynth2.4.6",
+        "contentHash": "qYs0IIz86PYiog6aa13Grdd6+FAGAtXrIyxQlzY+MKxHq2wY/RItzz5O3XfzxLz5BpiWZSss12ZmmvmOt1v12g=="
+      },
+      "Robust.Natives.Freetype": {
+        "type": "Transitive",
+        "resolved": "0.2.1-freetype2.13.3",
+        "contentHash": "qm3/o6XSDfh32MiO0jWU1rh+ytlUNOB/naZZDdwUaawcUB9kt6NhraAbPtsFa+A5zfn97XN8nprtyXTS/oVp7Q=="
+      },
+      "Robust.Natives.Glfw": {
+        "type": "Transitive",
+        "resolved": "0.2.1",
+        "contentHash": "5oaOV4jIqppgJ7NRqXLGPZxwmllrK90LziI3q3jUfgBGaHMwamQG0fZDTCb/JG4GQxqn+RhjtNuLFWIssaommA=="
+      },
+      "Robust.Natives.OpenAL": {
+        "type": "Transitive",
+        "resolved": "0.2.1-openal1.24.3",
+        "contentHash": "NX7rsszjyprjyRXyCco4N7DEGnqUA2K1oIKTCixGCFrXF0bIcIg9nf53ODyv0dVBGshU19MkmRPWLQH9GPS/gg=="
+      },
+      "Robust.Natives.Sdl3": {
+        "type": "Transitive",
+        "resolved": "0.1.3-sdl3.4.8",
+        "contentHash": "vHdiuafGbLngENC6DHQY5ofsBrb2A2bCVWkbhd3SbvJgOyseAdKieQ3udKfl12rUvQ+Y7FFnPnkaBhbqfRyqvg=="
+      },
+      "Robust.Natives.Swnfd": {
+        "type": "Transitive",
+        "resolved": "0.1.0",
+        "contentHash": "3qLwO/GvkcMILM3nfjaZfx1blzLixfs0NdYxh1kG8cAZ2qd12T1l1c7p1gmCAc0M6GKYFBvrsk6ArG2dq7BUfg=="
+      },
+      "SQLitePCLRaw.lib.e_sqlite3": {
+        "type": "Transitive",
+        "resolved": "2.1.14",
+        "contentHash": "h32f78UhMGzr3l2kO8t1+qp7ItqfbmyAFTLjBHqL13/kNeKOR6K6FhOQe/gOzlHnUSFAYNUt3JoVPAEjFRIB9g=="
+      }
+    }
+  }
+}

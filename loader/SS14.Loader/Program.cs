@@ -11,17 +11,19 @@ using Robust.LoaderApi;
 
 namespace SS14.Loader;
 
-internal class Program
+internal class Program : IDisposable
 {
     private readonly string[] _engineArgs;
     private const string RobustAssemblyName = "Robust.Client";
 
-    private readonly IFileApi _fileApi;
+    private readonly ZipFileApi _fileApi;
 
-    private Program(string robustPath, string[] engineArgs)
+    private Program(Stream robustStream, string[] engineArgs)
     {
         _engineArgs = engineArgs;
-        var zipArchive = new ZipArchive(File.OpenRead(robustPath), ZipArchiveMode.Read);
+        // The stream holds the exact bytes whose signature was checked: the zip is never
+        // reopened by path, so the file cannot be swapped between the check and the read.
+        var zipArchive = new ZipArchive(robustStream, ZipArchiveMode.Read);
 
         AssemblyLoadContext.Default.Resolving += LoadContextOnResolving;
         AssemblyLoadContext.Default.ResolvingUnmanagedDll += LoadContextOnResolvingUnmanaged;
@@ -72,50 +74,70 @@ internal class Program
         ContentDbFileApi? contentApi = null;
         ZipFileApi? overlayApi = null;
         IEnumerable<ApiMount>? extraMounts = null;
-        if (!string.IsNullOrEmpty(contentDb) && !string.IsNullOrEmpty(contentVersion))
-        {
-            contentApi = new ContentDbFileApi(contentDb, long.Parse(contentVersion));
-            extraMounts = new[] { new ApiMount(contentApi, "/") };
-        }
 
-        if (!string.IsNullOrEmpty(overlayZip))
-        {
-            var overlayArchive = new ZipArchive(
-                File.OpenRead(overlayZip),
-                ZipArchiveMode.Read);
-
-            overlayApi = new ZipFileApi(overlayArchive, "");
-            // Put this *before* the game's regular installation so it masks files.
-            extraMounts = [new ApiMount(overlayApi, "/"), ..extraMounts ?? []];
-        }
-
-        var args = new MainArgs(_engineArgs, _fileApi, redialApi, extraMounts);
-
-        var optEnv = Environment.GetEnvironmentVariable("BEBRA_OPTIMIZE");
-        if (optEnv == "1" || string.Equals(optEnv, "true", StringComparison.OrdinalIgnoreCase))
-        {
-            try
-            {
-                System.Runtime.GCSettings.LatencyMode = System.Runtime.GCLatencyMode.SustainedLowLatency;
-                System.Threading.Thread.CurrentThread.Priority = System.Threading.ThreadPriority.AboveNormal;
-                Console.WriteLine("[BebraLoader] Applied runtime optimizations (SustainedLowLatency GC, ThreadPriority.AboveNormal)");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine("[BebraLoader] Runtime optimization note: {0}", ex.Message);
-            }
-        }
-
+        // The finally block covers building the mounts as well: if the overlay archive cannot be
+        // opened, the already opened content DB must still be closed (it holds a read
+        // transaction and the RunningClient row).
         try
         {
+            if (!string.IsNullOrEmpty(contentDb) && !string.IsNullOrEmpty(contentVersion))
+            {
+                contentApi = new ContentDbFileApi(contentDb, long.Parse(contentVersion));
+                extraMounts = new[] { new ApiMount(contentApi, "/") };
+            }
+
+            if (!string.IsNullOrEmpty(overlayZip))
+            {
+                var overlayStream = File.OpenRead(overlayZip);
+                ZipArchive overlayArchive;
+                try
+                {
+                    overlayArchive = new ZipArchive(overlayStream, ZipArchiveMode.Read);
+                }
+                catch
+                {
+                    // The ZipArchive constructor did not take ownership (invalid zip), so the
+                    // file handle would stay open until the process exits.
+                    overlayStream.Dispose();
+                    throw;
+                }
+
+                overlayApi = new ZipFileApi(overlayArchive, "");
+                // Put this *before* the game's regular installation so it masks files.
+                extraMounts = [new ApiMount(overlayApi, "/"), ..extraMounts ?? []];
+            }
+
+            var args = new MainArgs(_engineArgs, _fileApi, redialApi, extraMounts);
+
+            var optEnv = Environment.GetEnvironmentVariable("BEBRA_OPTIMIZE");
+            if (optEnv == "1" || string.Equals(optEnv, "true", StringComparison.OrdinalIgnoreCase))
+            {
+                try
+                {
+                    System.Runtime.GCSettings.LatencyMode = System.Runtime.GCLatencyMode.SustainedLowLatency;
+                    System.Threading.Thread.CurrentThread.Priority = System.Threading.ThreadPriority.AboveNormal;
+                    Console.WriteLine("[BebraLoader] Applied runtime optimizations (SustainedLowLatency GC, ThreadPriority.AboveNormal)");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine("[BebraLoader] Runtime optimization note: {0}", ex.Message);
+                }
+            }
+
             loader.Main(args);
+            return true;
         }
         finally
         {
             contentApi?.Dispose();
             overlayApi?.Dispose();
         }
-        return true;
+    }
+
+    public void Dispose()
+    {
+        // ZipFileApi owns the ZipArchive, which in turn owns the engine stream.
+        _fileApi.Dispose();
     }
 
     private static bool TryGetLoader(Assembly clientAssembly, [NotNullWhen(true)] out ILoaderEntryPoint? loader)
@@ -182,46 +204,51 @@ internal class Program
         var sig = Convert.FromHexString(args[1]);
         var keyPath = args[2];
 
-        var pubKey = PublicKey.Import(
-            SignatureAlgorithm.Ed25519,
-            File.ReadAllBytes(keyPath),
-            KeyBlobFormat.PkixPublicKeyText);
-
-        var robustBytes = File.ReadAllBytes(robustPath);
-
-        if (!SignatureAlgorithm.Ed25519.Verify(pubKey, robustBytes, sig))
+        // Main has no caller that could log an exception: without this catch a missing key file
+        // or a damaged zip exits with an unhandled-exception dialog instead of an exit code.
+        try
         {
-            // ONLY allow disabling signing on debug mode.
-#if !RELEASE
-            var disableVar = Environment.GetEnvironmentVariable("SS14_DISABLE_SIGNING");
-            if (!string.IsNullOrEmpty(disableVar) && bool.Parse(disableVar))
-            {
-                Console.WriteLine("Failed to verify engine signature, ignoring because signing is disabled.");
-            }
-            else
-#endif
+            var pubKey = PublicKey.Import(
+                SignatureAlgorithm.Ed25519,
+                File.ReadAllBytes(keyPath),
+                KeyBlobFormat.PkixPublicKeyText);
+
+            // One read, one buffer: the signature is checked over the same bytes that are then
+            // parsed as a zip. Reopening the file by path allowed swapping it after the check.
+            var robustBytes = File.ReadAllBytes(robustPath);
+
+            // There is no opt-out: SS14_DISABLE_SIGNING used to work in Debug builds (the
+            // project never defined RELEASE), and a Debug build is what a local experiment
+            // produces. An unsigned engine is never started.
+            if (!SignatureAlgorithm.Ed25519.Verify(pubKey, robustBytes, sig))
             {
                 Console.WriteLine("Failed to verify engine signature!");
                 return 2;
             }
-        }
 
-        var program = new Program(robustPath, args[3..]);
-        if (!program.Run())
-        {
-            return 3;
-        }
-
-        /*Console.WriteLine("lsasm dump:");
-        foreach (var asmLoadContext in AssemblyLoadContext.All)
-        {
-            Console.WriteLine("{0}:", asmLoadContext.Name);
-            foreach (var asm in asmLoadContext.Assemblies)
+            using var stream = new MemoryStream(robustBytes, writable: false);
+            using var program = new Program(stream, args[3..]);
+            if (!program.Run())
             {
-                Console.WriteLine("  {0}", asm.GetName().Name);
+                return 3;
             }
-        }*/
 
-        return 0;
+            /*Console.WriteLine("lsasm dump:");
+            foreach (var asmLoadContext in AssemblyLoadContext.All)
+            {
+                Console.WriteLine("{0}:", asmLoadContext.Name);
+                foreach (var asm in asmLoadContext.Assemblies)
+                {
+                    Console.WriteLine("  {0}", asm.GetName().Name);
+                }
+            }*/
+
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine("Fatal error: {0}", ex);
+            return 4;
+        }
     }
 }

@@ -66,6 +66,7 @@ internal sealed class RedialApi : IRedialApi
             startInfo.EnvironmentVariables.Remove(envVar);
         }
 
-        Process.Start(startInfo);
+        // The launcher is started and left alone: do not hold a handle for its whole lifetime.
+        using var process = Process.Start(startInfo);
     }
 }
