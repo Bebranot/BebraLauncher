@@ -101,6 +101,27 @@ pub struct PlayRequest {
     pub optimization: launch::OptimizationConfig,
 }
 
+/// Auth environment for the game client.
+///
+/// The auth server URL is never taken from the server's `/info`: a malicious server could
+/// otherwise point `ROBUST_AUTH_SERVER` at its own host and collect `ROBUST_AUTH_TOKEN`.
+/// Only our own mirror set picks the URL.
+fn auth_env(
+    account: Option<&StoredAccount>,
+    info: &ServerInfo,
+    no_connect: bool,
+    auth_server_url: String,
+) -> Option<AuthEnv> {
+    account
+        .filter(|_| !no_connect && info.auth.mode != AuthMode::Disabled)
+        .map(|a| AuthEnv {
+            token: a.token.expose().to_string(),
+            user_id: a.user_id.to_string(),
+            server_public_key: info.auth.public_key.clone(),
+            auth_server_url,
+        })
+}
+
 pub struct PreparedGame {
     pub command: LaunchCommand,
     pub info: ServerInfo,
@@ -221,21 +242,12 @@ pub async fn prepare(
 
     let auth_client = AuthClient::official(client.clone());
     let default_auth_url = auth_client.most_successful_url().to_string();
-    let effective_auth_server = if let Some(urls) = &info.auth.login_urls {
-        urls.first().cloned().unwrap_or(default_auth_url)
-    } else {
-        default_auth_url
-    };
-    let auth = req
-        .account
-        .as_ref()
-        .filter(|_| !req.no_connect && info.auth.mode != AuthMode::Disabled)
-        .map(|a| AuthEnv {
-            token: a.token.expose().to_string(),
-            user_id: a.user_id.to_string(),
-            server_public_key: info.auth.public_key.clone(),
-            auth_server_url: effective_auth_server,
-        });
+    let auth = auth_env(
+        req.account.as_ref(),
+        &info,
+        req.no_connect,
+        default_auth_url,
+    );
     let sends_account = auth.is_some();
     let plays_as = req
         .account
@@ -309,4 +321,63 @@ fn free_disk_space_bytes(path: &std::path::Path) -> Option<u64> {
 #[cfg(not(windows))]
 fn free_disk_space_bytes(_path: &std::path::Path) -> Option<u64> {
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::secret::Token;
+    use time::OffsetDateTime;
+    use uuid::Uuid;
+
+    fn account() -> StoredAccount {
+        StoredAccount {
+            user_id: Uuid::from_u128(7),
+            username: "player".into(),
+            token: Token::new("secret-token"),
+            expire_time: OffsetDateTime::now_utc() + time::Duration::days(30),
+        }
+    }
+
+    fn info(auth_mode: AuthMode) -> ServerInfo {
+        ServerInfo {
+            connect_address: None,
+            build: None,
+            auth: crate::server::AuthInfo {
+                mode: auth_mode,
+                public_key: "key".into(),
+            },
+            desc: None,
+            links: Vec::new(),
+            privacy_policy: None,
+        }
+    }
+
+    #[test]
+    fn auth_server_url_ignores_server_supplied_login_urls() {
+        // A hostile /info used to be able to redirect the token through this field.
+        let info: ServerInfo = serde_json::from_str(
+            r#"{"auth":{"mode":"Required","public_key":"k",
+                 "login_urls":["https://evil.example/"]}}"#,
+        )
+        .unwrap();
+        let auth = auth_env(
+            Some(&account()),
+            &info,
+            false,
+            "https://auth.example/".into(),
+        )
+        .expect("account is sent");
+        assert_eq!(auth.auth_server_url, "https://auth.example/");
+        assert_eq!(auth.token, "secret-token");
+    }
+
+    #[test]
+    fn auth_env_skips_disabled_and_no_connect() {
+        let mut info = info(AuthMode::Disabled);
+        assert!(auth_env(Some(&account()), &info, false, "u".into()).is_none());
+        info.auth.mode = AuthMode::Required;
+        assert!(auth_env(Some(&account()), &info, true, "u".into()).is_none());
+        assert!(auth_env(None, &info, false, "u".into()).is_none());
+    }
 }

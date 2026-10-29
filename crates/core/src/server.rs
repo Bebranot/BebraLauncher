@@ -89,8 +89,6 @@ pub struct AuthInfo {
     pub mode: AuthMode,
     /// Base64 libsodium sealed-box key, passed through to the client.
     pub public_key: String,
-    #[serde(default)]
-    pub login_urls: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
