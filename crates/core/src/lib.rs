@@ -14,6 +14,7 @@ pub mod fsutil;
 pub mod hash;
 pub mod http;
 pub mod hub;
+pub mod hwid;
 pub mod launch;
 pub mod manifest;
 pub mod modules;

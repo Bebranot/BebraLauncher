@@ -37,6 +37,8 @@ pub enum PlayEvent {
         stage: &'static str,
         done: u64,
         total: u64,
+        /// Payload received so far; the UI derives the speed from consecutive values.
+        bytes: u64,
         unit: &'static str,
     },
     Running {
@@ -159,8 +161,17 @@ impl GameState {
     }
 }
 
+/// Takes the preparation slot for work that must not overlap a launch (cleaning the storage):
+/// while the returned guard lives, `start` answers "busy". `None` if a game is being prepared or
+/// running.
+pub fn hold_slot(game: &Arc<GameState>) -> Option<PrepareRelease> {
+    game.begin_prepare().ok()?;
+    let release = PrepareRelease(game.clone());
+    (game.running_count() == 0).then_some(release)
+}
+
 /// Frees the preparation slot when the preparation ends, however it ends.
-struct PrepareRelease(Arc<GameState>);
+pub struct PrepareRelease(Arc<GameState>);
 
 impl Drop for PrepareRelease {
     fn drop(&mut self) {
@@ -196,6 +207,8 @@ pub struct PlayParams {
     pub extra_args: String,
     /// Client patch assemblies (.dll) to load.
     pub patches: Vec<PathBuf>,
+    /// Hardware ID the client patch should report instead of the machine's own.
+    pub hwid: Option<bebra_core::hwid::HwidOverride>,
     /// Client performance and optimization settings.
     pub optimization: bebra_core::launch::OptimizationConfig,
 }
@@ -368,28 +381,31 @@ async fn prepare(
         extra_args.push("--cvar".to_string());
         extra_args.push("discord.enabled=false".to_string());
     }
+    // The engine only knows two modes (`WindowMode`: 0 = windowed, 1 = fullscreen); there is no
+    // borderless mode, so "borderless" gets fullscreen, which SDL3 creates as a desktop-fullscreen
+    // window. The names used to be `display.window_mode`, `display.ui_scale` and
+    // `audio.mute_when_unfocused` — none of them exist, so the engine silently ignored the settings.
     match params.client_window_mode.as_str() {
         "windowed" => {
             extra_args.push("--cvar".to_string());
-            extra_args.push("display.window_mode=0".to_string());
+            extra_args.push("display.windowmode=0".to_string());
         }
-        "fullscreen" => {
+        "fullscreen" | "borderless" => {
             extra_args.push("--cvar".to_string());
-            extra_args.push("display.window_mode=1".to_string());
-        }
-        "borderless" => {
-            extra_args.push("--cvar".to_string());
-            extra_args.push("display.window_mode=2".to_string());
+            extra_args.push("display.windowmode=1".to_string());
         }
         _ => {}
     }
-    if !params.client_mute_unfocused {
-        extra_args.push("--cvar".to_string());
-        extra_args.push("audio.mute_when_unfocused=false".to_string());
-    }
+    // Both ways: the option is the launcher's, so "off" must turn muting off even when the
+    // game's own config has it on.
+    extra_args.push("--cvar".to_string());
+    extra_args.push(format!(
+        "audio.mute_unfocused={}",
+        params.client_mute_unfocused
+    ));
     if params.client_ui_scale != "auto" && !params.client_ui_scale.is_empty() {
         extra_args.push("--cvar".to_string());
-        extra_args.push(format!("display.ui_scale={}", params.client_ui_scale));
+        extra_args.push(format!("display.uiScale={}", params.client_ui_scale));
     }
     if params.client_max_fps > 0 {
         extra_args.push("--cvar".to_string());
@@ -409,6 +425,7 @@ async fn prepare(
         overlay_zip,
         extra_args,
         patches: params.patches.clone(),
+        hwid: params.hwid.clone(),
         optimization: params.optimization.clone(),
     };
 
@@ -421,13 +438,19 @@ async fn prepare(
                 last.store(u64::MAX, Ordering::Relaxed);
                 emit(PlayEvent::Stage { stage: name });
             }
-            Some(Progress { done, total, unit }) => {
+            Some(Progress {
+                done,
+                total,
+                bytes,
+                unit,
+            }) => {
                 let permille = (done * 1000).checked_div(total).unwrap_or(0);
                 if last.swap(permille, Ordering::Relaxed) != permille {
                     emit(PlayEvent::Progress {
                         stage: name,
                         done,
                         total,
+                        bytes,
                         unit: match unit {
                             ProgressUnit::Items => "items",
                             ProgressUnit::Bytes => "bytes",
@@ -595,6 +618,7 @@ fn run_game(
     if params.minimize_on_play {
         set_minimized(app, true);
     }
+    bebra_core::process::trim_working_set();
 
     let started = std::time::Instant::now();
     let code = child.wait().ok().and_then(|s| s.code());

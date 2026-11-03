@@ -55,6 +55,8 @@ export type PlayState =
       stage: PlayStage;
       done: number;
       total: number;
+      /** Payload received so far; `done` may count files instead of bytes. */
+      bytes: number;
       unit: "items" | "bytes";
     }
   | { phase: "running"; playsAs: string }
@@ -201,6 +203,7 @@ export class Store {
   details = $state<Record<string, DetailsState>>({});
 
   play = $state<PlayState>({ phase: "idle" });
+  lastPlayTarget = $state<{ address: string; name: string | null; account: string | null } | null>(null);
   /** Shown in the connecting box: the game asked to reconnect. */
   redial = $state<{ reason: string | null } | null>(null);
   /** A short message at the bottom of the window. */
@@ -1186,11 +1189,155 @@ export class Store {
     if (!account && known?.auth === "required") return this.fail("auth_required", "");
 
     this.redial = null;
-    this.play = { phase: "preparing", stage: "account", done: 0, total: 0, unit: "items" };
+    this.lastPlayTarget = { address: server.address, name: server.name, account: this.selectedAccount };
+    this.play = { phase: "preparing", stage: "account", done: 0, total: 0, bytes: 0, unit: "items" };
     try {
       await api.play(server.address, server.name, this.selectedAccount);
     } catch (e) {
       this.play = { phase: "failed", code: "other", message: errorText(e) };
+    }
+  }
+
+  /** Reconnects to the last played server (e.g. after a crash). */
+  async reconnectLast() {
+    if (!this.lastPlayTarget || this.busy) return;
+    const target = this.lastPlayTarget;
+    this.redial = null;
+    this.play = { phase: "preparing", stage: "account", done: 0, total: 0, bytes: 0, unit: "items" };
+    try {
+      await api.play(target.address, target.name, target.account);
+    } catch (e) {
+      this.play = { phase: "failed", code: "other", message: errorText(e) };
+    }
+  }
+
+  exportConfigJson(): string {
+    const s = this.settings;
+    if (!s) return "{}";
+    const exportData = {
+      version: 1,
+      exported_at: new Date().toISOString(),
+      settings: {
+        opt_profile: s.opt_profile,
+        opt_fast_lighting: s.opt_fast_lighting,
+        opt_unlock_fps: s.opt_unlock_fps,
+        opt_high_priority: s.opt_high_priority,
+        opt_server_gc: s.opt_server_gc,
+        client_window_mode: s.client_window_mode,
+        client_mute_unfocused: s.client_mute_unfocused,
+        client_ui_scale: s.client_ui_scale,
+        client_max_fps: s.client_max_fps,
+        theme: s.theme,
+        theme_gradient: s.theme_gradient,
+        theme_decor: s.theme_decor,
+        font: s.font,
+        bg_type: s.bg_type,
+        bg_dim: s.bg_dim,
+        bg_blur: s.bg_blur,
+        minimize_on_play: s.minimize_on_play,
+        auto_clean_cache: s.auto_clean_cache,
+      },
+      favorites: [...s.favorites],
+      favorite_names: { ...(s.favorite_names ?? {}) },
+      server_notes: { ...(s.server_notes ?? {}) },
+    };
+    return JSON.stringify(exportData, null, 2);
+  }
+
+  async copyConfigToClipboard(): Promise<boolean> {
+    try {
+      await navigator.clipboard.writeText(this.exportConfigJson());
+      this.say(t("opt.config.copied"));
+      return true;
+    } catch {
+      this.say(t("opt.config.copyFailed"));
+      return false;
+    }
+  }
+
+  downloadConfigFile() {
+    try {
+      const blob = new Blob([this.exportConfigJson()], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `bebra_settings_${new Date().toISOString().slice(0, 10)}.json`;
+      a.click();
+      // Revoking right after click() can cancel the download before WebView2 has read the blob.
+      setTimeout(() => URL.revokeObjectURL(url), 10_000);
+      this.say(t("opt.config.saved"));
+    } catch {
+      this.say(t("opt.config.saveFailed"));
+    }
+  }
+
+  /**
+   * Applies an exported configuration. Options go through the usual settings save; favourites,
+   * their names and notes belong to the launcher (`merged_from_ui` ignores the UI's copy), so
+   * they are added through their own commands — imported favourites are added, never removed.
+   */
+  async importConfigJson(raw: string): Promise<{ success: boolean; error?: string }> {
+    const isObject = (v: unknown): v is Record<string, unknown> =>
+      typeof v === "object" && v !== null && !Array.isArray(v);
+    const strings = (v: unknown): [string, string][] =>
+      isObject(v)
+        ? Object.entries(v).filter((e): e is [string, string] => typeof e[1] === "string")
+        : [];
+    try {
+      const data: unknown = JSON.parse(raw);
+      if (!isObject(data)) {
+        this.say(t("opt.config.badFormat"));
+        return { success: false, error: t("opt.config.badFormat") };
+      }
+
+      const partial: Partial<Settings> = {};
+      if (isObject(data.settings)) {
+        const s = data.settings;
+        const take = <K extends keyof Settings>(key: K, type: "string" | "boolean" | "number") => {
+          if (typeof s[key] === type) partial[key] = s[key] as Settings[K];
+        };
+        take("opt_profile", "string");
+        take("opt_fast_lighting", "boolean");
+        take("opt_unlock_fps", "boolean");
+        take("opt_high_priority", "boolean");
+        take("opt_server_gc", "boolean");
+        take("client_window_mode", "string");
+        take("client_mute_unfocused", "boolean");
+        take("client_ui_scale", "string");
+        take("client_max_fps", "number");
+        take("theme", "string");
+        take("theme_gradient", "boolean");
+        take("theme_decor", "boolean");
+        take("font", "string");
+        take("bg_type", "string");
+        take("bg_dim", "number");
+        take("bg_blur", "number");
+        take("minimize_on_play", "boolean");
+        take("auto_clean_cache", "boolean");
+      }
+      this.updateSettings(partial);
+
+      const have = new Set(this.settings?.favorites ?? []);
+      const favorites = Array.isArray(data.favorites)
+        ? data.favorites.filter((x): x is string => typeof x === "string" && !have.has(x))
+        : [];
+      for (const address of favorites) {
+        const err = await this.addFavorite(address);
+        if (err) throw new Error(err);
+      }
+      for (const [address, name] of strings(data.favorite_names)) {
+        await this.setFavoriteName(address, name);
+      }
+      for (const [address, note] of strings(data.server_notes)) {
+        await this.setServerNote(address, note);
+      }
+
+      this.say(t("opt.config.imported"));
+      return { success: true };
+    } catch (e) {
+      const err = e instanceof Error ? e.message : String(e);
+      this.say(t("opt.config.importFailed", { error: err }));
+      return { success: false, error: err };
     }
   }
 
@@ -1200,7 +1347,7 @@ export class Store {
     if (!typed || this.busy) return;
     this.preview = null;
     this.redial = null;
-    this.play = { phase: "preparing", stage: "account", done: 0, total: 0, unit: "items" };
+    this.play = { phase: "preparing", stage: "account", done: 0, total: 0, bytes: 0, unit: "items" };
     try {
       await api.launchPreview(typed, this.selectedAccount);
     } catch (e) {
@@ -1285,13 +1432,13 @@ export class Store {
   private onRedial(e: RedialEvent) {
     this.reveal(e.address);
     this.redial = { reason: e.reason };
-    this.play = { phase: "preparing", stage: "account", done: 0, total: 0, unit: "items" };
+    this.play = { phase: "preparing", stage: "account", done: 0, total: 0, bytes: 0, unit: "items" };
   }
 
   private onPlayEvent(e: PlayEvent) {
     switch (e.kind) {
       case "stage":
-        this.play = { phase: "preparing", stage: e.stage, done: 0, total: 0, unit: "items" };
+        this.play = { phase: "preparing", stage: e.stage, done: 0, total: 0, bytes: 0, unit: "items" };
         break;
       case "progress":
         this.play = {
@@ -1299,6 +1446,7 @@ export class Store {
           stage: e.stage,
           done: e.done,
           total: e.total,
+          bytes: e.bytes ?? 0,
           unit: e.unit,
         };
         break;

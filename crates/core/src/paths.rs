@@ -13,12 +13,27 @@ pub struct DataDirs {
 }
 
 impl DataDirs {
-    /// `%LOCALAPPDATA%\BebraLauncher`.
+    /// `%LOCALAPPDATA%\BebraLauncher`, or `<exe_dir>\data` if `portable.txt` / `.portable` exists
+    /// next to the executable.
     pub fn default_windows() -> Result<Self> {
-        let base = std::env::var_os("LOCALAPPDATA")
-            .filter(|v| !v.is_empty())
+        let exe = std::env::current_exe().ok();
+        let appdata = std::env::var_os("LOCALAPPDATA");
+        Self::resolve_root(exe.as_deref(), appdata.as_deref().map(Path::new))
+    }
+
+    /// Resolves the data directory, giving precedence to a portable trigger file beside the executable.
+    pub fn resolve_root(exe_path: Option<&Path>, local_app_data: Option<&Path>) -> Result<Self> {
+        if let Some(exe) = exe_path {
+            if let Some(dir) = exe.parent() {
+                if dir.join("portable.txt").is_file() || dir.join(".portable").is_file() {
+                    return Ok(Self::at(dir.join("data")));
+                }
+            }
+        }
+        let base = local_app_data
+            .filter(|v| !v.as_os_str().is_empty())
             .ok_or_else(|| Error::Other("LOCALAPPDATA is not set".into()))?;
-        Ok(Self::at(Path::new(&base).join("BebraLauncher")))
+        Ok(Self::at(base.join("BebraLauncher")))
     }
 
     pub fn at(root: impl Into<PathBuf>) -> Self {
@@ -112,5 +127,22 @@ mod tests {
             d.scratch().is_dir() && d.overlays().is_dir(),
             "downloads and the pack overlay need tmp/ and overlays/"
         );
+    }
+
+    #[test]
+    fn portable_mode_detection() {
+        let tmp = tempfile::tempdir().unwrap();
+        let exe = tmp.path().join("BebraLauncher.exe");
+        std::fs::write(&exe, b"").unwrap();
+
+        // Without portable.txt, uses LOCALAPPDATA
+        let d = DataDirs::resolve_root(Some(&exe), Some(Path::new("C:\\AppData\\Local"))).unwrap();
+        assert_eq!(d.root(), Path::new("C:\\AppData\\Local\\BebraLauncher"));
+
+        // With portable.txt next to exe, uses data/ folder beside exe
+        std::fs::write(tmp.path().join("portable.txt"), b"").unwrap();
+        let d_portable =
+            DataDirs::resolve_root(Some(&exe), Some(Path::new("C:\\AppData\\Local"))).unwrap();
+        assert_eq!(d_portable.root(), tmp.path().join("data"));
     }
 }

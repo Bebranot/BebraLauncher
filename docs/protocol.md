@@ -5,8 +5,9 @@
 **[live]** — проверено живым запросом 2026-10-03, **[док]** — есть в docs.spacestation14.com,
 **[?]** — НЕ проверено, нельзя опираться без сверки.
 
-Статус разделов: 1–8 написаны (2026-10-03). POST-скачивание блобов (3.3) и движок (6) проверены живьём. Не проверено:
-логин (7) и модули (6.3) — Фазы 1–2.
+Статус разделов: 1–8 написаны (2026-10-03). Проверено живьём: список/`/info` через хаб (1), манифест и POST-скачивание
+блобов (3), движок (6.2), логин, продление и ping (7), запуск клиента с подключением (8). Не проверено живьём: модули (6.3),
+zip-режим (4), ACZ (2), redial из игры (8.1). Ссылки `[код: ...]` указывают на файлы официального лаунчера в `..\Forks\`.
 
 **Главный вывод Фазы 0:** лаунчер НЕ запускает Robust.Client напрямую. Он запускает отдельный
 `SS14.Loader.exe` (.NET 10), который грузит Robust.Client.dll из zip движка и отдаёт ему контент
@@ -295,7 +296,7 @@ UTF-8 без BOM. Должен совпасть с `manifest_hash` сервер�
 
 ---
 
-## 7. Авторизация [код: Api/AuthApi.cs, Models/Logins/LoginManager.cs] (логин живьём НЕ проверялся)
+## 7. Авторизация [код: Api/AuthApi.cs, Models/Logins/LoginManager.cs] (логин проверен живьём 2026-10-03, см. NOTES.md)
 
 База: `https://auth.spacestation14.com/` (+ fallback, раздел 1.1). Тела JSON в camelCase
 (`JsonSerializerDefaults.Web`, Helpers.AsJson / JsonContent.Create). [?] Точные имена полей сверить в Фазе 2 по реальному ответу.
@@ -336,6 +337,9 @@ DataManager.cs:295,455-464). Пароль после входа нигде не 
 Файл `signing_key` (PEM, SPKI, Ed25519, `MCowBQYDK2VwAyEApQ9mAhMLbmhQqRH7itgNo75S5rCSMsMXvVRmMv1d9NQ=`)
 лежит рядом с лаунчером. Им проверяются подписи движка (в Loader) и модулей (в лаунчере).
 Ключ сверен с апстримом (raw.githubusercontent.com/space-wizards/SS14.Launcher/master/SS14.Launcher/signing_key): **идентичен**; подпись реального движка им проверена.
+Ядро (`crates/core/src/signature.rs`) встраивает ещё два ключа — `signing_key_multiverse.pem` и
+`signing_key_supermatter.pem`; для движков с такими именами (`multiverse`, `supermatter`) Loader получает свой файл ключа
+(`launch.rs`, `ensure_signing_key_file_for_engine`). Источник этих двух ключей в документации не описан.
 
 ---
 
@@ -345,7 +349,7 @@ DataManager.cs:295,455-464). Пароль после входа нигде не 
 `SS14.Loader.exe` это .NET 10 приложение из репозитория лаунчера (MIT, как и `Robust.LoaderApi`).
 Что оно делает (Loader/Program.cs):
 1. Читает `signing_key`, проверяет Ed25519-подпись **всего** engine-zip (`sig` из 6.1); провал → код выхода 2.
-   (Отключить можно только в не-RELEASE сборке env `SS14_DISABLE_SIGNING=true`.)
+   В нашей версии Loader выключателя подписи нет (см. `loader/README.md`).
 2. Открывает engine-zip, находит `Robust.Client.dll`, берёт `LoaderEntryPointAttribute`, создаёт точку входа.
 3. Монтирует контент из `content.db` (`ContentDbFileApi`) и вызывает `Main` движка с нашими аргументами.
 4. `RedialApi`: для «перезахода» клиент перезапускает **лаунчер**: `<launcher> --commands :RedialWait R<hex причины> C<hex адреса>`
@@ -380,11 +384,11 @@ SS14.Loader.exe <путь к engine zip> <sig hex> <путь к signing_key> [а
 | `ROBUST_AUTH_TOKEN` / `_USERID` / `_PUBKEY` / `_SERVER` | токен, GUID аккаунта, `auth.public_key` сервера, самый успешный auth-URL. Только если `auth.mode != Disabled` и аккаунт выбран |
 | `SS14_LOADER_CONTENT_DB` | путь к `content.db` |
 | `SS14_LOADER_CONTENT_VERSION` | `ContentVersion.Id` |
-| `SS14_LOADER_OVERLAY_ZIP` | опционально, zip-«подложка» (content bundle/реплеи) |
+| `SS14_LOADER_OVERLAY_ZIP` | опционально, zip-«подложка»; у нас — текстовые пакеты (`core::packs`) |
 | `ROBUST_MODULE_<NAME>` | каталог модуля (`.` -> `_`, верхний регистр), напр. `ROBUST_MODULE_ROBUST_CLIENT_WEBVIEW` |
 | `SS14_LAUNCHER_PATH` | путь к exe лаунчера (для redial) |
 | `DOTNET_TieredPGO=1`, `DOTNET_ReadyToRun=0`, `DOTNET_MULTILEVEL_LOOKUP=0` | настройки .NET. `DOTNET_gcServer=1` только для спец. контента. **`DOTNET_ROLL_FORWARD` НЕ ставить** (комментарий в коде: Loader всегда на runtime лаунчера) |
-| `SS14_DISABLE_SIGNING` | только dev |
+| `SS14_DISABLE_SIGNING` | не передаётся: `core::launch` удаляет эту переменную из env процесса |
 
 `UseShellExecute=false`; stdout/stderr клиента пишутся в `logs\client.stdout.log` и `client.stderr.log`
 (`FileShare.ReadWrite|Delete`). Лаунчер ждёт 300 мс: если клиент умер с кодом != 0, это «клиент упал сразу».
@@ -399,19 +403,17 @@ SS14.Loader.exe <путь к engine zip> <sig hex> <путь к signing_key> [а
 
 ---
 
-## 9. Выводы для нашей архитектуры и ОТКРЫТОЕ РЕШЕНИЕ
+## 9. Выводы для нашей архитектуры и принятое решение
 
 **Core (Rust) реализуем сами:** хаб/`/status`/`/info`, выбор режима, zip- и manifest-загрузка, ContentDB (схема 5.2),
 индекс/скачивание движка и модулей + Ed25519-проверки, авторизация (token store), сборка команды запуска и env.
 
 **Loader нельзя написать на Rust**: он хостит управляемый Robust.Client.dll в .NET-процессе.
-Варианты (нужно решение пользователя):
-- **A (рекомендую):** собирать `SS14.Loader` из исходников официального лаунчера (MIT) через `dotnet publish` для win-x64 и поставлять
-  вместе с нашим установщиком + .NET 10 runtime. Минимум риска: тот же загрузчик, что у оф. лаунчера, ContentDB-совместимость гарантирована.
-- B: скачивать готовый Loader из релизов оф. лаунчера при первом запуске: зависим от их формата релиза (хрупко; нужна сверка лицензии/подписи).
-- C: переписать Loader на .NET самим: зря, дублирует A.
+Принято вариант A: `SS14.Loader` собирается из исходников официального лаунчера (MIT, каталог `loader/`) через `dotnet publish`
+и поставляется с установщиком вместе с .NET 10 runtime (см. `loader/README.md`). Варианты B (скачивать Loader у оф. лаунчера)
+и C (переписать на .NET) отклонены.
 
-Влияние на вес: рантайм .NET ~70 МБ + Loader ~10 МБ (оценка, [?] замерить). Для «малого веса» можно скачивать runtime при первом запуске.
+Вес: в установщике Loader self-contained (~96 МБ в ресурсах по NOTES.md). [?] Оценка .NET runtime + Loader для «малого веса» не замерялась.
 
 **Прочее для Фазы 1:** схему `content.db` не менять; тесты хеширования (BLAKE2b-256 без ключа = `blake2b(digest_size=32)`),
 парсер манифеста, парсер `/info`; скачивание блобов сначала на малом наборе файлов, с явного согласия пользователя.

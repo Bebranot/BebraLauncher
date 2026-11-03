@@ -29,6 +29,19 @@ if (-not (Test-Path (Join-Path $loaderOut 'SS14.Loader.exe'))) {
     throw "loader publish produced no SS14.Loader.exe in $loaderOut"
 }
 
+Write-Host '==> HWID patch'
+# A class library the Loader loads into the client, not a program: it must sit next to
+# SS14.Loader.exe, because that is where the launcher looks for it. Locked restore keeps the
+# shipped binary on the dependency graph recorded in packages.lock.json.
+dotnet restore loader/Bebra.HwidPatch/Bebra.HwidPatch.csproj --locked-mode
+if ($LASTEXITCODE -ne 0) { throw 'HWID patch restore failed (packages.lock.json is out of date)' }
+dotnet publish loader/Bebra.HwidPatch/Bebra.HwidPatch.csproj -c Release --no-restore `
+    -p:DebugType=None -o $loaderOut
+if ($LASTEXITCODE -ne 0) { throw 'HWID patch publish failed' }
+if (-not (Test-Path (Join-Path $loaderOut 'Bebra.HwidPatch.dll'))) {
+    throw "HWID patch publish produced no Bebra.HwidPatch.dll in $loaderOut"
+}
+
 # Licences of everything shipped inside loader/: tauri packs loader/out-sc as the `loader`
 # resource, so the notice file lands next to the Loader in the installer.
 $notices = Join-Path $root 'loader/THIRD-PARTY-NOTICES.txt'

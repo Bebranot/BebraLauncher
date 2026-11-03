@@ -25,6 +25,8 @@ internal sealed class RedialApi : IRedialApi
         "SS14_DISABLE_SIGNING",
         "SS14_LAUNCHER_PATH",
         "SS14_LOG_CLIENT",
+        "BEBRA_HWID_MODERN",
+        "BEBRA_HWID_LEGACY",
 
         // .NET config
         "DOTNET_MULTILEVEL_LOOKUP",

@@ -8,6 +8,33 @@ class Promo {
   left = $state<number | null>(null);
   /** The "age check" window is shown. */
   open = $state(false);
+  /** Hidden for the rest of the application session once purchased. */
+  dismissedUntilRestart = $state(false);
+  /** Whether the promo rolled to show during the current Settings view. */
+  visible = $state(false);
+
+  /** Called when opening settings: 1-in-5 (20%) roll if not already purchased. */
+  checkSettingsVisit() {
+    if (this.dismissedUntilRestart) {
+      this.visible = false;
+      return;
+    }
+    // 1 in 5 chance
+    if (Math.random() < 0.2) {
+      this.visible = true;
+      this.start();
+    } else {
+      this.visible = false;
+    }
+  }
+
+  /** Complete the joke purchase and hide promo until application restart. */
+  markBought() {
+    this.dismissedUntilRestart = true;
+    this.visible = false;
+    this.open = false;
+    this.stop();
+  }
 
   private started = false;
   /** The one-shot start/restart delay and the countdown, so `stop` can clear them (P2-62). */
@@ -64,4 +91,27 @@ export function clock(seconds: number): string {
   const s = Math.max(0, Math.floor(Number.isFinite(seconds) ? seconds : 0));
   const p = (n: number) => String(n).padStart(2, "0");
   return `${p(Math.floor(s / 3600))}:${p(Math.floor((s % 3600) / 60))}:${p(s % 60)}`;
+}
+
+/** `1536` -> `1,50 КБ`; used by the joke "upload" so the numbers look like a real client. */
+export function formatBytes(bytes: number): string {
+  const n = Math.max(0, Number.isFinite(bytes) ? bytes : 0);
+  const units = ["Б", "КБ", "МБ", "ГБ"];
+  let value = n;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  const digits = unit === 0 || value >= 100 ? 0 : value >= 10 ? 1 : 2;
+  return `${value.toFixed(digits).replace(".", ",")} ${units[unit]}`;
+}
+
+/**
+ * How long the joke "upload" should pretend to take. Bigger files take longer, but the wait is
+ * clamped so a tiny scan still shows a progress bar and a huge one does not stall the joke.
+ */
+export function uploadSeconds(bytes: number): number {
+  const size = Math.max(0, Number.isFinite(bytes) ? bytes : 0);
+  return Math.min(15, Math.max(2.8, size / 600_000));
 }

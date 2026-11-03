@@ -469,3 +469,24 @@ progress:indeterminate {
   border: 1px solid var(--line);
   border-radius: 12px;
 }
+
+/* Low-spec & prefers-reduced-motion optimizations */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+body.low-spec {
+  --shadow: none !important;
+}
+
+body.low-spec * {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}

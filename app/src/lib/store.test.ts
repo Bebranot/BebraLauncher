@@ -410,4 +410,21 @@ describe("the second tick (P1-39)", () => {
     const store = makeStore();
     expect(store.now).toBe(clock.now);
   });
+
+  it("exports and imports configuration correctly", async () => {
+    const store = makeStore();
+    await store.loadSettings();
+    store.updateSettings({
+      opt_profile: "optimized",
+      favorites: ["ss14s://example.com"],
+      favorite_names: { "ss14s://example.com": "Super Server" },
+    });
+    const exported = store.exportConfigJson();
+    expect(exported).toContain('"opt_profile": "optimized"');
+    expect(exported).toContain("Super Server");
+
+    const res = await store.importConfigJson(exported);
+    expect(res.success).toBe(true);
+    expect(store.settings?.opt_profile).toBe("optimized");
+  });
 });

@@ -35,7 +35,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
 
 /// A compressed blob must save more than this many bytes to be stored compressed.
 const COMPRESSION_SAVINGS_THRESHOLD: usize = 10;
-const ZSTD_LEVEL: i32 = 3;
+/// Level 1 instead of 3: measured over 45 MB of real content, level 1 ran at 354 MB/s against
+/// 216 MB/s for level 3, and produced 88.4% against 88.1% of the input. The database grows by a
+/// fraction of a percent for a third less time spent compressing.
+const ZSTD_LEVEL: i32 = 1;
 
 /// How many hashes go into one `WHERE Hash IN (...)` query. Keeps the number of SQL variables
 /// well under SQLite's limit and the memory needed for a 700k-blob database low.
@@ -110,6 +113,17 @@ impl PreparedBlob {
             compression: Compression::None,
             data,
         })
+    }
+
+    /// Bytes that are known not to compress (a PNG, an Ogg): stored as-is, skipping the zstd pass
+    /// entirely. Over a real content db this covers 79% of the bytes and would have saved 0.5%.
+    pub fn uncompressed(hash: Hash256, data: Vec<u8>) -> Self {
+        Self {
+            hash,
+            size: data.len(),
+            compression: Compression::None,
+            data,
+        }
     }
 
     /// Bytes as delivered by the server; the caller has checked the hash and the size.

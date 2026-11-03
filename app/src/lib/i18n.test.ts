@@ -60,6 +60,19 @@ describe("t", () => {
     i18n.preference = "auto";
   });
 
+  it("every string has text, not just punctuation or placeholders", () => {
+    // Catches a broken import that replaces words with dots: such a string keeps the
+    // key and the placeholders, so the key/placeholder check above does not see it.
+    const allowed = new Set(["—", "18+"]);
+    const hasLetter = /[A-Za-z\u00C0-\u024F\u0400-\u04FF]/;
+    for (const lang of UI_LANGUAGES) {
+      for (const [key, value] of Object.entries(dictionaries[lang])) {
+        if (allowed.has(value)) continue;
+        expect(hasLetter.test(value), `${lang}: ${key} = ${JSON.stringify(value)}`).toBe(true);
+      }
+    }
+  });
+
   it("every language has the same keys and placeholders as Russian", () => {
     const placeholders = (s: string) => [...s.matchAll(/\{(\w+)\}/g)].map((m) => m[1]).sort();
     const reference = dictionaries.ru;

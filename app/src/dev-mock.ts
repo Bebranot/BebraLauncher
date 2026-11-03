@@ -4,6 +4,7 @@ import { emit } from "@tauri-apps/api/event";
 import { mockIPC } from "@tauri-apps/api/mocks";
 import type {
   AccountRow,
+  HwidState,
   PackRow,
   ServerDetails,
   ServerRow,
@@ -89,6 +90,7 @@ const DEFAULT_SETTINGS: Settings = {
   favorites: ["ss14s://example-two.test", "ss14s://private.example:1212"],
   favorite_names: { "ss14s://example-two.test": "Тестовое лобби" },
   launcher_ui_scale: 100,
+  auto_clean_cache: true,
   dismissed_intel_warning: false,
   history: [
     {
@@ -179,7 +181,7 @@ async function fakePlay(address?: string) {
   const total = 150 * 1024 * 1024;
   for (let done = 0; done <= total; done += total / 40) {
     if (cancelled) return ev({ kind: "cancelled" });
-    await ev({ kind: "progress", stage: "files", done, total, unit: "bytes" });
+    await ev({ kind: "progress", stage: "files", done, total, bytes: done, unit: "bytes" });
     await sleep(120);
   }
   await ev({ kind: "stage", stage: "starting" });
@@ -277,6 +279,11 @@ const CHANGELOG = `# Журнал изменений
 
 const pingFor = (address: string) => 20 + ((address.length * 37) % 260);
 
+/** The HWID controls: the real backend keeps these in the settings file. */
+let mockHwid: HwidState = { auto: true, current: null, previous: null, patch: true };
+const randomHwid = () =>
+  Array.from({ length: 64 }, () => "0123456789abcdef"[Math.floor(Math.random() * 16)]).join("");
+
 export function installMock() {
   mockIPC(
     (cmd, args) => {
@@ -318,6 +325,18 @@ export function installMock() {
           return accounts;
         case "get_settings":
           return settings;
+        case "get_hwid":
+          return mockHwid;
+        case "set_hwid_auto":
+          mockHwid = { ...mockHwid, auto: Boolean(a.enabled) };
+          return mockHwid;
+        case "regenerate_hwid":
+          mockHwid = { ...mockHwid, previous: mockHwid.current, current: randomHwid() };
+          return mockHwid;
+        case "restore_hwid":
+          if (!mockHwid.previous) throw "Предыдущего HWID нет";
+          mockHwid = { ...mockHwid, current: mockHwid.previous, previous: null };
+          return mockHwid;
         case "set_settings": {
           const incoming = a.settings as Settings;
           // Like the real backend: what only the launcher writes is not undone by the UI's copy.

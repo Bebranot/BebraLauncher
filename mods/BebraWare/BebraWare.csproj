@@ -1,0 +1,42 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>BebraWare</AssemblyName>
+    <RootNamespace>BebraWare</RootNamespace>
+    <WarningsAsErrors>true</WarningsAsErrors>
+
+    <GameDir Condition="'$(GameDir)' == ''">C:\LocalDutyAVS\bin\Content.Client</GameDir>
+    <HarmonyDir Condition="'$(HarmonyDir)' == ''">$(USERPROFILE)\.nuget\packages\lib.harmony\2.4.3\lib\net10.0</HarmonyDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Все игровые DLL и Harmony предоставляет сам лаунчер в процессе игры. -->
+    <Reference Include="0Harmony">
+      <HintPath>$(HarmonyDir)\0Harmony.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Content.Client">
+      <HintPath>$(GameDir)\Content.Client.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Content.Shared">
+      <HintPath>$(GameDir)\Content.Shared.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Robust.Client">
+      <HintPath>$(GameDir)\Robust.Client.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Robust.Shared">
+      <HintPath>$(GameDir)\Robust.Shared.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Robust.Shared.Maths">
+      <HintPath>$(GameDir)\Robust.Shared.Maths.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+</Project>

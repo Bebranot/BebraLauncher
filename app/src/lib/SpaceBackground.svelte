@@ -146,7 +146,7 @@
 
   function loop(time: number) {
     animId = null;
-    if (document.hidden || (app.settings?.bg_type ?? "space") !== "space" || prefersReducedMotion()) {
+    if (document.hidden || app.play?.phase === "running" || (app.settings?.bg_type ?? "space") !== "space" || prefersReducedMotion()) {
       return;
     }
     if (time - lastRenderTime >= FRAME_INTERVAL) {
@@ -157,7 +157,7 @@
   }
 
   function handleVisibilityChange() {
-    if (document.hidden) {
+    if (document.hidden || app.play?.phase === "running") {
       stopLoop();
     } else if ((app.settings?.bg_type ?? "space") === "space") {
       startLoop();
@@ -222,7 +222,7 @@
   const blur = $derived(Number.isFinite(bgBlur) ? Math.min(30, Math.max(0, bgBlur)) : 0);
 
   $effect(() => {
-    if (bgType === "space" && !document.hidden) {
+    if (bgType === "space" && !document.hidden && app.play?.phase !== "running") {
       startLoop();
     } else {
       stopLoop();

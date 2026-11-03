@@ -145,7 +145,20 @@ export interface Settings {
   server_notes?: Record<string, string>;
   favorite_names?: Record<string, string>;
   launcher_ui_scale?: number;
+  auto_clean_cache?: boolean;
   dismissed_intel_warning?: boolean;
+}
+
+/** The HWID controls from the options tab. */
+export interface HwidState {
+  /** A new HWID is generated before every launch. */
+  auto: boolean;
+  /** The value the next launch will report, or null for the computer's own. */
+  current: string | null;
+  /** The value before the last change, for rolling back. */
+  previous: string | null;
+  /** This build ships the client patch that applies the value. */
+  patch: boolean;
 }
 
 export interface BackgroundRow {
@@ -245,7 +258,15 @@ export interface RunningClient {
 
 export type PlayEvent =
   | { kind: "stage"; stage: PlayStage }
-  | { kind: "progress"; stage: PlayStage; done: number; total: number; unit: "items" | "bytes" }
+  | {
+      kind: "progress";
+      stage: PlayStage;
+      done: number;
+      total: number;
+      /** Payload received so far; `done` may count files instead of bytes. */
+      bytes: number;
+      unit: "items" | "bytes";
+    }
   | { kind: "running"; pid: number; plays_as: string; address?: string }
   | { kind: "exited"; pid: number; code: number | null; log_tail: string[] }
   | { kind: "failed"; code: string; message: string }
@@ -279,6 +300,10 @@ export const api = {
   selectAccount: (account: string | null) => invoke<void>("select_account", { account }),
   getSettings: () => invoke<Settings>("get_settings"),
   setSettings: (settings: Settings) => invoke<Settings>("set_settings", { settings }),
+  getHwid: () => invoke<HwidState>("get_hwid"),
+  setHwidAuto: (enabled: boolean) => invoke<HwidState>("set_hwid_auto", { enabled }),
+  regenerateHwid: () => invoke<HwidState>("regenerate_hwid"),
+  restoreHwid: () => invoke<HwidState>("restore_hwid"),
   toggleFavorite: (address: string) => invoke<string[]>("toggle_favorite", { address }),
   addFavorite: (address: string) => invoke<string[]>("add_favorite", { address }),
   raiseFavorite: (address: string) => invoke<string[]>("raise_favorite", { address }),

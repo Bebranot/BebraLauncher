@@ -124,6 +124,13 @@ export function stageText(stage: PlayStage): string {
   return t(`stage.${stage}` as Key);
 }
 
+/** A transfer speed in bits per second, shown in megabits per second. */
+export function formatSpeed(bitsPerSecond: number): string {
+  const bits = Number.isFinite(bitsPerSecond) && bitsPerSecond > 0 ? bitsPerSecond : 0;
+  const mbit = bits / 1e6;
+  return `${formatNumber(mbit, mbit < 10 ? 1 : 0)} ${t("unit.Mbit")}`;
+}
+
 /** A date in the interface language, not in the machine's locale (P2-48). */
 export function formatDate(iso: string): string {
   const d = typeof iso === "number" ? iso : parseTime(iso);

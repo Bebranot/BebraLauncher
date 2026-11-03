@@ -23,6 +23,9 @@ use tauri::Manager;
 use crate::game::GameState;
 use crate::settings::Settings;
 
+/// Above this much launcher data the start-up cleaning drops old builds (`auto_clean_cache`).
+const AUTO_CLEAN_BYTES: u64 = 5 * 1024 * 1024 * 1024;
+
 /// Locks a mutex, ignoring poisoning.
 ///
 /// A panic inside one command poisons its mutex; without this every later command would panic
@@ -92,6 +95,29 @@ fn main() {
     };
     // Installers of versions that are already installed are of no use.
     bebra_core::self_update::clean_installed(&state.dirs.root().join("updates"));
+
+    // Old builds are dropped at start once the data takes more than AUTO_CLEAN_BYTES. The
+    // cleaning holds the preparation slot: a launch arriving meanwhile (a redial that started
+    // this very process, an ss14:// link) is refused as busy instead of losing its engine or
+    // its scratch files to the cleaning.
+    if lock_or_recover(&state.settings).auto_clean_cache {
+        let dirs = state.dirs.clone();
+        let games = state.game.clone();
+        std::thread::spawn(move || {
+            let Some(_slot) = game::hold_slot(&games) else {
+                return;
+            };
+            if bebra_core::storage::report(&dirs).total() <= AUTO_CLEAN_BYTES {
+                return;
+            }
+            let result = bebra_core::content_db::ContentDb::open(&dirs.content_db())
+                .and_then(|db| bebra_core::storage::clean(&dirs, &db));
+            match result {
+                Ok(r) => applog::line(&format!("auto-clean freed {} bytes", r.bytes_freed)),
+                Err(e) => applog::line(&format!("auto-clean failed ({e})")),
+            }
+        });
+    }
 
     tauri::Builder::default()
         // Must be the first plugin. A second start (or the game's `--commands …` redial) is
@@ -164,6 +190,10 @@ fn main() {
             commands::diagnostics,
             commands::content_versions,
             commands::reset_settings,
+            commands::get_hwid,
+            commands::set_hwid_auto,
+            commands::regenerate_hwid,
+            commands::restore_hwid,
             commands::open_data_folder,
             commands::list_backgrounds,
             commands::save_background,

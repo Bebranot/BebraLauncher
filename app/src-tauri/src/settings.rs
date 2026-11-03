@@ -183,7 +183,8 @@ pub struct Settings {
     pub extra_args: String,
     /// Client patches (.dll files in patches folder) enabled by the user.
     pub enabled_patches: Vec<String>,
-    /// Client optimization profile: "off", "balanced", "max_fps", "potato", or "custom".
+    /// Client optimization profile: "standard", "balanced", "optimized" or "custom" (older names
+    /// are migrated in `sanitized`).
     pub opt_profile: String,
     /// Fast lighting: disable soft shadows and lighting blur.
     pub opt_fast_lighting: bool,
@@ -224,13 +225,33 @@ pub struct Settings {
     /// Scale factor for the launcher's own UI (percent, 75..=200).
     #[serde(default = "default_ui_scale")]
     pub launcher_ui_scale: u32,
+    /// Automatically clean old build cache if disk usage exceeds limit.
+    #[serde(default = "default_auto_clean_cache")]
+    pub auto_clean_cache: bool,
     /// Whether the user has dismissed the Intel 13th/14th Gen CPU degradation advisory.
     #[serde(default)]
     pub dismissed_intel_warning: bool,
+    /// Generate a new hardware ID before every game launch.
+    #[serde(default = "default_hwid_auto")]
+    pub hwid_auto: bool,
+    /// The hardware ID to report now (hex, 64 characters). `None` = the machine's own.
+    #[serde(default)]
+    pub hwid_current: Option<String>,
+    /// The value `hwid_current` had before the last change, so it can be restored.
+    #[serde(default)]
+    pub hwid_previous: Option<String>,
+}
+
+fn default_auto_clean_cache() -> bool {
+    true
 }
 
 fn default_ui_scale() -> u32 {
     100
+}
+
+fn default_hwid_auto() -> bool {
+    true
 }
 
 /// Configured server hub.
@@ -354,7 +375,7 @@ impl Default for Settings {
             guest_name: FALLBACK_USERNAME.to_string(),
             compat_mode: false,
             discord_rpc: true,
-            minimize_on_play: true,
+            minimize_on_play: false,
             theme: "dark".to_string(),
             theme_gradient: false,
             theme_decor: false,
@@ -394,7 +415,11 @@ impl Default for Settings {
             server_notes: std::collections::HashMap::new(),
             favorite_names: std::collections::HashMap::new(),
             launcher_ui_scale: 100,
+            auto_clean_cache: true,
             dismissed_intel_warning: false,
+            hwid_auto: default_hwid_auto(),
+            hwid_current: None,
+            hwid_previous: None,
         }
     }
 }
@@ -745,8 +770,21 @@ impl Settings {
             .trim()
             .to_string();
 
+        // Profiles of older versions map onto the current ones, so the options tab always has an
+        // entry to show: "potato" and "iskander" became "optimized", "off"/"none" became
+        // "standard", and "max_fps" (uncapped FPS without the lighting cuts) lives on as the
+        // same switches under "custom".
         match self.opt_profile.as_str() {
-            "off" | "none" | "balanced" | "max_fps" | "potato" | "iskander" | "custom" => {}
+            "standard" | "balanced" | "optimized" | "custom" => {}
+            "off" | "none" => self.opt_profile = "standard".to_string(),
+            "potato" | "iskander" => self.opt_profile = "optimized".to_string(),
+            "max_fps" => {
+                self.opt_profile = "custom".to_string();
+                self.opt_server_gc = true;
+                self.opt_fast_lighting = false;
+                self.opt_unlock_fps = true;
+                self.opt_high_priority = true;
+            }
             _ => self.opt_profile = "balanced".to_string(),
         }
 
@@ -790,6 +828,16 @@ impl Settings {
         }
 
         self.launcher_ui_scale = self.launcher_ui_scale.clamp(75, 200);
+
+        // A stored HWID must be exactly 32 bytes of hex; anything else is dropped rather than
+        // passed to the client patch.
+        let clean_hwid = |v: Option<String>| {
+            v.map(|s| s.trim().to_string())
+                .filter(|s| s.len() == 64 && s.chars().all(|c| c.is_ascii_hexdigit()))
+                .map(|s| s.to_ascii_lowercase())
+        };
+        self.hwid_current = clean_hwid(self.hwid_current);
+        self.hwid_previous = clean_hwid(self.hwid_previous);
 
         // Favourites are server addresses: one spelling each, no duplicates, and no more than
         // the list is ever asked to ping (P2-37).
@@ -856,37 +904,22 @@ impl Settings {
     /// Resolves the optimization profile into a concrete runtime configuration.
     pub fn optimization_config(&self) -> bebra_core::launch::OptimizationConfig {
         match self.opt_profile.as_str() {
-            "off" | "none" => bebra_core::launch::OptimizationConfig {
-                profile: "off".into(),
+            "standard" => bebra_core::launch::OptimizationConfig {
+                profile: "standard".into(),
                 server_gc: false,
                 fast_lighting: false,
                 unlock_fps: false,
                 high_priority: false,
                 light_resolution: None,
             },
-            "potato" => bebra_core::launch::OptimizationConfig {
-                profile: "potato".into(),
+            "optimized" => bebra_core::launch::OptimizationConfig {
+                profile: "optimized".into(),
                 server_gc: true,
                 fast_lighting: true,
-                unlock_fps: true,
+                // The profile caps the frame rate at 60 itself (`build_command`).
+                unlock_fps: false,
                 high_priority: true,
                 light_resolution: Some(0.35),
-            },
-            "iskander" => bebra_core::launch::OptimizationConfig {
-                profile: "iskander".into(),
-                server_gc: true,
-                fast_lighting: true,
-                unlock_fps: true,
-                high_priority: true,
-                light_resolution: Some(0.2),
-            },
-            "max_fps" => bebra_core::launch::OptimizationConfig {
-                profile: "max_fps".into(),
-                server_gc: true,
-                fast_lighting: false,
-                unlock_fps: true,
-                high_priority: true,
-                light_resolution: None,
             },
             "custom" => bebra_core::launch::OptimizationConfig {
                 profile: "custom".into(),
@@ -966,6 +999,12 @@ impl Settings {
             favorite_names: self.favorite_names.clone(),
             history: self.history.clone(),
             server_notes: self.server_notes.clone(),
+            // Changed by their own commands (`start_play`, `set_hwid_auto`,
+            // `regenerate_hwid`, `restore_hwid`) and possibly while the UI still holds an older
+            // snapshot: an unrelated save must not roll them back.
+            hwid_auto: self.hwid_auto,
+            hwid_current: self.hwid_current.clone(),
+            hwid_previous: self.hwid_previous.clone(),
             dismissed_intel_warning: pick(
                 &self.dismissed_intel_warning,
                 &seen.dismissed_intel_warning,
@@ -994,7 +1033,8 @@ mod tests {
     fn roundtrip_and_defaults() {
         let dir = tempdir();
         assert_eq!(Settings::load(&dir).guest_name, FALLBACK_USERNAME);
-        assert!(Settings::load(&dir).minimize_on_play);
+        assert!(!Settings::load(&dir).minimize_on_play);
+        assert!(Settings::load(&dir).auto_clean_cache);
 
         let s = Settings {
             guest_name: "Bebra".into(),
@@ -1175,6 +1215,18 @@ mod tests {
         }
         .sanitized();
         assert_eq!(bad.proxy, "");
+    }
+
+    #[test]
+    fn hwid_values_must_be_32_bytes_of_hex() {
+        let s = Settings {
+            hwid_current: Some("not a hardware id".into()),
+            hwid_previous: Some("AB".repeat(32)),
+            ..Settings::default()
+        }
+        .sanitized();
+        assert!(s.hwid_current.is_none(), "an unusable value is dropped");
+        assert_eq!(s.hwid_previous.as_deref(), Some("ab".repeat(32).as_str()));
     }
 
     #[test]
@@ -1406,25 +1458,18 @@ mod tests {
         assert!(!cfg.unlock_fps);
         assert!(cfg.high_priority);
 
-        s.opt_profile = "potato".into();
-        let cfg_potato = s.optimization_config();
-        assert_eq!(cfg_potato.profile, "potato");
-        assert!(cfg_potato.fast_lighting);
-        assert!(cfg_potato.unlock_fps);
-        assert_eq!(cfg_potato.light_resolution, Some(0.35));
+        s.opt_profile = "optimized".into();
+        let cfg_opt = s.optimization_config();
+        assert_eq!(cfg_opt.profile, "optimized");
+        assert!(cfg_opt.fast_lighting);
+        assert!(!cfg_opt.unlock_fps, "the profile caps at 60 on its own");
+        assert_eq!(cfg_opt.light_resolution, Some(0.35));
 
-        s.opt_profile = "iskander".into();
-        let cfg_iskander = s.optimization_config();
-        assert_eq!(cfg_iskander.profile, "iskander");
-        assert!(cfg_iskander.fast_lighting);
-        assert!(cfg_iskander.unlock_fps);
-        assert_eq!(cfg_iskander.light_resolution, Some(0.2));
-
-        s.opt_profile = "max_fps".into();
-        let cfg_fps = s.optimization_config();
-        assert_eq!(cfg_fps.profile, "max_fps");
-        assert!(!cfg_fps.fast_lighting);
-        assert!(cfg_fps.unlock_fps);
+        s.opt_profile = "standard".into();
+        let cfg_std = s.optimization_config();
+        assert_eq!(cfg_std.profile, "standard");
+        assert!(!cfg_std.server_gc);
+        assert!(!cfg_std.fast_lighting);
 
         s.opt_profile = "custom".into();
         s.opt_server_gc = false;
@@ -1441,6 +1486,28 @@ mod tests {
         s.opt_profile = "invalid_name".into();
         let san = s.sanitized();
         assert_eq!(san.opt_profile, "balanced");
+    }
+
+    #[test]
+    fn profiles_of_older_versions_are_migrated() {
+        let migrate = |profile: &str| {
+            Settings {
+                opt_profile: profile.into(),
+                ..Settings::default()
+            }
+            .sanitized()
+        };
+        assert_eq!(migrate("potato").opt_profile, "optimized");
+        assert_eq!(migrate("iskander").opt_profile, "optimized");
+        assert_eq!(migrate("off").opt_profile, "standard");
+        assert_eq!(migrate("none").opt_profile, "standard");
+
+        // "max_fps" keeps its behaviour as the same switches under "custom".
+        let fps = migrate("max_fps");
+        assert_eq!(fps.opt_profile, "custom");
+        let cfg = fps.optimization_config();
+        assert!(cfg.server_gc && cfg.unlock_fps && cfg.high_priority);
+        assert!(!cfg.fast_lighting);
     }
 
     #[test]
@@ -1668,10 +1735,13 @@ mod tests {
             bg_custom_name: Some("old.png".into()),
             ..Settings::default()
         };
-        // What the launcher has meanwhile: a patch was installed and the warning dismissed.
+        // What the launcher has meanwhile: a patch was installed, the warning dismissed and a
+        // new HWID generated before the last launch.
         let current = Settings {
             enabled_patches: vec!["a.dll".into(), "b.dll".into()],
             dismissed_intel_warning: true,
+            hwid_current: Some("ab".repeat(32)),
+            hwid_previous: Some("cd".repeat(32)),
             ..seen.clone()
         };
 
@@ -1686,6 +1756,15 @@ mod tests {
         assert!(merged.dismissed_intel_warning);
         assert_eq!(merged.enabled_patches, ["a.dll", "b.dll"]);
         assert_eq!(merged.schema_version, CURRENT_SCHEMA_VERSION);
+        assert_eq!(
+            merged.hwid_current.as_deref(),
+            Some("ab".repeat(32).as_str()),
+            "the UI's stale copy must not undo the HWID generated before a launch"
+        );
+        assert_eq!(
+            merged.hwid_previous.as_deref(),
+            Some("cd".repeat(32).as_str())
+        );
 
         // The UI turns a patch off and picks another background itself: those values differ
         // from what it was given, so they win over the current ones.

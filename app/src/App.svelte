@@ -14,7 +14,6 @@
   import UpdatesTab from "./lib/UpdatesTab.svelte";
   import ModsTab from "./lib/ModsTab.svelte";
   import Toast from "./lib/Toast.svelte";
-  import { promo } from "./lib/rofl.svelte";
   import { t } from "./lib/i18n.svelte";
   import { app } from "./lib/store.svelte";
 
@@ -59,10 +58,13 @@
     });
   });
 
+  const isLowSpec = $derived(app.settings?.opt_profile === "optimized");
+  $effect(() => {
+    document.body.classList.toggle("low-spec", isLowSpec);
+  });
+
   onMount(() => {
     void app.init();
-    // The joke sale's timer runs from the launch, whichever tab is open.
-    promo.start();
     // Scroll does not bubble, so the listener has to sit in the capture phase.
     pageHost?.addEventListener("scroll", onPageScroll, true);
   });

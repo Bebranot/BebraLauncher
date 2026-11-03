@@ -1,6 +1,6 @@
 # Дизайн: с чего начать (передача работы)
 
-Файл локальный (в gitignore). Нужен, чтобы в новом диалоге сразу работать с внешним видом.
+Точка входа для работы над внешним видом (файл в репозитории, `docs/**/*.md` не игнорируется).
 
 ## Как смотреть интерфейс
 
@@ -38,15 +38,16 @@ pnpm dev          # http://127.0.0.1:1420, вместо бэкенда подс�
 | Файл | За что отвечает |
 | --- | --- |
 | `app.css` | глобальные стили: переменные цветов, кнопки `.btn`, чекбоксы, поля, скроллбары, золотая линия `.gold-line`, `.rule` |
-| `lib/themes.ts` | палитры 8 тем, `deriveCustom` (своя тема), `backgroundFill` (градиент), `stripePattern` (узор), `applyTheme` ставит CSS-переменные |
+| `lib/themes.ts` | `PALETTES` (8 палитр), `DERIVED` (9 тем по четырём цветам), `deriveCustom` (своя тема), `backgroundFill` (градиент), `stripePattern` (узор), `applyTheme` ставит CSS-переменные |
 | `lib/store.svelte.ts` | всё состояние: вкладка, фильтры, сортировка, серверы, пинги, аккаунты, подключение, настройки (автосохранение через `updateSettings`) |
 | `lib/filters.ts` | поиск, фильтры (коды из официального лаунчера), сортировка, названия регионов и языков |
 | `lib/format.ts` | текст раунда, игроки, цвет пинга, `gridTemplate` (колонки таблицы), размеры, время |
 | `lib/i18n.svelte.ts`, `lib/locales/*`, `lib/languages.ts` | строки, языки, `t("ключ", {…})` |
 | `App.svelte` | каркас: Header, вкладка, TabBar, оверлей подключения, диалоги, Toast |
 | `lib/Header.svelte`, `Logo.svelte`, `AccountDropdown.svelte` | шапка, логотип (SVG), список аккаунтов |
-| `lib/TabBar.svelte` | вкладки (в шапке) |
-| `lib/ServersTab.svelte`, `FavoritesTab.svelte`, `RecentTab.svelte`, `NewsTab.svelte`, `OptionsTab.svelte` | вкладки |
+| `lib/TabBar.svelte` | вкладки внизу окна (рисуется в `App.svelte` после `main`) |
+| `lib/ServersTab.svelte`, `FavoritesTab.svelte`, `RecentTab.svelte`, `NewsTab.svelte`, `OptionsTab.svelte`, `ModsTab.svelte`, `UpdatesTab.svelte` | вкладки |
+| `lib/speed.ts` | скорость загрузки (бит/с) по скользящему окну байтового счётчика |
 | `lib/ServerTable.svelte`, `ServerEntry.svelte`, `FiltersPanel.svelte` | таблица, строка-экспандер, фильтры |
 | `lib/ConnectingOverlay.svelte`, `Toast.svelte`, `Modal.svelte`, `*Dialog.svelte`, `DialogHost.svelte` | окно подключения, уведомления, диалоги |
 | `lib/Icon.svelte`, `Option.svelte` | иконки (пути SVG), строка-чекбокс настроек |
@@ -68,7 +69,6 @@ pnpm dev          # http://127.0.0.1:1420, вместо бэкенда подс�
 - Колонка «Раунд» тикает раз в секунду для всех строк; при сотнях серверов можно ограничить видимыми.
 - Проверить светлую тему и «свою» тему на всех экранах (ConnectingOverlay, диалоги, Toast).
 - Таблица: нет виртуализации (180 строк работают, 1000+ может тормозить).
-- Скриншоты в панели браузера иногда падают по таймауту: повторять запрос.
 
 ## Ловушки
 

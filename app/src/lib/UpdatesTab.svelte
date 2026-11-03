@@ -2,9 +2,10 @@
   import { onMount } from "svelte";
   import { api, errorText } from "./api";
   import { inline, parseChangelog, parseGroups, type ChangeEntry, type ChangeGroup } from "./changelog";
-  import { formatBytes } from "./format";
+  import { formatBytes, formatSpeed } from "./format";
   import { t } from "./i18n.svelte";
   import Option from "./Option.svelte";
+  import { SpeedMeter } from "./speed";
   import { app } from "./store.svelte";
 
   const s = $derived(app.settings);
@@ -15,6 +16,26 @@
     u && u.phase === "downloading" && u.total > 0 ? Math.min(100, (u.done / u.total) * 100) : null,
   );
   const notes = $derived<ChangeGroup[]>(latest ? parseGroups(latest.notes.split(/\r?\n/)) : []);
+
+  // Speed, in bits per second, from the downloaded byte count; a new phase starts the meter over.
+  const meter = new SpeedMeter();
+  let speed = $state(0);
+  let lastPhase = "";
+  $effect(() => {
+    const st = u;
+    const now = st?.phase ?? "idle";
+    if (now !== lastPhase) {
+      lastPhase = now;
+      meter.reset();
+    }
+    if (st && now === "downloading") speed = meter.sample(st.done);
+    else speed = 0;
+  });
+  $effect(() => {
+    if (phase !== "downloading") return;
+    const timer = setInterval(() => (speed = meter.rate()), 1000);
+    return () => clearInterval(timer);
+  });
 
   // ------------------------------------------------------------ changelog
   let history = $state<ChangeEntry[]>([]);
@@ -65,7 +86,9 @@
           <b>{t("upd.downloading", { version: latest.version })}</b>
           <progress max="100" value={percent ?? undefined}></progress>
           {#if percent !== null && u}
-            <span class="sub small">{formatBytes(u.done)} / {formatBytes(u.total)} · {Math.round(percent)}%</span>
+            <span class="sub small">
+              {formatBytes(u.done)} / {formatBytes(u.total)} · {Math.round(percent)}%{#if speed > 0} · {formatSpeed(speed)}{/if}
+            </span>
           {/if}
         </div>
       {:else if phase === "ready" && latest}

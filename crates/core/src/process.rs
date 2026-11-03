@@ -67,6 +67,19 @@ pub fn is_process_running_from(pid: u32, image_path: &str) -> bool {
     process_state(pid, image_path) == ProcessState::Alive
 }
 
+/// Trims the process working set to minimize memory usage while the game is running.
+#[cfg(windows)]
+pub fn trim_working_set() {
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, SetProcessWorkingSetSize};
+    unsafe {
+        SetProcessWorkingSetSize(GetCurrentProcess(), usize::MAX, usize::MAX);
+    }
+}
+
+/// Non-Windows dummy for trimming process working set.
+#[cfg(not(windows))]
+pub fn trim_working_set() {}
+
 #[cfg(all(test, windows))]
 mod tests {
     use super::*;

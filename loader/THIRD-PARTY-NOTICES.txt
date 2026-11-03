@@ -54,7 +54,7 @@ Robust.Natives 0.2.5 and the native packages it brings in:
         Licence: BSD-3-Clause
     Source: https://github.com/space-wizards/Robust.Natives
 
-Lib.Harmony 2.3.5 (0Harmony.dll)
+Lib.Harmony 2.4.3 (0Harmony.dll)
     Source: https://github.com/pardeike/Harmony
     Licence: MIT
 

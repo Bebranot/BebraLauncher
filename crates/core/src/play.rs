@@ -97,6 +97,8 @@ pub struct PlayRequest {
     pub extra_args: Vec<String>,
     /// Client patch assemblies (.dll) to load.
     pub patches: Vec<PathBuf>,
+    /// Hardware ID the client patch should report instead of the machine's own.
+    pub hwid: Option<crate::hwid::HwidOverride>,
     /// Client performance and optimization settings.
     pub optimization: launch::OptimizationConfig,
 }
@@ -335,6 +337,7 @@ pub async fn prepare(
         overlay_zip: req.overlay_zip.clone(),
         extra_args: req.extra_args.clone(),
         patches: req.patches.clone(),
+        hwid: req.hwid.clone(),
         optimization: req.optimization.clone(),
     };
 
@@ -362,6 +365,7 @@ fn check_auth(
     }
 }
 
+/// Bytes the caller may use on the volume of `path`.
 #[cfg(windows)]
 fn free_disk_space_bytes(path: &std::path::Path) -> Option<u64> {
     use std::os::windows::ffi::OsStrExt;

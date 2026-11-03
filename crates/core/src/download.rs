@@ -57,6 +57,9 @@ pub enum ProgressUnit {
 pub struct Progress {
     pub done: u64,
     pub total: u64,
+    /// Payload received over the network so far, whatever `unit` counts; the UI derives the
+    /// speed from it. Stays 0 for stages that only work on local files.
+    pub bytes: u64,
     pub unit: ProgressUnit,
 }
 
@@ -162,6 +165,7 @@ async fn download_to_file_limited(
             p(Progress {
                 done,
                 total,
+                bytes: done,
                 unit: ProgressUnit::Bytes,
             });
         }
@@ -366,6 +370,7 @@ async fn read_files<R: AsyncRead + Unpin>(
     let total = indices.len() as u64;
     let mut batch = BlobBatch::default();
     let mut stream_bytes = 0u64;
+    let mut received = 0u64;
 
     for (n, &index) in indices.iter().enumerate() {
         match read_one_file(
@@ -374,6 +379,7 @@ async fn read_files<R: AsyncRead + Unpin>(
             index,
             pre_compressed,
             &mut stream_bytes,
+            &mut received,
             &mut batch,
         )
         .await
@@ -395,6 +401,7 @@ async fn read_files<R: AsyncRead + Unpin>(
             p(Progress {
                 done: n as u64 + 1,
                 total,
+                bytes: received,
                 unit: ProgressUnit::Items,
             });
         }
@@ -410,6 +417,7 @@ async fn read_one_file<R: AsyncRead + Unpin>(
     index: usize,
     pre_compressed: bool,
     stream_bytes: &mut u64,
+    received: &mut u64,
     batch: &mut BlobBatch,
 ) -> Result<()> {
     let entry = manifest
@@ -427,6 +435,12 @@ async fn read_one_file<R: AsyncRead + Unpin>(
     check_blob_len(&entry.path, compressed_len)?;
 
     *stream_bytes += (len + compressed_len) as u64;
+    // What actually crosses the wire: the packed form when there is one, for the speed shown.
+    *received += (if compressed_len > 0 {
+        compressed_len
+    } else {
+        len
+    }) as u64;
     if *stream_bytes > MAX_STREAM_BYTES {
         return Err(Error::Other(
             "blob download is larger than the size limit".into(),

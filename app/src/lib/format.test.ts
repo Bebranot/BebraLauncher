@@ -5,6 +5,7 @@ import {
   formatClock,
   formatMinutes,
   formatPlayed,
+  formatSpeed,
   gridTemplate,
   pingClass,
   playersText,
@@ -138,5 +139,17 @@ describe("formatBytes", () => {
     expect(formatBytes(1536)).toBe("1.5 KB");
     expect(formatBytes(150 * 1024 * 1024)).toBe("150 MB");
     expect(formatBytes(2.5 * 1024 ** 3)).toBe("2.5 GB");
+  });
+});
+
+describe("formatSpeed", () => {
+  it("shows megabits per second, with a decimal below ten", () => {
+    expect(formatSpeed(8_000_000)).toBe("8.0 Mbit/s");
+    expect(formatSpeed(125_000_000)).toBe("125 Mbit/s");
+  });
+
+  it("never shows a negative or made-up speed", () => {
+    expect(formatSpeed(-5)).toBe("0.0 Mbit/s");
+    expect(formatSpeed(Number.NaN)).toBe("0.0 Mbit/s");
   });
 });

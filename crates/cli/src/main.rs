@@ -541,6 +541,7 @@ async fn run() -> Result<()> {
                 overlay_zip: None,
                 extra_args: Vec::new(),
                 patches: Vec::new(),
+                hwid: None,
                 optimization: bebra_core::launch::OptimizationConfig::default(),
             };
             let printer = ProgressPrinter::new("files");

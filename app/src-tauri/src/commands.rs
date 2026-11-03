@@ -707,7 +707,21 @@ pub fn start_play(
     preview: bool,
 ) -> CmdResult<()> {
     let addr = ServerAddr::parse(address).map_err(err)?;
-    let settings = settings_lock(state).clone();
+    let mut settings = settings_lock(state).clone();
+
+    // A new HWID before every launch, or the one the player set by hand. The value the previous
+    // launch used is kept so a bad ID can be rolled back.
+    if settings.hwid_auto {
+        let fresh = bebra_core::hwid::HwidOverride::random();
+        let previous = settings.hwid_current.replace(fresh.legacy.clone());
+        settings.hwid_previous = previous;
+        let mut saved = settings_lock(state);
+        saved.hwid_current = settings.hwid_current.clone();
+        saved.hwid_previous = settings.hwid_previous.clone();
+        if let Err(e) = saved.save(state.dirs.root()) {
+            crate::applog::line(&format!("cannot save the generated HWID ({e})"));
+        }
+    }
 
     let resolved = bebra_core::patches::resolve_verified(&state.dirs, &settings.enabled_patches);
     if !resolved.rejected.is_empty() {
@@ -717,7 +731,24 @@ pub fn start_play(
             resolved.rejected.join(", ")
         ));
     }
-    let patches = resolved.paths;
+    let hwid = settings
+        .hwid_current
+        .as_deref()
+        .and_then(bebra_core::hwid::HwidOverride::from_legacy_hex);
+    let patches = {
+        let mut paths = resolved.paths;
+        if hwid.is_some() {
+            match bebra_core::launch::bundled_hwid_patch() {
+                Some(path) if !paths.contains(&path) => paths.push(path),
+                Some(_) => {}
+                None => crate::applog::line(
+                    "HWID is set, but Bebra.HwidPatch.dll is missing next to the Loader; \
+                     the client will report the machine's own ID",
+                ),
+            }
+        }
+        paths
+    };
     let optimization = settings.optimization_config();
 
     game::start(
@@ -740,6 +771,7 @@ pub fn start_play(
             enabled_packs: settings.enabled_packs,
             extra_args: settings.extra_args,
             patches,
+            hwid,
             optimization,
             preview,
             verbose: settings.verbose_log,
@@ -1207,6 +1239,64 @@ pub async fn content_versions(state: State<'_, AppState>) -> CmdResult<Vec<Versi
     })
     .await
     .map_err(err)?
+}
+
+/// The HWID part of the settings, as the options tab shows it.
+#[derive(Serialize)]
+pub struct HwidState {
+    /// A new HWID is generated before every launch.
+    pub auto: bool,
+    /// The value the next launch will report (hex), or `None` for the machine's own.
+    pub current: Option<String>,
+    /// The value before the last change, for rolling back.
+    pub previous: Option<String>,
+    /// This build ships the client patch that applies the value.
+    pub patch: bool,
+}
+
+fn hwid_state(s: &Settings) -> HwidState {
+    HwidState {
+        auto: s.hwid_auto,
+        current: s.hwid_current.clone(),
+        previous: s.hwid_previous.clone(),
+        patch: bebra_core::launch::bundled_hwid_patch().is_some(),
+    }
+}
+
+#[tauri::command]
+pub fn get_hwid(state: State<'_, AppState>) -> HwidState {
+    hwid_state(&settings_lock(&state))
+}
+
+/// Turns the automatic change on or off. The current value stays as it is.
+#[tauri::command]
+pub fn set_hwid_auto(state: State<'_, AppState>, enabled: bool) -> CmdResult<HwidState> {
+    let mut settings = settings_lock(&state);
+    settings.hwid_auto = enabled;
+    settings.save(state.dirs.root()).map_err(err)?;
+    Ok(hwid_state(&settings))
+}
+
+/// Generates a new HWID now. The old one is kept so it can be restored.
+#[tauri::command]
+pub fn regenerate_hwid(state: State<'_, AppState>) -> CmdResult<HwidState> {
+    let mut settings = settings_lock(&state);
+    let fresh = bebra_core::hwid::HwidOverride::random();
+    settings.hwid_previous = settings.hwid_current.replace(fresh.legacy);
+    settings.save(state.dirs.root()).map_err(err)?;
+    Ok(hwid_state(&settings))
+}
+
+/// Puts back the HWID that was used before the last change.
+#[tauri::command]
+pub fn restore_hwid(state: State<'_, AppState>) -> CmdResult<HwidState> {
+    let mut settings = settings_lock(&state);
+    let Some(previous) = settings.hwid_previous.take() else {
+        return Err("Предыдущего HWID нет".into());
+    };
+    settings.hwid_current = Some(previous);
+    settings.save(state.dirs.root()).map_err(err)?;
+    Ok(hwid_state(&settings))
 }
 
 /// Puts every option back to its default. Favourites, their custom names, server notes,

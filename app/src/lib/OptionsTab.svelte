@@ -1,10 +1,11 @@
-﻿<script lang="ts">
+<script lang="ts">
   import { onMount } from "svelte";
   import {
     api,
     errorText,
     type BackgroundRow,
     type DiagRow,
+    type HwidState,
     type PackRow,
     type PatchRow,
     type RecommendedHub,
@@ -15,6 +16,7 @@
   import { t, type Key } from "./i18n.svelte";
   import { nativeName, UI_LANGUAGES } from "./languages";
   import ErpPromo from "./ErpPromo.svelte";
+  import { promo } from "./rofl.svelte";
   import Modal from "./Modal.svelte";
   import Option from "./Option.svelte";
   import { app } from "./store.svelte";
@@ -28,6 +30,29 @@
 
   const s = $derived(app.settings);
 
+  // ------------------------------------------------------------ Wiki-style TOC navigation
+  const sections: { id: string; labelKey: Key }[] = [
+    { id: "opt-general", labelKey: "opt.toc.general" },
+    { id: "opt-client", labelKey: "opt.toc.client" },
+    { id: "opt-hwid", labelKey: "opt.toc.hwid" },
+    { id: "opt-optimization", labelKey: "opt.toc.optimization" },
+    { id: "opt-appearance", labelKey: "opt.toc.appearance" },
+    { id: "opt-hubs", labelKey: "opt.toc.hubs" },
+    { id: "opt-mods", labelKey: "opt.toc.mods" },
+    { id: "opt-storage", labelKey: "opt.toc.storage" },
+    { id: "opt-config", labelKey: "opt.toc.config" },
+    { id: "opt-about", labelKey: "opt.toc.about" },
+  ];
+
+  let activeSection = $state("opt-general");
+
+  function scrollToSection(id: string) {
+    activeSection = id;
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
   // ------------------------------------------------------------ Windows integration
   let autostart = $state(false);
   let links = $state(false);
@@ -35,12 +60,35 @@
   let recommendedHubs = $state<RecommendedHub[]>([]);
 
   onMount(() => {
+    promo.checkSettingsVisit();
     void api.getAutostart().then((v) => (autostart = v)).catch(() => {});
     void api.getLinksRegistered().then((v) => (links = v)).catch(() => {});
     void api.getRecommendedHubs().then((r) => (recommendedHubs = r)).catch(() => {});
     void loadPacks();
     void loadPatches();
     void loadStorage();
+    void loadHwid();
+
+    const rootEl = document.querySelector(".tab[data-scroll]");
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) {
+            activeSection = entry.target.id;
+          }
+        }
+      },
+      { root: rootEl, rootMargin: "-5% 0px -65% 0px", threshold: 0 }
+    );
+
+    for (const sec of sections) {
+      const el = document.getElementById(sec.id);
+      if (el) observer.observe(el);
+    }
+
+    return () => {
+      observer.disconnect();
+    };
   });
 
   async function setAutostart(on: boolean) {
@@ -58,6 +106,41 @@
     } catch (e) {
       app.say(errorText(e));
       links = !on;
+    }
+  }
+
+  // ------------------------------------------------------------ hardware id
+  let hwid = $state<HwidState | null>(null);
+  let hwidBusy = $state(false);
+
+  async function loadHwid() {
+    try {
+      hwid = await api.getHwid();
+    } catch (e) {
+      app.say(errorText(e));
+    }
+  }
+
+  /** Runs one HWID command and takes the answer as the new state. */
+  async function changeHwid(command: () => Promise<HwidState>) {
+    if (hwidBusy) return;
+    hwidBusy = true;
+    try {
+      hwid = await command();
+    } catch (e) {
+      app.say(errorText(e));
+    } finally {
+      hwidBusy = false;
+    }
+  }
+
+  async function copyHwid() {
+    if (!hwid?.current) return;
+    try {
+      await navigator.clipboard.writeText(hwid.current);
+      app.say(t("opt.hwidCopied"));
+    } catch (e) {
+      app.say(errorText(e));
     }
   }
 
@@ -472,33 +555,17 @@
   let showOptDetails = $state(false);
 
   function setOptimizationProfile(profile: string) {
-    if (profile === "iskander") {
+    if (profile === "optimized") {
       app.updateSettings({
-        opt_profile: "iskander",
+        opt_profile: "optimized",
         opt_server_gc: true,
         opt_fast_lighting: true,
-        opt_unlock_fps: true,
+        opt_unlock_fps: false,
         opt_high_priority: true,
       });
-    } else if (profile === "potato") {
+    } else if (profile === "standard") {
       app.updateSettings({
-        opt_profile: "potato",
-        opt_server_gc: true,
-        opt_fast_lighting: true,
-        opt_unlock_fps: true,
-        opt_high_priority: true,
-      });
-    } else if (profile === "max_fps") {
-      app.updateSettings({
-        opt_profile: "max_fps",
-        opt_server_gc: true,
-        opt_fast_lighting: false,
-        opt_unlock_fps: true,
-        opt_high_priority: true,
-      });
-    } else if (profile === "off" || profile === "none") {
-      app.updateSettings({
-        opt_profile: "off",
+        opt_profile: "standard",
         opt_server_gc: false,
         opt_fast_lighting: false,
         opt_unlock_fps: false,
@@ -527,28 +594,57 @@
 
   function getProfileDescription(profile: string): string {
     switch (profile) {
-      case "iskander":
-        return t("opt.profile.iskanderDesc");
-      case "potato":
-        return t("opt.profile.potatoDesc");
-      case "max_fps":
-        return t("opt.profile.max_fpsDesc");
-      case "off":
-      case "none":
-        return t("opt.profile.offDesc");
+      case "optimized":
+        return t("opt.profile.optimizedDesc");
+      case "standard":
+        return t("opt.profile.standardDesc");
       case "custom":
         return t("opt.profile.customDesc");
       default:
         return t("opt.profile.balancedDesc");
     }
   }
+
+  function handleConfigFileImport(e: Event) {
+    const input = e.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === "string") {
+        void app.importConfigJson(reader.result);
+      }
+      input.value = "";
+    };
+    reader.readAsText(file);
+  }
 </script>
 
 {#if s}
   <div class="tab" data-scroll>
+    <div class="options-layout">
+      <aside class="options-sidebar" aria-label={t("opt.toc.label")}>
+        <div class="toc-sticky">
+          <div class="toc-header">{t("opt.toc.title")}</div>
+          <nav class="toc-nav">
+            {#each sections as sec (sec.id)}
+              <button
+                type="button"
+                class="toc-item"
+                class:active={activeSection === sec.id}
+                onclick={() => scrollToSection(sec.id)}
+              >
+                <span class="toc-indicator"></span>
+                <span class="toc-label">{t(sec.labelKey)}</span>
+              </button>
+            {/each}
+          </nav>
+        </div>
+      </aside>
 
-    <!-- ------------------------------------------------------------ general -->
-    <section>
+      <div class="options-content">
+        <!-- ------------------------------------------------------------ general -->
+        <section id="opt-general">
       <h2>{t("opt.general")}</h2>
 
       <label class="field">
@@ -622,7 +718,7 @@
     </section>
 
     <!-- ------------------------------------------------------------ client -->
-    <section>
+    <section id="opt-client">
       <h2>{t("opt.client")}</h2>
       <p class="sub">{t("opt.clientDesc")}</p>
 
@@ -719,8 +815,48 @@
       </label>
     </section>
 
+    <!-- ------------------------------------------------------------ hardware id -->
+    <section id="opt-hwid">
+      <h2>{t("opt.hwid")}</h2>
+      <p class="sub">{t("opt.hwidDesc")}</p>
+
+      {#if hwid}
+        <Option
+          label={t("opt.hwidAuto")}
+          hint={t("opt.hwidAutoHint")}
+          checked={hwid.auto}
+          onchange={(v) => changeHwid(() => api.setHwidAuto(v))}
+        />
+
+        <div class="field">
+          <span>{t("opt.hwidCurrent")}</span>
+          <code class="hwid-value">{hwid.current ?? t("opt.hwidNone")}</code>
+          <div class="hwid-actions">
+            <button class="btn" onclick={copyHwid} disabled={!hwid.current}>
+              {t("opt.hwidCopy")}
+            </button>
+            <button class="btn" onclick={() => changeHwid(api.regenerateHwid)} disabled={hwidBusy}>
+              {t("opt.hwidRegenerate")}
+            </button>
+            <button
+              class="btn"
+              onclick={() => changeHwid(api.restoreHwid)}
+              disabled={hwidBusy || !hwid.previous}
+            >
+              {t("opt.hwidRestore")}
+            </button>
+          </div>
+          {#if !hwid.patch}
+            <small class="sub">{t("opt.hwidNoPatch")}</small>
+          {/if}
+        </div>
+      {:else}
+        <p class="sub">{t("opt.hwidLoading")}</p>
+      {/if}
+    </section>
+
     <!-- ------------------------------------------------------------ optimization -->
-    <section>
+    <section id="opt-optimization">
       <h2>{t("opt.optimization")}</h2>
       <p class="sub">{t("opt.optProfileDesc")}</p>
 
@@ -731,10 +867,8 @@
           onchange={(e) => setOptimizationProfile(e.currentTarget.value)}
         >
           <option value="balanced">{t("opt.profile.balanced")}</option>
-          <option value="max_fps">{t("opt.profile.max_fps")}</option>
-          <option value="potato">{t("opt.profile.potato")}</option>
-          <option value="iskander">{t("opt.profile.iskander")}</option>
-          <option value="off">{t("opt.profile.off")}</option>
+          <option value="optimized">{t("opt.profile.optimized")}</option>
+          <option value="standard">{t("opt.profile.standard")}</option>
           <option value="custom">{t("opt.profile.custom")}</option>
         </select>
         <small class="sub">{getProfileDescription(s.opt_profile)}</small>
@@ -781,7 +915,7 @@
     <ErpPromo />
 
     <!-- ------------------------------------------------------------ appearance -->
-    <section>
+    <section id="opt-appearance">
       <h2>{t("opt.appearance")}</h2>
 
       <label class="field">
@@ -964,8 +1098,8 @@
       {/if}
     </section>
 
-    <!-- ------------------------------------------------------------ server list -->
-    <section>
+    <!-- ------------------------------------------------------------ server list & hubs -->
+    <section id="opt-hubs">
       <h2>{t("opt.list")}</h2>
       <div class="columns">
         {#each COLUMNS as [key, label]}
@@ -1066,8 +1200,8 @@
       {/if}
     </section>
 
-    <!-- ------------------------------------------------------------ text packs -->
-    <section>
+    <!-- ------------------------------------------------------------ text packs & mods -->
+    <section id="opt-mods">
       <h2>{t("opt.packs")}</h2>
       <p class="sub">{t("opt.packsDesc")}</p>
 
@@ -1149,7 +1283,7 @@
     </section>
 
     <!-- ------------------------------------------------------------ data -->
-    <section>
+    <section id="opt-storage">
       <h2>{t("opt.storage")}</h2>
       {#if storage}
         <div>{t("opt.storageTotal", { size: formatBytes(storage.total) })}</div>
@@ -1162,6 +1296,12 @@
           })}
         </small>
       {/if}
+      <Option
+        label={t("opt.autoCleanCache")}
+        hint={t("opt.autoCleanCacheDesc")}
+        checked={s.auto_clean_cache ?? true}
+        onchange={(v) => app.updateSettings({ auto_clean_cache: v })}
+      />
       <div class="row">
         <button class="btn" onclick={clean} disabled={cleaning || cleaningAll || app.isGameBusy}>
           {cleaning ? t("opt.cleaning") : t("opt.clean")}
@@ -1174,8 +1314,26 @@
       </div>
     </section>
 
+    <!-- ------------------------------------------------------------ configuration -->
+    <section id="opt-config" class="card">
+      <h2>{t("opt.configTitle")}</h2>
+      <p class="sub">{t("opt.configDesc")}</p>
+      <div class="row config-actions">
+        <button class="btn" onclick={() => app.downloadConfigFile()}>
+          {t("opt.exportFile")}
+        </button>
+        <button class="btn" onclick={() => void app.copyConfigToClipboard()}>
+          {t("opt.copyClipboard")}
+        </button>
+        <label class="btn file-btn">
+          {t("opt.importFile")}
+          <input type="file" accept=".json" onchange={handleConfigFileImport} class="hidden-input" />
+        </label>
+      </div>
+    </section>
+
     <!-- ------------------------------------------------------------ about -->
-    <section>
+    <section id="opt-about">
       <h2>{t("opt.about")}</h2>
       <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
       <div class="version" onclick={versionClicked} title={debug ? "" : t("opt.hiddenHint")}>
@@ -1278,6 +1436,9 @@
       </section>
     {/if}
 
+      </div> <!-- .options-content -->
+    </div> <!-- .options-layout -->
+
     {#if pendingDeleteBg}
       <Modal title={t("opt.bgDeleteTitle")} onclose={() => (pendingDeleteBg = null)}>
         <div class="bg-delete">
@@ -1297,6 +1458,131 @@
 {/if}
 
 <style>
+  .options-layout {
+    display: flex;
+    flex-direction: row;
+    align-items: flex-start;
+    gap: 32px;
+    width: 100%;
+    max-width: 1040px;
+    margin: 0 auto;
+  }
+  .options-sidebar {
+    width: 210px;
+    flex-shrink: 0;
+    position: sticky;
+    top: 0;
+    align-self: flex-start;
+    z-index: 5;
+  }
+  .toc-sticky {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    background: var(--tint);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 12px 10px;
+    max-height: calc(100vh - 100px);
+    overflow-y: auto;
+  }
+  .toc-header {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--muted);
+    padding: 2px 8px 6px;
+    border-bottom: 1px solid var(--line);
+    margin-bottom: 2px;
+  }
+  .toc-nav {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .toc-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 6px 8px;
+    border: none;
+    background: transparent;
+    border-radius: var(--radius-sm);
+    color: var(--sub);
+    font-size: 13px;
+    font-weight: 500;
+    text-align: left;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  .toc-item:hover {
+    background: var(--tint-hover);
+    color: var(--fg);
+  }
+  .toc-item.active {
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-weight: 600;
+  }
+  .toc-indicator {
+    width: 3px;
+    height: 14px;
+    border-radius: 2px;
+    background: transparent;
+    transition: background 0.15s ease;
+  }
+  .toc-item.active .toc-indicator {
+    background: var(--accent);
+  }
+  .options-content {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 14px;
+  }
+  .config-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: center;
+  }
+  .file-btn {
+    position: relative;
+    cursor: pointer;
+    overflow: hidden;
+  }
+  .hidden-input {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    cursor: pointer;
+    width: 100%;
+    height: 100%;
+  }
+  @media (max-width: 768px) {
+    .options-layout {
+      flex-direction: column;
+      gap: 16px;
+    }
+    .options-sidebar {
+      width: 100%;
+    }
+    .toc-sticky {
+      position: static;
+    }
+    .toc-nav {
+      flex-direction: row;
+      flex-wrap: wrap;
+    }
+    .toc-item {
+      width: auto;
+    }
+  }
+
   .tab {
     height: 100%;
     overflow-y: auto;
@@ -1428,6 +1714,20 @@
   }
   .code {
     font-family: "Cascadia Mono", Consolas, monospace;
+  }
+  .hwid-value {
+    font-family: "Cascadia Mono", Consolas, monospace;
+    font-size: 13px;
+    overflow-wrap: anywhere;
+    padding: 6px 8px;
+    background: var(--tint);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+  }
+  .hwid-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
   }
   .hubs {
     list-style: none;

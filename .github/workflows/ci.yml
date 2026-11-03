@@ -78,6 +78,14 @@ jobs:
       - name: Build Loader
         run: dotnet build loader/SS14.Loader/SS14.Loader.csproj -c Release -warnaserror --no-restore
 
+      # The HWID patch ships inside the installer and is loaded into the client; it lives in its
+      # own project, so a compile error here would only surface when building a release.
+      - name: Restore HWID patch (locked)
+        run: dotnet restore loader/Bebra.HwidPatch/Bebra.HwidPatch.csproj --locked-mode
+
+      - name: Build HWID patch
+        run: dotnet build loader/Bebra.HwidPatch/Bebra.HwidPatch.csproj -c Release -warnaserror --no-restore
+
       # NuGet audit across direct and transitive packages. `dotnet package list` exits 0 even
       # when it finds something, so the JSON is checked explicitly.
       - name: Check packages for known vulnerabilities

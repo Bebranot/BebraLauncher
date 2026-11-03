@@ -3,15 +3,14 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using System.Runtime.Loader;
-using HarmonyLib;
 
 namespace SS14.Loader;
 
 internal static class PatchManager
 {
     private static readonly object _lock = new();
-    private static Harmony? _harmony;
     private static readonly List<Assembly> _loadedPatches = new();
     private static readonly HashSet<Type> _initializedEntryPoints = new();
     private static readonly HashSet<Type> _executedPostInit = new();
@@ -55,17 +54,21 @@ internal static class PatchManager
             AppDomain.CurrentDomain.AssemblyResolve += OnAssemblyResolve;
             AssemblyLoadContext.Default.Resolving += OnAlResolving;
             AppDomain.CurrentDomain.AssemblyLoad += OnAssemblyLoad;
-
-            _harmony = new Harmony("BebraLauncher.ClientPatcher");
         }
 
-        Console.WriteLine("[BebraLoader] Initializing patch manager with {0} patch(es)...", patchPaths.Length);
+        PatchLog.Write("[BebraLoader] Initializing patch manager with {0} patch(es)...", patchPaths.Length);
+
+        // The engine's GameController static constructor kills the process when 0Harmony is
+        // already loaded. It only runs once, so run it now, before Harmony exists, and load
+        // Harmony afterwards. HarmonyBridge is the only type that touches HarmonyLib.
+        RunEngineHarmonyGuard(clientAssembly);
+        HarmonyBridge.Create("BebraLauncher.ClientPatcher");
 
         foreach (var path in patchPaths)
         {
             if (!File.Exists(path))
             {
-                Console.WriteLine("[BebraLoader] Warning: patch file not found: {0}", path);
+                PatchLog.Write("[BebraLoader] Warning: patch file not found: {0}", path);
                 continue;
             }
 
@@ -87,16 +90,50 @@ internal static class PatchManager
                     _loadedPatches.Add(asm);
                 }
 
-                Console.WriteLine("[BebraLoader] Loaded patch assembly: {0} ({1})", asm.GetName().Name, path);
+                PatchLog.Write("[BebraLoader] Loaded patch assembly: {0} ({1})", asm.GetName().Name, path);
                 EnqueuePatch(asm);
             }
             catch (Exception ex)
             {
-                Console.WriteLine("[BebraLoader] Error loading patch {0}: {1}", path, ex);
+                PatchLog.Write("[BebraLoader] Error loading patch {0}: {1}", path, ex);
             }
 
             // Run the patch outside the lock, right after it is loaded.
             ProcessPendingPatches();
+        }
+    }
+
+    /// <summary>
+    /// Runs the engine's anti-Harmony static constructor before Harmony is loaded.
+    /// </summary>
+    /// <remarks>
+    /// <c>Robust.Client.GameController..cctor</c> looks through
+    /// <see cref="AppDomain.GetAssemblies"/> and, when it finds an assembly named
+    /// <c>0Harmony</c>, writes zeroes through an invalid pointer. The resulting
+    /// <see cref="AccessViolationException"/> is fatal for the process, so a launcher that loads
+    /// Harmony before the game starts can never open the client.
+    /// <para>
+    /// A static constructor runs at most once, so triggering it here — while no Harmony assembly
+    /// has been loaded yet — makes the later load harmless. This is why
+    /// <see cref="HarmonyBridge"/> must stay untouched until after this call.
+    /// </para>
+    /// </remarks>
+    private static void RunEngineHarmonyGuard(Assembly clientAssembly)
+    {
+        var guardType = clientAssembly.GetType("Robust.Client.GameController", throwOnError: false);
+        if (guardType == null)
+        {
+            PatchLog.Write("[BebraLoader] GameController not found; Harmony guard not run");
+            return;
+        }
+
+        try
+        {
+            RuntimeHelpers.RunClassConstructor(guardType.TypeHandle);
+        }
+        catch (Exception ex)
+        {
+            PatchLog.Write("[BebraLoader] Failed to run the engine's Harmony guard early: {0}", ex.Message);
         }
     }
 
@@ -134,7 +171,7 @@ internal static class PatchManager
             }
             catch (Exception ex)
             {
-                Console.WriteLine("[BebraLoader] Error updating patch {0}: {1}", patch.GetName().Name, ex);
+                PatchLog.Write("[BebraLoader] Error updating patch {0}: {1}", patch.GetName().Name, ex);
             }
             finally
             {
@@ -240,7 +277,7 @@ internal static class PatchManager
         if (!relevant)
             return;
 
-        Console.WriteLine("[BebraLoader] Game assembly loaded: {0}, updating patches...", name);
+        PatchLog.Write("[BebraLoader] Game assembly loaded: {0}, updating patches...", name);
         // Executed outside the lock: this is where third-party code runs.
         ProcessPendingPatches();
     }
@@ -263,7 +300,7 @@ internal static class PatchManager
 
     private static void ApplyPendingPatches(Assembly patch)
     {
-        if (_harmony == null) return;
+        if (!HarmonyBridge.IsReady) return;
 
         foreach (var type in GetSafeTypes(patch))
         {
@@ -288,20 +325,19 @@ internal static class PatchManager
 
             try
             {
-                var processor = _harmony.CreateClassProcessor(type);
-                var methods = processor.Patch();
+                var patched = HarmonyBridge.ApplyPatches(type);
 
                 // Patch() returning nothing means Harmony considered the class handled (usually
                 // no matching target). Retrying it on every AssemblyLoad only burned time.
                 _appliedPatchTypes.Add(type);
 
-                if (methods != null && methods.Count > 0)
+                if (patched > 0)
                 {
-                    Console.WriteLine("[BebraLoader] Applied Harmony patch {0} ({1} method(s) patched)", type.Name, methods.Count);
+                    PatchLog.Write("[BebraLoader] Applied Harmony patch {0} ({1} method(s) patched)", type.Name, patched);
                 }
                 else
                 {
-                    Console.WriteLine("[BebraLoader] Harmony patch {0} has no methods to patch, marked as processed", type.Name);
+                    PatchLog.Write("[BebraLoader] Harmony patch {0} has no methods to patch, marked as processed", type.Name);
                 }
             }
             catch (Exception ex)
@@ -314,12 +350,12 @@ internal static class PatchManager
                 if (count >= MaxAttempts)
                 {
                     _appliedPatchTypes.Add(type);
-                    Console.WriteLine("[BebraLoader] Harmony patch {0} failed {1} times, giving up: {2}",
+                    PatchLog.Write("[BebraLoader] Harmony patch {0} failed {1} times, giving up: {2}",
                         type.Name, count, ex.Message);
                 }
                 else
                 {
-                    Console.WriteLine("[BebraLoader] Harmony patch deferred for {0} ({1}/{2}): {3}",
+                    PatchLog.Write("[BebraLoader] Harmony patch deferred for {0} ({1}/{2}): {3}",
                         type.Name, count, MaxAttempts, ex.Message);
                 }
             }
@@ -335,7 +371,7 @@ internal static class PatchManager
             SetStaticField(type, "RobustShared", _robustShared);
             SetStaticField(type, "ContentClient", _contentClient);
             SetStaticField(type, "ContentShared", _contentShared);
-            SetStaticField(type, "Harmony", _harmony);
+            SetStaticField(type, "Harmony", HarmonyBridge.Instance);
 
             // Entry point discovery: supports MarseyEntry, PatchEntry, ModEntry, TranslatorEntry, Entry, Plugin, etc.
             var isCandidateEntry = type.Name.EndsWith("Entry")
@@ -359,13 +395,13 @@ internal static class PatchManager
                         {
                             entryMethod.Invoke(null, null);
                             _initializedEntryPoints.Add(type);
-                            Console.WriteLine("[BebraLoader] Executed entry point on {0}.{1}()", type.FullName, entryMethod.Name);
+                            PatchLog.Write("[BebraLoader] Executed entry point on {0}.{1}()", type.FullName, entryMethod.Name);
                         }
-                        else if (pars.Length == 1 && pars[0].ParameterType == typeof(Harmony))
+                        else if (pars.Length == 1 && HarmonyBridge.TakesHarmony(pars[0]))
                         {
-                            entryMethod.Invoke(null, new object?[] { _harmony });
+                            entryMethod.Invoke(null, new object?[] { HarmonyBridge.Instance });
                             _initializedEntryPoints.Add(type);
-                            Console.WriteLine("[BebraLoader] Executed entry point on {0}.{1}(Harmony)", type.FullName, entryMethod.Name);
+                            PatchLog.Write("[BebraLoader] Executed entry point on {0}.{1}(Harmony)", type.FullName, entryMethod.Name);
                         }
                         else
                         {
@@ -381,13 +417,13 @@ internal static class PatchManager
                         if (count >= MaxAttempts)
                         {
                             _initializedEntryPoints.Add(type);
-                            Console.WriteLine("[BebraLoader] Entry point {0} failed {1} times, giving up: {2}",
+                            PatchLog.Write("[BebraLoader] Entry point {0} failed {1} times, giving up: {2}",
                                 type.FullName, count, ex.Message);
                         }
                         else
                         {
                             // Retry when content loads, but not forever.
-                            Console.WriteLine("[BebraLoader] Entry point {0} deferred/failed ({1}/{2}): {3}",
+                            PatchLog.Write("[BebraLoader] Entry point {0} deferred/failed ({1}/{2}): {3}",
                                 type.FullName, count, MaxAttempts, ex.Message);
                         }
                     }
@@ -410,7 +446,7 @@ internal static class PatchManager
                     {
                         postInitMethod.Invoke(null, null);
                         _executedPostInit.Add(type);
-                        Console.WriteLine("[BebraLoader] Executed ContentInit on {0}.{1}()", type.FullName, postInitMethod.Name);
+                        PatchLog.Write("[BebraLoader] Executed ContentInit on {0}.{1}()", type.FullName, postInitMethod.Name);
                     }
                     catch (Exception ex)
                     {
@@ -420,12 +456,12 @@ internal static class PatchManager
                         if (count >= MaxAttempts)
                         {
                             _executedPostInit.Add(type);
-                            Console.WriteLine("[BebraLoader] ContentInit {0}.{1} failed {2} times, giving up: {3}",
+                            PatchLog.Write("[BebraLoader] ContentInit {0}.{1} failed {2} times, giving up: {3}",
                                 type.FullName, postInitMethod.Name, count, ex.Message);
                         }
                         else
                         {
-                            Console.WriteLine("[BebraLoader] ContentInit note on {0} ({1}/{2}): {3}",
+                            PatchLog.Write("[BebraLoader] ContentInit note on {0} ({1}/{2}): {3}",
                                 type.FullName, count, MaxAttempts, ex.Message);
                         }
                     }

@@ -131,6 +131,40 @@ fn check_entry_path(name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Extensions whose content is already compressed inside the file. Running zstd over them costs
+/// CPU and buys nothing: on a real content db, `.ogg`, `.webp` and `.png` were 79% of the bytes and
+/// storing them compressed saved 0.5% (4.5 MB out of 995 MB). Anything not listed here is still
+/// compressed, and the size check in `PreparedBlob::from_hashed` stores it as-is if zstd fails.
+fn is_already_compressed(name: &str) -> bool {
+    let Some(ext) = name.rsplit_once('.').map(|(_, ext)| ext) else {
+        return false;
+    };
+    matches!(
+        ext.to_ascii_lowercase().as_str(),
+        "png"
+            | "jpg"
+            | "jpeg"
+            | "webp"
+            | "avif"
+            | "jxl"
+            | "gif"
+            | "ogg"
+            | "opus"
+            | "mp3"
+            | "flac"
+            | "m4a"
+            | "mp4"
+            | "webm"
+            | "zip"
+            | "gz"
+            | "xz"
+            | "7z"
+            | "br"
+            | "zst"
+            | "woff2"
+    )
+}
+
 /// Is this entry a directory? The zip attribute (Unix file type or the DOS directory bit) decides;
 /// the trailing slash is only a fallback for archives that carry no attributes at all. A file
 /// whose name merely ends with `/` must not be silently dropped, and a directory must not be
@@ -184,6 +218,8 @@ pub async fn ingest_zip(
                 p(Progress {
                     done: files.len() as u64 + batch.len() as u64,
                     total: total as u64,
+                    // Unpacking a local file: nothing comes over the network, so no speed.
+                    bytes: 0,
                     unit: ProgressUnit::Items,
                 });
             }
@@ -287,7 +323,11 @@ fn read_batch(
             bytes_in_batch += data.len() as u64;
 
             let hash = blake2b256(&data);
-            let blob = PreparedBlob::from_hashed(hash, data)?;
+            let blob = if is_already_compressed(&name) {
+                PreparedBlob::uncompressed(hash, data)
+            } else {
+                PreparedBlob::from_hashed(hash, data)?
+            };
             items.push((name, blob));
         }
     }
@@ -588,6 +628,59 @@ pub(crate) mod tests {
         // A whole zip is stopped once the shared budget is used up.
         let mut file = std::io::Cursor::new(vec![b'x'; 100]);
         assert!(read_entry("a.bin", &mut file, 1000, 100).is_ok());
+    }
+
+    // ---- already-compressed media skips zstd ----
+
+    #[tokio::test]
+    async fn already_compressed_media_is_stored_without_a_zstd_pass() {
+        // On a real content db, media was 79% of the bytes and compressing it saved 0.5%, so the
+        // time zstd spends on it is the point. The row must still read back byte for byte.
+        let media: Vec<u8> = (0..40_000u32)
+            .map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8)
+            .collect();
+        let text = "severity: 2\n".repeat(5_000);
+
+        let zip = make_zip(&[
+            ("Sound/a.ogg", media.as_slice()),
+            ("Prototypes/a.yml", text.as_bytes()),
+        ]);
+        let body = zip.clone();
+        let (base, _) = serve(move |_| (200, vec![], body.clone())).await;
+        let db = ContentDb::open_in_memory().unwrap();
+        let scratch = tempfile::tempdir().unwrap();
+
+        let got = install_zip(
+            &build_client().unwrap(),
+            &db,
+            &build_for(&base, &zip),
+            scratch.path(),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let compression_of = |path: &str| -> i64 {
+            db.connection()
+                .query_row(
+                    "SELECT c.Compression FROM Content c
+                     JOIN ContentManifest cm ON cm.ContentId = c.Id
+                     WHERE cm.VersionId = ?1 AND cm.Path = ?2",
+                    (got.version_id, path),
+                    |r| r.get(0),
+                )
+                .unwrap()
+        };
+        assert_eq!(compression_of("Sound/a.ogg"), 0, "stored as-is");
+        assert_eq!(compression_of("Prototypes/a.yml"), 2, "still zstd");
+
+        let entries = db.manifest_entries(got.version_id).unwrap();
+        let ogg = entries
+            .iter()
+            .find(|e| e.path == "Sound/a.ogg")
+            .expect("stored");
+        let id = db.find_content_id(&ogg.hash).unwrap().expect("stored");
+        assert_eq!(db.read_blob(id).unwrap(), media);
     }
 
     // ---- P1-5/P1-11: batching and progress ----

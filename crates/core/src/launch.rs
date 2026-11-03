@@ -29,6 +29,8 @@ const CLEARED_ENV: &[&str] = &[
     "SS14_DISABLE_SIGNING",
     "SS14_LAUNCHER_PATH",
     "SS14_LOG_CLIENT",
+    "BEBRA_HWID_MODERN",
+    "BEBRA_HWID_LEGACY",
     "DOTNET_gcServer",
     "DOTNET_GCDynamicAdaptationMode",
     "DOTNET_gcConcurrent",
@@ -78,7 +80,7 @@ pub enum ProcessPriority {
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct OptimizationConfig {
-    /// Optimization profile: "off", "balanced", "max_fps", "potato", or "custom".
+    /// Optimization profile: "standard", "balanced", "optimized" or "custom".
     pub profile: String,
     /// Enable .NET Server GC, concurrent mode, and DATAS.
     pub server_gc: bool,
@@ -88,7 +90,7 @@ pub struct OptimizationConfig {
     pub unlock_fps: bool,
     /// Process priority in Windows (High or AboveNormal).
     pub high_priority: bool,
-    /// Scale of the lighting grid resolution (e.g. 0.35 on potato, None for default).
+    /// Scale of the lighting grid resolution (e.g. 0.35 when optimized, None for default).
     pub light_resolution: Option<f32>,
 }
 
@@ -131,6 +133,8 @@ pub struct LaunchSpec {
     pub extra_args: Vec<String>,
     /// Client patch assemblies (.dll) to load (`SS14_LOADER_PATCHES`).
     pub patches: Vec<PathBuf>,
+    /// Hardware ID the client patch should report instead of the machine's own.
+    pub hwid: Option<crate::hwid::HwidOverride>,
     /// Client performance and optimization configuration.
     pub optimization: OptimizationConfig,
 }
@@ -385,9 +389,9 @@ pub fn build_command(spec: &LaunchSpec) -> LaunchCommand {
 
     // Client optimizations: pass CVars according to profile and settings.
     let opt = &spec.optimization;
-    let is_iskander = opt.profile == "iskander";
+    let is_optimized = opt.profile == "optimized";
     if opt.fast_lighting {
-        let shadow_lights = if is_iskander { 8 } else { 16 };
+        let shadow_lights = if is_optimized { 8 } else { 16 };
         args.extend([
             "--cvar".into(),
             "light.soft_shadows=false".into(),
@@ -404,11 +408,20 @@ pub fn build_command(spec: &LaunchSpec) -> LaunchCommand {
             "--cvar".into(),
             "display.max_fps=0".into(),
         ]);
+    } else if is_optimized {
+        // A weak machine is better off with a steady 60 than with VSync stalls or an uncapped
+        // render loop competing with the game thread.
+        args.extend([
+            "--cvar".into(),
+            "display.vsync=false".into(),
+            "--cvar".into(),
+            "display.max_fps=60".into(),
+        ]);
     }
     if let Some(res) = opt.light_resolution {
         args.extend(["--cvar".into(), format!("light.resolution_scale={res}")]);
     }
-    if opt.profile != "off" && opt.profile != "none" {
+    if opt.profile != "standard" {
         args.extend([
             "--cvar".into(),
             "res.prototype_reload_watch=false".into(),
@@ -416,25 +429,16 @@ pub fn build_command(spec: &LaunchSpec) -> LaunchCommand {
             "res.texturepreloadingenabled=true".into(),
             "--cvar".into(),
             "res.texture_preload_cache=true".into(),
-            "--cvar".into(),
-            "display.gpu_preference=2".into(),
         ]);
-        if opt.profile == "potato" {
-            args.extend([
-                "--cvar".into(),
-                "res.check_bad_file_extensions=false".into(),
-            ]);
-        }
-        if is_iskander {
+        // Mute while unfocused is the player's own setting (`client_mute_unfocused`), and the
+        // thread priority and render target pool stay at the engine's defaults: a profile must
+        // not override what the player chose or starve the rest of the system.
+        if is_optimized {
             args.extend([
                 "--cvar".into(),
                 "light.max_light_count=256".into(),
                 "--cvar".into(),
                 "light.max_occluder_count=256".into(),
-                "--cvar".into(),
-                "display.post_shader_render_target_pool_max_size=1048576".into(),
-                "--cvar".into(),
-                "res.rsi_atlas_size=4096".into(),
                 "--cvar".into(),
                 "res.check_bad_file_extensions=false".into(),
                 "--cvar".into(),
@@ -443,14 +447,6 @@ pub fn build_command(spec: &LaunchSpec) -> LaunchCommand {
                 "display.force_sync_windows=false".into(),
                 "--cvar".into(),
                 "midi.parallelism=1".into(),
-            ]);
-        }
-        if opt.profile == "max_fps" {
-            args.extend([
-                "--cvar".into(),
-                "display.input_buffer_size=16".into(),
-                "--cvar".into(),
-                "display.force_sync_windows=false".into(),
             ]);
         }
     }
@@ -485,6 +481,11 @@ pub fn build_command(spec: &LaunchSpec) -> LaunchCommand {
     if let Some(path) = &spec.launcher_path {
         env.push(("SS14_LAUNCHER_PATH".into(), path.display().to_string()));
     }
+    // Read by the `Bebra.HwidPatch` client patch; without that patch the client ignores them.
+    if let Some(hwid) = &spec.hwid {
+        env.push(("BEBRA_HWID_MODERN".into(), hwid.modern.clone()));
+        env.push(("BEBRA_HWID_LEGACY".into(), hwid.legacy.clone()));
+    }
     env.push((
         "SS14_LOADER_CONTENT_DB".into(),
         spec.content_db.display().to_string(),
@@ -513,7 +514,7 @@ pub fn build_command(spec: &LaunchSpec) -> LaunchCommand {
     }
 
     let priority = if opt.high_priority {
-        if opt.profile == "max_fps" || opt.profile == "potato" || opt.profile == "iskander" {
+        if is_optimized {
             ProcessPriority::High
         } else {
             ProcessPriority::AboveNormal
@@ -619,6 +620,17 @@ pub fn find_loader() -> Result<PathBuf> {
     ))
 }
 
+/// The client patch that replaces the hardware ID, as shipped next to the Loader.
+///
+/// Both layouts put it in the Loader's folder: the installer copies `resources/loader`, the dev
+/// build publishes into `loader/out`. `None` means this build has no patch, so the launcher must
+/// not pretend it can change the HWID.
+pub fn bundled_hwid_patch() -> Option<PathBuf> {
+    let loader = find_loader().ok()?;
+    let path = loader.parent()?.join("Bebra.HwidPatch.dll");
+    path.is_file().then_some(path)
+}
+
 /// A client log larger than this is rotated once (`.1`) before a new run appends to it.
 pub const MAX_CLIENT_LOG_BYTES: u64 = 8 * 1024 * 1024;
 
@@ -720,8 +732,9 @@ mod tests {
             overlay_zip: None,
             extra_args: vec![],
             patches: vec![],
+            hwid: None,
             optimization: OptimizationConfig {
-                profile: "off".into(),
+                profile: "standard".into(),
                 server_gc: false,
                 fast_lighting: false,
                 unlock_fps: false,
@@ -1231,6 +1244,22 @@ mod tests {
     }
 
     #[test]
+    fn hwid_override_sets_both_values() {
+        let mut s = spec();
+        s.hwid = Some(crate::hwid::HwidOverride::from_bytes(&[0xab; 32]));
+        let cmd = build_command(&s);
+        let legacy = "ab".repeat(32);
+        assert_eq!(
+            env_of(&cmd, "BEBRA_HWID_LEGACY").as_deref(),
+            Some(legacy.as_str())
+        );
+        assert_eq!(
+            env_of(&cmd, "BEBRA_HWID_MODERN").as_deref(),
+            Some(format!("00{legacy}").as_str())
+        );
+    }
+
+    #[test]
     fn optimization_balanced_profile_adds_cvars_and_server_gc() {
         let mut s = spec();
         s.optimization = OptimizationConfig {
@@ -1261,13 +1290,13 @@ mod tests {
     }
 
     #[test]
-    fn optimization_potato_profile_adds_fast_lighting_and_low_res() {
+    fn optimization_optimized_profile_caps_fps_and_leaves_player_settings_alone() {
         let mut s = spec();
         s.optimization = OptimizationConfig {
-            profile: "potato".into(),
+            profile: "optimized".into(),
             server_gc: true,
             fast_lighting: true,
-            unlock_fps: true,
+            unlock_fps: false,
             high_priority: true,
             light_resolution: Some(0.35),
         };
@@ -1278,62 +1307,51 @@ mod tests {
         assert!(cmd
             .args
             .contains(&"light.resolution_scale=0.35".to_string()));
-        assert!(cmd.args.contains(&"display.vsync=false".to_string()));
-        assert!(cmd.args.contains(&"display.max_fps=0".to_string()));
-        assert!(cmd
-            .args
-            .contains(&"res.check_bad_file_extensions=false".to_string()));
-    }
-
-    #[test]
-    fn optimization_max_fps_profile_unlocks_fps_and_high_priority() {
-        let mut s = spec();
-        s.optimization = OptimizationConfig {
-            profile: "max_fps".into(),
-            server_gc: true,
-            fast_lighting: false,
-            unlock_fps: true,
-            high_priority: true,
-            light_resolution: None,
-        };
-        let cmd = build_command(&s);
-        assert_eq!(cmd.priority, ProcessPriority::High);
-        assert!(cmd.args.contains(&"display.vsync=false".to_string()));
-        assert!(cmd.args.contains(&"display.max_fps=0".to_string()));
-        assert!(cmd
-            .args
-            .contains(&"display.input_buffer_size=16".to_string()));
-    }
-
-    #[test]
-    fn optimization_iskander_profile_ultra_optimizations() {
-        let mut s = spec();
-        s.optimization = OptimizationConfig {
-            profile: "iskander".into(),
-            server_gc: true,
-            fast_lighting: true,
-            unlock_fps: true,
-            high_priority: true,
-            light_resolution: Some(0.2),
-        };
-        let cmd = build_command(&s);
-        assert_eq!(cmd.priority, ProcessPriority::High);
-        assert!(cmd.args.contains(&"light.soft_shadows=false".to_string()));
-        assert!(cmd.args.contains(&"light.blur=false".to_string()));
-        assert!(cmd.args.contains(&"light.resolution_scale=0.2".to_string()));
         assert!(cmd
             .args
             .contains(&"light.max_shadowcasting_lights=8".to_string()));
         assert!(cmd.args.contains(&"light.max_light_count=256".to_string()));
-        assert!(cmd
-            .args
-            .contains(&"light.max_occluder_count=256".to_string()));
-        assert!(cmd.args.contains(&"res.rsi_atlas_size=4096".to_string()));
         assert!(cmd.args.contains(&"midi.parallelism=1".to_string()));
-        assert!(cmd
-            .args
-            .contains(&"display.post_shader_render_target_pool_max_size=1048576".to_string()));
+        assert!(cmd.args.contains(&"display.vsync=false".to_string()));
+        assert!(cmd.args.contains(&"display.max_fps=60".to_string()));
+        for owned_by_player_or_engine in [
+            "audio.mute_unfocused",
+            "sys.game_thread_priority",
+            "display.post_shader_render_target_pool_max_size",
+        ] {
+            assert!(
+                !cmd.args
+                    .iter()
+                    .any(|a| a.starts_with(owned_by_player_or_engine)),
+                "{owned_by_player_or_engine} is not the profile's to set"
+            );
+        }
         assert_eq!(env_of(&cmd, "DOTNET_gcServer").as_deref(), Some("1"));
         assert_eq!(env_of(&cmd, "BEBRA_OPTIMIZE").as_deref(), Some("1"));
+    }
+
+    #[test]
+    fn unlock_fps_means_no_cap_in_every_profile() {
+        for profile in ["optimized", "custom"] {
+            let mut s = spec();
+            s.optimization = OptimizationConfig {
+                profile: profile.into(),
+                server_gc: true,
+                fast_lighting: false,
+                unlock_fps: true,
+                high_priority: true,
+                light_resolution: None,
+            };
+            let cmd = build_command(&s);
+            assert!(cmd.args.contains(&"display.vsync=false".to_string()));
+            assert!(
+                cmd.args.contains(&"display.max_fps=0".to_string()),
+                "{profile}"
+            );
+            assert!(
+                !cmd.args.contains(&"display.max_fps=60".to_string()),
+                "{profile}"
+            );
+        }
     }
 }

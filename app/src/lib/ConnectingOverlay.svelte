@@ -1,9 +1,10 @@
 <script lang="ts">
   import { untrack } from "svelte";
   import { api } from "./api";
-  import { formatBytes, stageText } from "./format";
+  import { formatBytes, formatNumber, formatSpeed, stageText } from "./format";
   import { hasKey, t, type Key } from "./i18n.svelte";
   import { app } from "./store.svelte";
+  import { SpeedMeter } from "./speed";
 
   const play = $derived(app.play);
   const preparing = $derived(play.phase === "preparing" ? play : null);
@@ -25,6 +26,32 @@
   }
 
   const isPreparing = $derived(play.phase === "preparing");
+
+  // Speed, in bits per second, from the byte counter; a stage change starts the meter over.
+  const meter = new SpeedMeter();
+  let speed = $state(0);
+  let meterStage: string | null = null;
+  $effect(() => {
+    const p = preparing;
+    if (!p) {
+      meterStage = null;
+      meter.reset();
+      speed = 0;
+      return;
+    }
+    if (p.stage !== meterStage) {
+      meterStage = p.stage;
+      meter.reset();
+    }
+    speed = meter.sample(p.bytes);
+  });
+  // Progress arrives in bursts: keep the figure honest while nothing new comes in.
+  $effect(() => {
+    if (!isPreparing) return;
+    const timer = setInterval(() => (speed = meter.rate()), 1000);
+    return () => clearInterval(timer);
+  });
+
   const FLAVOR_COUNT = 74;
   let flavorIndex = $state(0);
   $effect(() => {
@@ -75,10 +102,15 @@
           {#if percent !== null}
             <span class="sub">
               {#if preparing.unit === "bytes"}
-                {formatBytes(preparing.done)} / {formatBytes(preparing.total)}
+                {formatBytes(preparing.done)} / {formatBytes(preparing.total)} · {Math.round(percent)}%
               {:else}
-                {Math.round(percent)}%
+                {t("conn.items", {
+                  done: formatNumber(preparing.done),
+                  total: formatNumber(preparing.total),
+                  left: formatNumber(Math.max(0, preparing.total - preparing.done)),
+                })} · {Math.round(percent)}%
               {/if}
+              {#if speed > 0} · {formatSpeed(speed)}{/if}
             </span>
           {/if}
         </div>
@@ -101,6 +133,9 @@
           <pre>{play.logTail.join("\n")}</pre>
         {/if}
         <div class="foot center">
+          {#if app.lastPlayTarget}
+            <button class="btn primary" onclick={() => app.reconnectLast()}>{t("game.reconnect")}</button>
+          {/if}
           <button class="btn" onclick={() => api.openLogsFolder()}>{t("game.openLogs")}</button>
           <button class="btn" onclick={() => app.dismissPlay()}>{t("conn.ok")}</button>
         </div>
@@ -160,6 +195,10 @@
     align-items: center;
     gap: 10px;
     margin-top: 4px;
+  }
+  .foot .sub {
+    min-width: 0;
+    text-align: right;
   }
   .foot.center {
     justify-content: center;
