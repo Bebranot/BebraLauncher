@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 
 use crate::download::{download_to_file, ProgressFn};
 use crate::hash::{parse_hash_hex, to_hex};
-use crate::http::UrlFallbackSet;
+use crate::http::{read_json_limited, UrlFallbackSet};
 use crate::paths::DataDirs;
 use crate::signature;
 use crate::{Error, Result};
@@ -33,6 +33,10 @@ pub fn engine_urls(engine: &str) -> UrlFallbackSet {
 
 /// Redirect chains in the index are short; this only stops an accidental loop.
 const MAX_REDIRECTS: usize = 32;
+/// The engine and module indexes list every build ever made, but stay far below this.
+pub(crate) const MAX_INDEX_BYTES: usize = 32 * 1024 * 1024;
+/// An index request that sends nothing for this long is treated as dead.
+pub(crate) const INDEX_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// What we ask the index for on this machine, best first.
 pub fn preferred_rids() -> &'static [&'static str] {
@@ -88,8 +92,9 @@ async fn fetch_manifest(
             url: resp.url().to_string(),
         });
     }
-    let bytes = resp.bytes().await?;
-    serde_json::from_slice(&bytes).map_err(|e| Error::Other(format!("bad engine index: {e}")))
+    read_json_limited(resp, MAX_INDEX_BYTES, INDEX_IDLE_TIMEOUT)
+        .await
+        .map_err(|e| Error::Other(format!("bad engine index: {e}")))
 }
 
 impl EngineIndex {
@@ -210,6 +215,9 @@ pub fn installed(dirs: &DataDirs, version: &str) -> Result<Option<InstalledEngin
 ///
 /// Reuses an installed copy when its SHA-256 still matches the index. Otherwise downloads the zip,
 /// checks SHA-256 and the Ed25519 signature, and only then moves it into place.
+///
+/// The files are named by `requested`, not by the version a redirect leads to: the content
+/// database records `requested` as the dependency, and cleanup keeps only what it records.
 pub async fn install_engine(
     client: &Client,
     index_urls: &UrlFallbackSet,
@@ -220,12 +228,13 @@ pub async fn install_engine(
 ) -> Result<InstalledEngine> {
     let index = EngineIndex::fetch(client, index_urls).await?;
     let resolved = index.resolve(requested, preferred_rids())?;
+    check_version_name(requested)?;
     check_version_name(&resolved.version)?;
     let want_sha = parse_hash_hex(&resolved.sha256)?;
 
     dirs.ensure()?;
-    let zip = zip_path(dirs, &resolved.version);
-    let sig = sig_path(dirs, &resolved.version);
+    let zip = zip_path(dirs, requested);
+    let sig = sig_path(dirs, requested);
 
     if zip.is_file() && sig.is_file() {
         // The hash proves the bytes; the `.sig` only counts if it is the one the index published
@@ -260,7 +269,7 @@ pub async fn install_engine(
         .unwrap_or(0);
     let part = dirs.engines().join(format!(
         "{}.zip.{}-{}.part",
-        resolved.version,
+        requested,
         std::process::id(),
         nanos
     ));
@@ -274,7 +283,7 @@ pub async fn install_engine(
     // The old file is moved aside first, so a failed rename can put it back.
     let old_zip = dirs.engines().join(format!(
         "{}.zip.old-{}-{}",
-        resolved.version,
+        requested,
         std::process::id(),
         nanos
     ));
@@ -293,7 +302,7 @@ pub async fn install_engine(
     // The signature goes last and is also written atomically: it marks the install as complete.
     let sig_part = dirs.engines().join(format!(
         "{}.sig.{}-{}.part",
-        resolved.version,
+        requested,
         std::process::id(),
         nanos
     ));
@@ -592,6 +601,45 @@ mod tests {
         .unwrap_err();
         assert!(matches!(err, Error::HashMismatch { .. }), "{err}");
         assert!(installed(&dirs, "9.9.9").unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn redirected_engine_is_stored_under_the_requested_version() {
+        // The database records the requested version, and cleanup keeps only what it records,
+        // so the files must carry that name too or every cleanup deletes them.
+        let zip = b"PK redirected engine".repeat(50);
+        let sk = test_key();
+        let sig = sign_hex(&sk, &zip);
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}/", listener.local_addr().unwrap());
+        let target = index_for(&base, "1.0.7", &zip, &sig);
+        let index = format!(
+            r#"{{"1.0.0": {{"insecure": true, "redirect": "1.0.7"}}, {}"#,
+            &target[1..]
+        );
+        spawn_on(listener, index, zip.clone());
+
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = DataDirs::at(tmp.path());
+        let urls = UrlFallbackSet::new([base]);
+        let client = build_client().unwrap();
+        let key = sk.verifying_key();
+
+        let first = install_engine(&client, &urls, &dirs, "1.0.0", &key, None)
+            .await
+            .unwrap();
+        assert!(first.downloaded);
+        assert_eq!(first.version, "1.0.7");
+        assert_eq!(first.zip_path, dirs.engines().join("1.0.0.zip"));
+        assert!(dirs.engines().join("1.0.0.sig").is_file());
+        assert!(!dirs.engines().join("1.0.7.zip").exists());
+        assert!(installed(&dirs, "1.0.0").unwrap().is_some());
+
+        let second = install_engine(&client, &urls, &dirs, "1.0.0", &key, None)
+            .await
+            .unwrap();
+        assert!(!second.downloaded, "the redirected engine is reused");
     }
 
     /// Starts a server whose index points back at itself.

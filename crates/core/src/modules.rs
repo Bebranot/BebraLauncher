@@ -11,9 +11,9 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
 use crate::download::{download_to_file, ProgressFn};
-use crate::engine::{preferred_rids, PlatformBuild};
+use crate::engine::{preferred_rids, PlatformBuild, INDEX_IDLE_TIMEOUT, MAX_INDEX_BYTES};
 use crate::hash::{parse_hash_hex, to_hex};
-use crate::http::UrlFallbackSet;
+use crate::http::{read_json_limited, UrlFallbackSet};
 use crate::paths::DataDirs;
 use crate::signature;
 use crate::{Error, Result};
@@ -129,8 +129,9 @@ impl ModuleIndex {
                 url: resp.url().to_string(),
             });
         }
-        let bytes = resp.bytes().await?;
-        serde_json::from_slice(&bytes).map_err(|e| Error::Other(format!("bad module index: {e}")))
+        read_json_limited(resp, MAX_INDEX_BYTES, INDEX_IDLE_TIMEOUT)
+            .await
+            .map_err(|e| Error::Other(format!("bad module index: {e}")))
     }
 
     /// Modules are named by the *minimum* engine version they work with, so the right one is the

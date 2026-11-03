@@ -196,7 +196,17 @@ pub async fn fetch_manifest(
         ));
     }
     let zstd = is_zstd(&resp);
-    let body = resp.bytes().await?;
+    // Content-Length may be missing (chunked), so the limit is also checked while reading.
+    let mut resp = resp;
+    let mut body = Vec::new();
+    while let Some(chunk) = resp.chunk().await? {
+        if (body.len() + chunk.len()) as u64 > MAX_MANIFEST_COMPRESSED {
+            return Err(Error::InvalidManifest(
+                "manifest is unreasonably large".into(),
+            ));
+        }
+        body.extend_from_slice(&chunk);
+    }
 
     let text = if zstd {
         let mut out = Vec::new();
@@ -212,7 +222,7 @@ pub async fn fetch_manifest(
         }
         out
     } else {
-        body.to_vec()
+        body
     };
 
     let manifest = Manifest::parse(&text)?;

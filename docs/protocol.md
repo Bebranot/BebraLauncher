@@ -277,9 +277,11 @@ RunningClient(ProcessId INTEGER PK, MainModule TEXT, UsedVersion -> ContentVersi
 - RID: `win-x64`; на ARM64 сначала `win-arm64`, затем `win-x64`. Прочие RID (`linux-*`, `osx-*`, `freebsd-*`) не используются.
 - URL файлов берётся из индекса [live: `robust-builds.playss14.com/builds/<ver>/Robust.Client_<rid>.zip`], хостом может отличаться. Не хардкодить.
 - Кеша нет (upstream 15 мин — **не реализовано в лаунчере**): индекс запрашивается при каждой установке.
+- Чтение индекса (и `modules.json`, 6.3): не больше 32 МиБ, idle 30 с.
 
 ### 6.2 Установка движка [код: EngineManagerDynamic.cs:74-141; наш код: `engine::install_engine`]
-- Файлы: `<root>\engines\<version>.zip` и `<version>.sig`; `version` — итоговая (после redirect), `[A-Za-z0-9._+-]`, ≤ 100, не с точки.
+- Файлы: `<root>\engines\<version>.zip` и `<version>.sig`; `version` — **запрошенная** (из `/info`, до redirect): её же хранит
+  зависимость `Robust` в БД, по ней работает очистка. `[A-Za-z0-9._+-]`, ≤ 100, не с точки.
   Upstream — `%APPDATA%\…\engines\` и `InstalledEngineVersion` в БД настроек: у нас этого нет.
 - **Переиспользование:** оба файла есть, `.sig` == `sig` из индекса (без учёта регистра), SHA-256 zip == `sha256` → загрузки нет.
 - **Установка:** скачивание в `<version>.zip.<pid>-<nanos>.part` (idle 45 с, лимит 2 ГиБ) → SHA-256 == `sha256` →
@@ -288,8 +290,6 @@ RunningClient(ProcessId INTEGER PK, MainModule TEXT, UsedVersion -> ContentVersi
 - Upstream не проверяет `sha256` при скачивании (Loader проверяет подпись при каждом запуске). Мы проверяем сразу.
   [live: движок 291.0.0 win-x64, 7.5 МБ — sha256 и подпись сошлись.]
 - **Удаление** (`storage::clean`): `*.zip`/`*.sig`, чья версия не числится в `Robust`-зависимостях ни одной версии, удаляются; `*.part` — всегда.
-  [?] Несоответствие по коду: зависимость хранит **запрошенную** версию, файл назван **итоговой**. При redirect файл удаляется
-  при каждой очистке и качается заново. Проверить в работе.
 
 ### 6.3 Модули [код: Models/EngineManager/*, IEngineManager.cs:39-56; наш код: `modules.rs`]
 - Список — из `manifest.yml` контента: YAML, camelCase, неизвестные ключи игнорируются, всё опционально: `modules: [имя, …]`, `multiWindow: bool`.
