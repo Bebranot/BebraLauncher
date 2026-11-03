@@ -51,6 +51,20 @@ pub struct AppInfo {
     loader_problem: Option<String>,
 }
 
+/// The switches every preset stands for on this machine, so the options tab can show them and
+/// start "custom" from one of them.
+#[tauri::command]
+pub fn optimization_presets(
+) -> std::collections::BTreeMap<&'static str, bebra_core::launch::OptimizationConfig> {
+    let cores = crate::settings::cpu_cores();
+    ["standard", "balanced", "optimized"]
+        .into_iter()
+        .filter_map(|name| {
+            bebra_core::launch::OptimizationConfig::preset(name, cores).map(|cfg| (name, cfg))
+        })
+        .collect()
+}
+
 #[tauri::command]
 pub fn app_info(state: State<'_, AppState>) -> AppInfo {
     AppInfo {
@@ -735,7 +749,7 @@ pub fn start_play(
         .hwid_current
         .as_deref()
         .and_then(bebra_core::hwid::HwidOverride::from_legacy_hex);
-    let patches = {
+    let (patches, optimization) = {
         let mut paths = resolved.paths;
         if hwid.is_some() {
             match bebra_core::launch::bundled_hwid_patch() {
@@ -747,9 +761,18 @@ pub fn start_play(
                 ),
             }
         }
-        paths
+        let optimization = settings.optimization_config();
+        if optimization.needs_perf_patch() {
+            match bebra_core::launch::bundled_perf_patch() {
+                Some(path) if !paths.contains(&path) => paths.push(path),
+                Some(_) => {}
+                None => crate::applog::line(
+                    "client patches are on, but Bebra.PerfPatch.dll is missing next to the                      Loader; the game runs without them",
+                ),
+            }
+        }
+        (paths, optimization)
     };
-    let optimization = settings.optimization_config();
 
     game::start(
         app.clone(),

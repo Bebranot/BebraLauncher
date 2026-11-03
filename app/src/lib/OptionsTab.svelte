@@ -6,6 +6,8 @@
     type BackgroundRow,
     type DiagRow,
     type HwidState,
+    type OptimizationConfig,
+    type OptimizationPresets,
     type PackRow,
     type PatchRow,
     type RecommendedHub,
@@ -14,6 +16,7 @@
   } from "./api";
   import { formatBytes } from "./format";
   import { t, type Key } from "./i18n.svelte";
+  import { OPTIMIZATION_GROUPS, type OptimizationKey } from "./optimization";
   import { nativeName, UI_LANGUAGES } from "./languages";
   import ErpPromo from "./ErpPromo.svelte";
   import { promo } from "./rofl.svelte";
@@ -554,42 +557,58 @@
 
   let showOptDetails = $state(false);
 
+  // Switches of the three presets, computed by the backend for this machine (core count etc.).
+  let optPresets = $state<OptimizationPresets | null>(null);
+  onMount(() => {
+    api
+      .optimizationPresets()
+      .then((p) => (optPresets = p))
+      .catch(() => {});
+  });
+
+  /** The switches that are really in effect: the preset's own, or the user's in "custom". */
+  const optActive = $derived.by((): OptimizationConfig | null => {
+    if (!s) return null;
+    if (s.opt_profile === "custom") return s.opt_custom;
+    const preset = optPresets?.[s.opt_profile as keyof OptimizationPresets];
+    return preset ?? s.opt_custom;
+  });
+
   function setOptimizationProfile(profile: string) {
-    if (profile === "optimized") {
-      app.updateSettings({
-        opt_profile: "optimized",
-        opt_server_gc: true,
-        opt_fast_lighting: true,
-        opt_unlock_fps: false,
-        opt_high_priority: true,
-      });
-    } else if (profile === "standard") {
-      app.updateSettings({
-        opt_profile: "standard",
-        opt_server_gc: false,
-        opt_fast_lighting: false,
-        opt_unlock_fps: false,
-        opt_high_priority: false,
-      });
-    } else if (profile === "custom") {
-      app.updateSettings({ opt_profile: "custom" });
-      showOptDetails = true;
+    if (!s) return;
+    if (profile !== "custom") {
+      // A preset never overwrites the user's own switches.
+      app.updateSettings({ opt_profile: profile });
+      return;
+    }
+    showOptDetails = true;
+    const previous = optPresets?.[s.opt_profile as keyof OptimizationPresets];
+    const untouched = Object.values(s.opt_custom).every((v) => !v);
+    // First time in "custom": start from what the previous preset had.
+    if (previous && untouched) {
+      app.updateSettings({ opt_profile: "custom", opt_custom: { ...previous } });
     } else {
-      app.updateSettings({
-        opt_profile: "balanced",
-        opt_server_gc: true,
-        opt_fast_lighting: false,
-        opt_unlock_fps: false,
-        opt_high_priority: true,
-      });
+      app.updateSettings({ opt_profile: "custom" });
     }
   }
 
-  function updateOptField(partial: Partial<import("./api").Settings>) {
+  /** Flips one switch. From a preset this copies the preset's switches and switches to "custom". */
+  function toggleOptSwitch(key: OptimizationKey, value: boolean) {
+    if (!optActive) return;
     app.updateSettings({
-      ...partial,
       opt_profile: "custom",
+      opt_custom: { ...optActive, [key]: value },
     });
+  }
+
+  /** Switches that do nothing while another one is on. */
+  function optOverridden(key: OptimizationKey, cfg: OptimizationConfig): boolean {
+    return (key === "ao_lowres" && cfg.ao_off) || (key === "steady_fps" && cfg.unlock_fps);
+  }
+
+  function optHint(key: OptimizationKey, cfg: OptimizationConfig): string {
+    const hint = t(`opt.sw.${key}Hint` as Key);
+    return optOverridden(key, cfg) ? `${hint} ${t("opt.swOverridden")}` : hint;
   }
 
   function getProfileDescription(profile: string): string {
@@ -874,32 +893,21 @@
         <small class="sub">{getProfileDescription(s.opt_profile)}</small>
       </label>
 
-      {#if s.opt_profile === "custom" || showOptDetails}
+      {#if (s.opt_profile === "custom" || showOptDetails) && optActive}
+        {@const cfg = optActive}
         <div class="opt-details">
-          <Option
-            label={t("opt.optServerGc")}
-            hint={t("opt.optServerGcHint")}
-            checked={s.opt_server_gc}
-            onchange={(v) => updateOptField({ opt_server_gc: v })}
-          />
-          <Option
-            label={t("opt.optFastLighting")}
-            hint={t("opt.optFastLightingHint")}
-            checked={s.opt_fast_lighting}
-            onchange={(v) => updateOptField({ opt_fast_lighting: v })}
-          />
-          <Option
-            label={t("opt.optUnlockFps")}
-            hint={t("opt.optUnlockFpsHint")}
-            checked={s.opt_unlock_fps}
-            onchange={(v) => updateOptField({ opt_unlock_fps: v })}
-          />
-          <Option
-            label={t("opt.optHighPriority")}
-            hint={t("opt.optHighPriorityHint")}
-            checked={s.opt_high_priority}
-            onchange={(v) => updateOptField({ opt_high_priority: v })}
-          />
+          {#each OPTIMIZATION_GROUPS as group}
+            <h4 class="opt-group">{t(`opt.group.${group.id}` as Key)}</h4>
+            {#each group.keys as key}
+              <Option
+                label={t(`opt.sw.${key}` as Key)}
+                hint={optHint(key, cfg)}
+                checked={cfg[key]}
+                disabled={optOverridden(key, cfg)}
+                onchange={(v) => toggleOptSwitch(key, v)}
+              />
+            {/each}
+          {/each}
         </div>
       {/if}
 
@@ -1818,6 +1826,17 @@
     background: var(--tint);
     border: 1px solid var(--line);
     border-radius: var(--radius-sm);
+  }
+  .opt-group {
+    margin: 6px 0 0;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--sub);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .opt-group:first-child {
+    margin-top: 0;
   }
   .opt-toggle-row {
     margin-top: 6px;

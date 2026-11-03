@@ -29,6 +29,7 @@ pub mod server;
 pub mod signature;
 pub mod storage;
 pub mod updater;
+pub mod wintune;
 pub mod zipmode;
 
 #[cfg(test)]

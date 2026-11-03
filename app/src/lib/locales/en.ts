@@ -217,29 +217,79 @@ export const en: Dictionary = {
     "Improves framerate stability and game client performance.",
   "opt.profile.standard": "Standard (vanilla client)",
   "opt.profile.standardDesc":
-    "Clean engine launch without modifications: standard graphics and default game client behavior.",
+    "Nothing is changed: the client starts as it is.",
   "opt.profile.balanced": "Balanced (recommended)",
   "opt.profile.balancedDesc":
-    "Optimizes memory (.NET Server GC + DATAS) and texture caching, boosts process priority. Eliminates micro-stutters with no visual downgrade.",
+    "Invisible tweaks: cheaper ambient occlusion and space background, lighter particles, calmer garbage collection, process priority and the outline patch. The picture stays the same.",
   "opt.profile.optimized": "Optimized (low-end PC)",
   "opt.profile.optimizedDesc":
-    "For low-end PCs and laptops: no soft shadows or light blur, a lighter lighting map, a 60 FPS cap and high process priority.",
+    "Harder light edges, lower light resolution, no ambient occlusion or cosmetic shaders, lighter audio, steady 60 FPS, the discrete GPU and the status-icon patch. Nothing is blurred and no gameplay effects are hidden.",
   "opt.profile.custom": "Custom",
   "opt.profile.customDesc":
-    "Fine-tune individual optimization options below.",
+    "Your own switches below. They start from the previous profile's settings.",
   "opt.optDetails": "Detailed Settings",
-  "opt.optServerGc": ".NET Memory Optimization (Server GC + DATAS)",
-  "opt.optServerGcHint":
-    "Enables multithreaded server garbage collection with dynamic memory adaptation to eliminate frame stutters during gameplay.",
-  "opt.optFastLighting": "Fast Lighting (disable soft shadows)",
-  "opt.optFastLightingHint":
-    "Disables GPU-heavy soft shadows and lighting blur. Dramatically improves FPS in crowded station areas.",
-  "opt.optUnlockFps": "Unlock Frame Rate (disable VSync)",
-  "opt.optUnlockFpsHint":
-    "Removes frame rate cap and disables vertical sync for lowest input latency on high-refresh-rate displays.",
-  "opt.optHighPriority": "Elevated Process Priority",
-  "opt.optHighPriorityHint":
-    "Gives the game process elevated CPU priority in Windows to prevent frame drops caused by background applications.",
+  "opt.swOverridden": "Has no effect while the other switch is on.",
+  "opt.group.lighting": "Lighting",
+  "opt.group.effects": "Effects",
+  "opt.group.audio": "Audio",
+  "opt.group.fps": "Frame rate",
+  "opt.group.memory": "Memory and runtime",
+  "opt.group.windows": "Windows",
+  "opt.group.patches": "Client patches",
+  "opt.sw.fast_lighting": "Hard light edges",
+  "opt.sw.fast_lightingHint":
+    "No soft shadows and no light blur pass. Shadow edges get sharp; FPS in lit rooms goes up noticeably.",
+  "opt.sw.light_lowres": "Low-resolution light map",
+  "opt.sw.light_lowresHint":
+    "Lighting is computed at 35% of the screen resolution, with at most 64 shadow-casting lights. Light looks slightly blockier.",
+  "opt.sw.ao_lowres": "Quarter-resolution ambient occlusion",
+  "opt.sw.ao_lowresHint":
+    "Ambient occlusion runs at a quarter of the resolution. Looks the same, costs the GPU less.",
+  "opt.sw.ao_off": "No ambient occlusion",
+  "opt.sw.ao_offHint":
+    "Ambient occlusion is off entirely. The biggest saving, but corners and wall joints look flat. Overrides the option above.",
+  "opt.sw.parallax_low": "Simple space background",
+  "opt.sw.parallax_lowHint":
+    "Cheap parallax renderer. Space behind windows is drawn more simply.",
+  "opt.sw.particles_lite": "Lighter particles",
+  "opt.sw.particles_liteHint":
+    "Particles at medium quality, scaled down earlier when there are many emitters. Smoke and sparks are sparser.",
+  "opt.sw.calm_effects": "No cosmetic shaders",
+  "opt.sw.calm_effectsHint":
+    "Turns off purely decorative full-screen effects: heat haze, singularity warp, rainbow overlay, night-vision noise and AI static. Gameplay effects (flash, blurry vision, drunkenness) stay.",
+  "opt.sw.tile_edges_off": "No tile edge blending",
+  "opt.sw.tile_edges_offHint":
+    "Skips the sprites that blend between different floor types. Floor seams become hard.",
+  "opt.sw.audio_lite": "Lighter audio",
+  "opt.sw.audio_liteHint":
+    "No HRTF, positional audio updates 20 times a second instead of 30, ambience is re-checked less often. Spatial sound is slightly less precise.",
+  "opt.sw.unlock_fps": "Remove the FPS cap",
+  "opt.sw.unlock_fpsHint":
+    "No VSync and no frame cap. Lowest latency, but the GPU runs flat out and heats up.",
+  "opt.sw.steady_fps": "Steady 60 FPS",
+  "opt.sw.steady_fpsHint":
+    "No VSync, frames capped at 60. Less heat and noise. Ignored while the FPS cap is removed.",
+  "opt.sw.server_gc": "Server garbage collector (.NET)",
+  "opt.sw.server_gcHint":
+    "Collection runs on all cores with shorter pauses, at the cost of more RAM. The presets enable it only on PCs with 6 or more logical cores.",
+  "opt.sw.low_latency_gc": "Low-latency GC mode",
+  "opt.sw.low_latency_gcHint":
+    "The client avoids blocking full collections while you play, and the GC keeps memory instead of returning it to the OS. Fewer stutters, more RAM used.",
+  "opt.sw.high_priority": "Elevated process priority",
+  "opt.sw.high_priorityHint":
+    "The game runs at \"above normal\" priority and yields the CPU less often to browsers and Discord.",
+  "opt.sw.no_throttling": "No Windows power throttling",
+  "opt.sw.no_throttlingHint":
+    "Opts out of EcoQoS so the game is not slowed down when unfocused or minimized. A laptop uses more power in the background.",
+  "opt.sw.prefer_dgpu": "Prefer the discrete GPU",
+  "opt.sw.prefer_dgpuHint":
+    "Asks Windows to run the game on the high-performance GPU (laptops with two GPUs). Stored in the same per-user place as Settings, Display, Graphics; turning it off removes only the launcher's value.",
+  "opt.sw.patch_outline": "Patch: update the outline less often",
+  "opt.sw.patch_outlineHint":
+    "The hover outline is recalculated about 33 times a second instead of every frame. The patch is injected into the client; if something looks wrong, turn it off.",
+  "opt.sw.patch_status_icons": "Patch: cache status icons",
+  "opt.sw.patch_status_iconsHint":
+    "An entity's status icon list is reused for 100 ms instead of being rebuilt every frame. The patch is injected into the client; if something looks wrong, turn it off.",
 
   "opt.configTitle": "Configuration Management",
   "opt.configDesc": "Export and import launcher settings and favourite servers.",

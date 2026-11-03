@@ -128,6 +128,11 @@ fn migrate(from: u32, mut value: serde_json::Value) -> serde_json::Value {
 /// One save at a time: the temporary file name is fixed.
 static SAVE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// Logical cores of this machine; the presets turn Server GC on only with enough of them.
+pub fn cpu_cores() -> usize {
+    std::thread::available_parallelism().map_or(1, usize::from)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -186,14 +191,18 @@ pub struct Settings {
     /// Client optimization profile: "standard", "balanced", "optimized" or "custom" (older names
     /// are migrated in `sanitized`).
     pub opt_profile: String,
-    /// Fast lighting: disable soft shadows and lighting blur.
-    pub opt_fast_lighting: bool,
-    /// Unlock framerate: disable VSync and set max FPS to uncapped.
-    pub opt_unlock_fps: bool,
-    /// Run game process with elevated Windows priority.
-    pub opt_high_priority: bool,
-    /// Enable .NET Server Garbage Collection and DATAS to prevent frame stutters.
-    pub opt_server_gc: bool,
+    /// The switches of the "custom" profile. The presets ignore it.
+    pub opt_custom: bebra_core::launch::OptimizationConfig,
+    /// Switches of the "custom" profile as versions before `opt_custom` stored them: read once by
+    /// `sanitized`, never written back.
+    #[serde(rename = "opt_fast_lighting", skip_serializing)]
+    legacy_fast_lighting: Option<bool>,
+    #[serde(rename = "opt_unlock_fps", skip_serializing)]
+    legacy_unlock_fps: Option<bool>,
+    #[serde(rename = "opt_high_priority", skip_serializing)]
+    legacy_high_priority: Option<bool>,
+    #[serde(rename = "opt_server_gc", skip_serializing)]
+    legacy_server_gc: Option<bool>,
     /// Background mode: "space" (default space canvas), "custom" (user image), "none" (solid/theme).
     pub bg_type: String,
     /// Filename of selected custom background in backgrounds folder.
@@ -397,10 +406,13 @@ impl Default for Settings {
             extra_args: String::new(),
             enabled_patches: Vec::new(),
             opt_profile: "balanced".to_string(),
-            opt_fast_lighting: false,
-            opt_unlock_fps: false,
-            opt_high_priority: true,
-            opt_server_gc: true,
+            // Empty until the player first picks "custom": the options tab then starts it from the
+            // preset they had.
+            opt_custom: bebra_core::launch::OptimizationConfig::default(),
+            legacy_fast_lighting: None,
+            legacy_unlock_fps: None,
+            legacy_high_priority: None,
+            legacy_server_gc: None,
             bg_type: "space".to_string(),
             bg_custom_name: None,
             bg_dim: 40,
@@ -770,6 +782,25 @@ impl Settings {
             .trim()
             .to_string();
 
+        // The four switches older versions had become the same switches of `opt_custom`.
+        let legacy = [
+            self.legacy_fast_lighting.take(),
+            self.legacy_unlock_fps.take(),
+            self.legacy_high_priority.take(),
+            self.legacy_server_gc.take(),
+        ];
+        if legacy.iter().any(Option::is_some) {
+            let [fast_lighting, unlock_fps, high_priority, server_gc] = legacy;
+            self.opt_custom = bebra_core::launch::OptimizationConfig {
+                fast_lighting: fast_lighting.unwrap_or(false),
+                light_lowres: fast_lighting.unwrap_or(false),
+                unlock_fps: unlock_fps.unwrap_or(false),
+                high_priority: high_priority.unwrap_or(false),
+                server_gc: server_gc.unwrap_or(false),
+                ..Default::default()
+            };
+        }
+
         // Profiles of older versions map onto the current ones, so the options tab always has an
         // entry to show: "potato" and "iskander" became "optimized", "off"/"none" became
         // "standard", and "max_fps" (uncapped FPS without the lighting cuts) lives on as the
@@ -780,10 +811,11 @@ impl Settings {
             "potato" | "iskander" => self.opt_profile = "optimized".to_string(),
             "max_fps" => {
                 self.opt_profile = "custom".to_string();
-                self.opt_server_gc = true;
-                self.opt_fast_lighting = false;
-                self.opt_unlock_fps = true;
-                self.opt_high_priority = true;
+                self.opt_custom = bebra_core::launch::OptimizationConfig {
+                    unlock_fps: true,
+                    steady_fps: false,
+                    ..bebra_core::launch::OptimizationConfig::balanced(cpu_cores())
+                };
             }
             _ => self.opt_profile = "balanced".to_string(),
         }
@@ -901,47 +933,10 @@ impl Settings {
         self
     }
 
-    /// Resolves the optimization profile into a concrete runtime configuration.
+    /// Resolves the optimization profile into the switches for this launch.
     pub fn optimization_config(&self) -> bebra_core::launch::OptimizationConfig {
-        match self.opt_profile.as_str() {
-            "standard" => bebra_core::launch::OptimizationConfig {
-                profile: "standard".into(),
-                server_gc: false,
-                fast_lighting: false,
-                unlock_fps: false,
-                high_priority: false,
-                light_resolution: None,
-            },
-            "optimized" => bebra_core::launch::OptimizationConfig {
-                profile: "optimized".into(),
-                server_gc: true,
-                fast_lighting: true,
-                // The profile caps the frame rate at 60 itself (`build_command`).
-                unlock_fps: false,
-                high_priority: true,
-                light_resolution: Some(0.35),
-            },
-            "custom" => bebra_core::launch::OptimizationConfig {
-                profile: "custom".into(),
-                server_gc: self.opt_server_gc,
-                fast_lighting: self.opt_fast_lighting,
-                unlock_fps: self.opt_unlock_fps,
-                high_priority: self.opt_high_priority,
-                light_resolution: if self.opt_fast_lighting {
-                    Some(0.35)
-                } else {
-                    None
-                },
-            },
-            _ => bebra_core::launch::OptimizationConfig {
-                profile: "balanced".into(),
-                server_gc: true,
-                fast_lighting: false,
-                unlock_fps: false,
-                high_priority: true,
-                light_resolution: None,
-            },
-        }
+        bebra_core::launch::OptimizationConfig::preset(&self.opt_profile, cpu_cores())
+            .unwrap_or_else(|| self.opt_custom.clone())
     }
 
     /// Moves a favourite to the top of the list.
@@ -1449,39 +1444,30 @@ mod tests {
 
     #[test]
     fn optimization_profiles_and_config() {
+        use bebra_core::launch::OptimizationConfig;
         let mut s = Settings::default();
         assert_eq!(s.opt_profile, "balanced");
-        let cfg = s.optimization_config();
-        assert_eq!(cfg.profile, "balanced");
-        assert!(cfg.server_gc);
-        assert!(!cfg.fast_lighting);
-        assert!(!cfg.unlock_fps);
-        assert!(cfg.high_priority);
+        assert_eq!(
+            s.optimization_config(),
+            OptimizationConfig::balanced(cpu_cores())
+        );
 
         s.opt_profile = "optimized".into();
-        let cfg_opt = s.optimization_config();
-        assert_eq!(cfg_opt.profile, "optimized");
-        assert!(cfg_opt.fast_lighting);
-        assert!(!cfg_opt.unlock_fps, "the profile caps at 60 on its own");
-        assert_eq!(cfg_opt.light_resolution, Some(0.35));
+        let cfg = s.optimization_config();
+        assert!(cfg.fast_lighting && cfg.steady_fps && !cfg.unlock_fps);
 
         s.opt_profile = "standard".into();
-        let cfg_std = s.optimization_config();
-        assert_eq!(cfg_std.profile, "standard");
-        assert!(!cfg_std.server_gc);
-        assert!(!cfg_std.fast_lighting);
+        assert_eq!(s.optimization_config(), OptimizationConfig::default());
 
+        // "custom" uses exactly the stored switches.
         s.opt_profile = "custom".into();
-        s.opt_server_gc = false;
-        s.opt_fast_lighting = true;
-        s.opt_unlock_fps = true;
-        s.opt_high_priority = false;
-        let cfg_custom = s.optimization_config();
-        assert_eq!(cfg_custom.profile, "custom");
-        assert!(!cfg_custom.server_gc);
-        assert!(cfg_custom.fast_lighting);
-        assert!(cfg_custom.unlock_fps);
-        assert!(!cfg_custom.high_priority);
+        s.opt_custom = OptimizationConfig {
+            fast_lighting: true,
+            unlock_fps: true,
+            patch_status_icons: true,
+            ..Default::default()
+        };
+        assert_eq!(s.optimization_config(), s.opt_custom);
 
         s.opt_profile = "invalid_name".into();
         let san = s.sanitized();
@@ -1506,8 +1492,25 @@ mod tests {
         let fps = migrate("max_fps");
         assert_eq!(fps.opt_profile, "custom");
         let cfg = fps.optimization_config();
-        assert!(cfg.server_gc && cfg.unlock_fps && cfg.high_priority);
+        assert!(cfg.unlock_fps && cfg.high_priority);
         assert!(!cfg.fast_lighting);
+    }
+
+    #[test]
+    fn old_custom_switches_are_migrated() {
+        let json = r#"{"opt_profile":"custom","opt_fast_lighting":true,"opt_unlock_fps":false,
+            "opt_high_priority":true,"opt_server_gc":false}"#;
+        let s: Settings = serde_json::from_str(json).unwrap();
+        let s = s.sanitized();
+        let cfg = s.optimization_config();
+        assert!(cfg.fast_lighting && cfg.light_lowres && cfg.high_priority);
+        assert!(!cfg.server_gc && !cfg.unlock_fps && !cfg.patch_outline);
+        let saved = serde_json::to_string(&s).unwrap();
+        assert!(
+            !saved.contains("opt_fast_lighting"),
+            "old keys are not written back"
+        );
+        assert!(saved.contains("\"opt_custom\""));
     }
 
     #[test]

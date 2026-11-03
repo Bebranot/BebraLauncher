@@ -5,11 +5,47 @@ import { mockIPC } from "@tauri-apps/api/mocks";
 import type {
   AccountRow,
   HwidState,
+  OptimizationConfig,
+  OptimizationPresets,
   PackRow,
   ServerDetails,
   ServerRow,
   Settings,
 } from "./lib/api";
+import { OPTIMIZATION_KEYS, type OptimizationKey } from "./lib/optimization";
+
+const optConfig = (on: string[]): OptimizationConfig => {
+  const all = {} as Record<OptimizationKey, boolean>;
+  for (const key of OPTIMIZATION_KEYS) all[key] = on.includes(key);
+  return all;
+};
+const MOCK_OPT_BALANCED_KEYS = [
+  "ao_lowres",
+  "parallax_low",
+  "particles_lite",
+  "server_gc",
+  "low_latency_gc",
+  "high_priority",
+  "no_throttling",
+  "patch_outline",
+];
+const MOCK_OPT_BALANCED = optConfig(MOCK_OPT_BALANCED_KEYS);
+const MOCK_OPT_PRESETS: OptimizationPresets = {
+  standard: optConfig([]),
+  balanced: MOCK_OPT_BALANCED,
+  optimized: optConfig([
+    ...MOCK_OPT_BALANCED_KEYS,
+    "fast_lighting",
+    "light_lowres",
+    "ao_off",
+    "calm_effects",
+    "tile_edges_off",
+    "audio_lite",
+    "steady_fps",
+    "prefer_dgpu",
+    "patch_status_icons",
+  ]),
+};
 
 const server = (
   address: string,
@@ -107,10 +143,7 @@ const DEFAULT_SETTINGS: Settings = {
   extra_args: "",
   enabled_patches: [],
   opt_profile: "balanced",
-  opt_fast_lighting: false,
-  opt_unlock_fps: false,
-  opt_high_priority: true,
-  opt_server_gc: true,
+  opt_custom: { ...MOCK_OPT_BALANCED },
   bg_type: "space",
   bg_custom_name: null,
   bg_dim: 40,
@@ -325,6 +358,8 @@ export function installMock() {
           return accounts;
         case "get_settings":
           return settings;
+        case "optimization_presets":
+          return MOCK_OPT_PRESETS;
         case "get_hwid":
           return mockHwid;
         case "set_hwid_auto":

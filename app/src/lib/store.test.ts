@@ -24,6 +24,7 @@ vi.mock("./api", () => ({
 
 import { SecondClock, Store, clock } from "./store.svelte";
 import { matchesFilters } from "./filters";
+import { OPTIMIZATION_KEYS } from "./optimization";
 
 const row = (over: Partial<ServerRow> = {}): ServerRow => ({
   address: "ss14s://a.test",
@@ -73,10 +74,7 @@ const settings = (over: Partial<Settings> = {}): Settings => ({
   extra_args: "",
   enabled_patches: [],
   opt_profile: "balanced",
-  opt_fast_lighting: false,
-  opt_unlock_fps: false,
-  opt_high_priority: false,
-  opt_server_gc: false,
+  opt_custom: Object.fromEntries(OPTIMIZATION_KEYS.map((k) => [k, false])) as Settings["opt_custom"],
   bg_type: "space",
   bg_custom_name: null,
   bg_dim: 40,

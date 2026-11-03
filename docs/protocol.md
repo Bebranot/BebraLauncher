@@ -375,7 +375,7 @@ RunningClient(ProcessId INTEGER PK, MainModule TEXT, UsedVersion -> ContentVersi
 
 ### 8.2 Запуск процесса [код: Connector.cs:499-621; наш код: `launch::build_command`, `launch::spawn`]
 Путь к Loader: `BEBRA_LOADER` (имя обязано быть `SS14.Loader.exe`), затем `loader\` рядом с exe, затем `loader\out` в предках (dev).
-`Bebra.HwidPatch.dll` ищется рядом с Loader.
+`Bebra.HwidPatch.dll` и `Bebra.PerfPatch.dll` ищутся рядом с Loader.
 
 ```
 SS14.Loader.exe <engine zip> <sig hex> <signing_key> --username <имя> --cvar display.compat=<True|False> --cvar launch.launcher=true
@@ -385,8 +385,9 @@ SS14.Loader.exe <engine zip> <sig hex> <signing_key> --username <имя> --cvar 
   [--cvar name=value …]              # пользовательские
 ```
 - `--launcher` подразумевает `--connect`. `display.compat=True` — режим совместимости (GLES2).
-- Профиль оптимизации добавляет `light.*` (тени, блики, лимит теней), `display.vsync`/`display.max_fps` (60 для `optimized`, 0 при разблокировке FPS),
-  `light.resolution_scale`; при профиле ≠ `standard` — `res.*` (кеш, предзагрузка текстур); при `optimized` ещё `light.max_light_count`/`max_occluder_count=256`, `midi.parallelism=1`.
+- Профиль оптимизации — набор независимых переключателей `launch::OptimizationConfig`; какие `--cvar` даёт каждый, видно в `OptimizationConfig::cvars`
+  (`light.*`, `parallax.low_quality`, `particles.*`, только косметические `accessibility.disable_*`, `render.tile_edges`, `audio.*`/`ambience.cooldown`,
+  `display.vsync`/`display.max_fps`). Пользовательские `--cvar` идут после профиля и перекрывают его.
 - Пользовательские аргументы: только `--cvar name=value` (имя `[A-Za-z0-9_.]`, ≤ 100; значение ≤ 500 без управляющих). Остальное отбрасывается.
 
 Переменные окружения [код: Connector.cs:316-326, 520-563; наш код: `launch.rs`]:
@@ -406,7 +407,9 @@ SS14.Loader.exe <engine zip> <sig hex> <signing_key> --username <имя> --cvar 
 | `SS14_LAUNCHER_PATH` | путь к exe лаунчера (redial), опционально |
 | `BEBRA_HWID_MODERN`, `BEBRA_HWID_LEGACY` | опционально (задан HWID); читает патч `Bebra.HwidPatch` |
 | `DOTNET_TieredPGO=1`, `DOTNET_ReadyToRun=0`, `DOTNET_MULTILEVEL_LOOKUP=0` | всегда |
-| `DOTNET_gcServer=1`, `DOTNET_GCDynamicAdaptationMode=1`, `DOTNET_gcConcurrent=1`, `DOTNET_TC_QuickJitForLoops=1`, `BEBRA_OPTIMIZE=1` | при `server_gc` в профиле |
+| `DOTNET_gcServer=1`, `DOTNET_GCNoAffinitize=1` | переключатель `server_gc` |
+| `BEBRA_OPTIMIZE=1`, `DOTNET_GCRetainVM=1` | переключатель `low_latency_gc` |
+| `BEBRA_PERF_OUTLINE=1`, `BEBRA_PERF_STATUS_ICONS=1` | переключатели `patch_outline`, `patch_status_icons`; читает патч `Bebra.PerfPatch` |
 | `DOTNET_ROOT` | если задан `dotnet_root`; `play::prepare` сейчас его не задаёт |
 | `DOTNET_ROLL_FORWARD` | **не ставить** (Loader всегда на runtime лаунчера); удаляется из env |
 

@@ -542,7 +542,9 @@ async fn run() -> Result<()> {
                 extra_args: Vec::new(),
                 patches: Vec::new(),
                 hwid: None,
-                optimization: bebra_core::launch::OptimizationConfig::default(),
+                optimization: bebra_core::launch::OptimizationConfig::balanced(
+                    std::thread::available_parallelism().map_or(1, usize::from),
+                ),
             };
             let printer = ProgressPrinter::new("files");
             if dry_run {

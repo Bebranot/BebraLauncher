@@ -36,6 +36,7 @@ import {
   type SortKey,
 } from "./filters";
 import { applyDocumentLang, i18n } from "./i18n.svelte";
+import { OPTIMIZATION_KEYS } from "./optimization";
 import { DEFAULT_CUSTOM, applyTheme } from "./themes";
 
 export type Tab = "favorites" | "servers" | "recent" | "news" | "updates" | "mods" | "options";
@@ -1219,10 +1220,7 @@ export class Store {
       exported_at: new Date().toISOString(),
       settings: {
         opt_profile: s.opt_profile,
-        opt_fast_lighting: s.opt_fast_lighting,
-        opt_unlock_fps: s.opt_unlock_fps,
-        opt_high_priority: s.opt_high_priority,
-        opt_server_gc: s.opt_server_gc,
+        opt_custom: s.opt_custom,
         client_window_mode: s.client_window_mode,
         client_mute_unfocused: s.client_mute_unfocused,
         client_ui_scale: s.client_ui_scale,
@@ -1297,10 +1295,13 @@ export class Store {
           if (typeof s[key] === type) partial[key] = s[key] as Settings[K];
         };
         take("opt_profile", "string");
-        take("opt_fast_lighting", "boolean");
-        take("opt_unlock_fps", "boolean");
-        take("opt_high_priority", "boolean");
-        take("opt_server_gc", "boolean");
+        if (isObject(s.opt_custom)) {
+          const custom = s.opt_custom;
+          // Known keys only; anything missing or not a boolean is off.
+          partial.opt_custom = Object.fromEntries(
+            OPTIMIZATION_KEYS.map((k) => [k, custom[k] === true]),
+          ) as Settings["opt_custom"];
+        }
         take("client_window_mode", "string");
         take("client_mute_unfocused", "boolean");
         take("client_ui_scale", "string");

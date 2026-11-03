@@ -92,6 +92,14 @@
 - `hwid_auto` включён по умолчанию: новый идентификатор перед каждым запуском.
 - Не проверено: смена HWID на живом сервере.
 
+## Оптимизация
+
+- `launch::OptimizationConfig` — 18 независимых переключателей; пресеты (`standard`/`balanced`/`optimized`) — наборы этих же флагов (`OptimizationConfig::preset`). «custom» хранится в `Settings::opt_custom`; старые `opt_fast_lighting`/`opt_unlock_fps`/`opt_high_priority`/`opt_server_gc` читаются один раз в `sanitized` и больше не пишутся.
+- Значения cvar сверены с кодом игры (`C:\LocalDutyAVS`): `light.resolution_scale` по умолчанию 0.5 (поэтому 0.35), `particles.quality` 3, `audio.tick_rate` 30. `res.*`, `display.force_sync_windows`, `midi.parallelism`, `light.max_occluder_count` в релизной сборке ничего не дают; `light.max_light_count=256` даёт мерцание света — не возвращать.
+- Не включать в профили: `accessibility.disable_flash_effect`/`disable_blurry_vision`/`disable_drunk_overlay` (игровые штрафы), `viewport.scale_render` (мыло), `duty.low_end_mode_saved` и `audio.mute_unfocused` (настройки игрока).
+- `wintune.rs`: EcoQoS отключается `SetProcessInformation` после старта; GPU-предпочтение пишется в `HKCU\Software\Microsoft\DirectX\UserGpuPreferences` по полному пути exe и при выключении удаляется, только если значение ровно наше.
+- `loader/Bebra.PerfPatch/`: применяется из `ContentInit`, каждая часть по своей env. Кэш иконок безопасен, пока единственный вызывающий — `StatusIconOverlay` (он сортирует список на месте, это не мешает). Если в игре появятся новые вызовы `GetStatusIcons` — перепроверить.
+
 ## Сборка и инструменты
 
 - Проверки: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`; в `app/`: `pnpm check`, `pnpm test`. CI (`.github/workflows/ci.yml`) делает то же, плюс сборку Loader и HWID-патча и отдельный job с NuGet audit.

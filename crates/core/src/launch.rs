@@ -31,7 +31,11 @@ const CLEARED_ENV: &[&str] = &[
     "SS14_LOG_CLIENT",
     "BEBRA_HWID_MODERN",
     "BEBRA_HWID_LEGACY",
+    "BEBRA_PERF_OUTLINE",
+    "BEBRA_PERF_STATUS_ICONS",
     "DOTNET_gcServer",
+    "DOTNET_GCNoAffinitize",
+    "DOTNET_GCRetainVM",
     "DOTNET_GCDynamicAdaptationMode",
     "DOTNET_gcConcurrent",
     "DOTNET_TC_QuickJitForLoops",
@@ -74,35 +78,175 @@ pub struct ConnectTarget {
 pub enum ProcessPriority {
     #[default]
     Normal,
+    /// The highest class we use. `High` starved the desktop compositor and audio on weak machines
+    /// and gave nothing measurable on top of this.
     AboveNormal,
-    High,
 }
 
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+/// Performance tweaks for one launch. Every field is an independent switch; the values each one
+/// sets are fixed here, so a player's own combination ("custom") behaves exactly like the same
+/// switches inside a preset. `Default` is the "standard" profile: nothing is changed.
+///
+/// CVars go through `--cvar`, which only overrides for this session: nothing is written to the
+/// game's `client_config.toml`, and changing the same option in the game's settings wins.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct OptimizationConfig {
-    /// Optimization profile: "standard", "balanced", "optimized" or "custom".
-    pub profile: String,
-    /// Enable .NET Server GC, concurrent mode, and DATAS.
-    pub server_gc: bool,
-    /// Optimize lighting by disabling soft shadows and blur.
+    /// Hard light edges: no soft shadows and no light blur pass.
     pub fast_lighting: bool,
-    /// Unlock max FPS and disable VSync.
+    /// Light map at 35% of the screen resolution and at most 64 shadow casting lights.
+    pub light_lowres: bool,
+    /// Ambient occlusion rendered at a quarter of the screen resolution.
+    pub ao_lowres: bool,
+    /// No ambient occlusion at all (wins over `ao_lowres`).
+    pub ao_off: bool,
+    /// The cheap parallax (space background) renderer.
+    pub parallax_low: bool,
+    /// Particles at medium quality, scaled down earlier when many emitters are on screen.
+    pub particles_lite: bool,
+    /// Turns off purely cosmetic full-screen effects: heat haze, singularity warp, rainbow
+    /// overlay, night-vision noise, AI static. Effects that are a gameplay penalty (flash,
+    /// blurry vision, drunkenness) are left alone on purpose.
+    pub calm_effects: bool,
+    /// No tile edge sprites (where floor types blend into each other).
+    pub tile_edges_off: bool,
+    /// Lighter audio: no HRTF, audio positions updated 20 times a second, ambience re-checked
+    /// less often.
+    pub audio_lite: bool,
+    /// No VSync and no frame cap.
     pub unlock_fps: bool,
-    /// Process priority in Windows (High or AboveNormal).
+    /// No VSync, steady 60 FPS cap. Ignored when `unlock_fps` is on.
+    pub steady_fps: bool,
+    /// .NET Server GC: the collector works on all cores, so pauses are shorter.
+    pub server_gc: bool,
+    /// Low-latency GC mode in the client (no blocking full collections while playing), and memory
+    /// kept by the GC instead of being returned to the OS and asked for again.
+    pub low_latency_gc: bool,
+    /// The game process runs at "above normal" priority.
     pub high_priority: bool,
-    /// Scale of the lighting grid resolution (e.g. 0.35 when optimized, None for default).
-    pub light_resolution: Option<f32>,
+    /// Opts the game out of Windows power throttling (EcoQoS), so an unfocused or minimized
+    /// window is not moved to efficiency cores and slowed down.
+    pub no_throttling: bool,
+    /// Asks Windows to run the game on the high-performance GPU (laptops with two GPUs). Written
+    /// to the per-user graphics preferences, the same place as Settings → Display → Graphics;
+    /// switching it off removes only the value the launcher wrote.
+    pub prefer_dgpu: bool,
+    /// Client patch: the hover outline is recalculated at most ~33 times a second instead of
+    /// every frame.
+    pub patch_outline: bool,
+    /// Client patch: the status icon list of an entity is kept for 100 ms instead of being
+    /// rebuilt every frame.
+    pub patch_status_icons: bool,
 }
 
-impl Default for OptimizationConfig {
-    fn default() -> Self {
+/// With fewer logical cores Server GC costs more memory than it saves in pauses.
+const SERVER_GC_MIN_CORES: usize = 6;
+
+impl OptimizationConfig {
+    /// Resolves a preset name. `None` for "custom" and unknown names.
+    pub fn preset(profile: &str, cores: usize) -> Option<Self> {
+        match profile {
+            "standard" => Some(Self::default()),
+            "balanced" => Some(Self::balanced(cores)),
+            "optimized" => Some(Self::optimized(cores)),
+            _ => None,
+        }
+    }
+
+    /// Nothing the eye notices: cheaper settings for things that look the same, a calmer GC and
+    /// the process tweaks.
+    pub fn balanced(cores: usize) -> Self {
         Self {
-            profile: "balanced".into(),
-            server_gc: true,
-            fast_lighting: false,
-            unlock_fps: false,
+            ao_lowres: true,
+            parallax_low: true,
+            particles_lite: true,
+            server_gc: cores >= SERVER_GC_MIN_CORES,
+            low_latency_gc: true,
             high_priority: true,
-            light_resolution: None,
+            no_throttling: true,
+            patch_outline: true,
+            ..Self::default()
+        }
+    }
+
+    /// Everything that buys frames without making the game blurry or hiding gameplay: harder
+    /// light edges, no cosmetic shaders, lighter audio and a steady 60 FPS.
+    pub fn optimized(cores: usize) -> Self {
+        Self {
+            fast_lighting: true,
+            light_lowres: true,
+            ao_off: true,
+            calm_effects: true,
+            tile_edges_off: true,
+            audio_lite: true,
+            steady_fps: true,
+            prefer_dgpu: true,
+            patch_status_icons: true,
+            ..Self::balanced(cores)
+        }
+    }
+
+    /// Whether the `Bebra.PerfPatch` client patch has anything to do.
+    pub fn needs_perf_patch(&self) -> bool {
+        self.patch_outline || self.patch_status_icons
+    }
+
+    /// The `name=value` CVar assignments these switches stand for, in a fixed order.
+    pub fn cvars(&self) -> Vec<String> {
+        let mut out: Vec<&str> = Vec::new();
+        if self.fast_lighting {
+            out.extend(["light.soft_shadows=false", "light.blur=false"]);
+        }
+        if self.light_lowres {
+            out.extend([
+                "light.resolution_scale=0.35",
+                "light.max_shadowcasting_lights=64",
+            ]);
+        }
+        if self.ao_off {
+            out.push("light.ambient_occlusion=false");
+        } else if self.ao_lowres {
+            out.push("light.ambient_occlusion_resolution_scale=0.25");
+        }
+        if self.parallax_low {
+            out.push("parallax.low_quality=true");
+        }
+        if self.particles_lite {
+            out.extend(["particles.quality=2", "particles.auto_lod_emitters=32"]);
+        }
+        if self.calm_effects {
+            out.extend([
+                "accessibility.disable_heat_distortion=true",
+                "accessibility.disable_singulo_warp=true",
+                "accessibility.disable_rainbow_overlay=true",
+                "accessibility.disable_nv_noise=true",
+                "accessibility.disable_ai_static=true",
+            ]);
+        }
+        if self.tile_edges_off {
+            out.push("render.tile_edges=false");
+        }
+        if self.audio_lite {
+            out.extend([
+                "audio.hrtf=false",
+                "audio.tick_rate=20",
+                "ambience.cooldown=0.25",
+            ]);
+        }
+        // `display.max_fps` is ignored while VSync is on, so both always go together.
+        if self.unlock_fps {
+            out.extend(["display.vsync=false", "display.max_fps=0"]);
+        } else if self.steady_fps {
+            out.extend(["display.vsync=false", "display.max_fps=60"]);
+        }
+        out.into_iter().map(String::from).collect()
+    }
+
+    fn priority(&self) -> ProcessPriority {
+        if self.high_priority {
+            ProcessPriority::AboveNormal
+        } else {
+            ProcessPriority::Normal
         }
     }
 }
@@ -146,6 +290,11 @@ pub struct LaunchCommand {
     pub env: Vec<(String, String)>,
     pub env_remove: Vec<String>,
     pub priority: ProcessPriority,
+    /// Opt the started process out of Windows power throttling (EcoQoS).
+    pub no_throttling: bool,
+    /// Ask Windows to run `program` on the high-performance GPU; `false` removes that request
+    /// if the launcher made it earlier.
+    pub prefer_dgpu: bool,
 }
 
 const SECRET_ENV: &[&str] = &["ROBUST_AUTH_TOKEN"];
@@ -192,6 +341,12 @@ impl LaunchCommand {
         }
         if self.priority != ProcessPriority::Normal {
             out.push_str(&format!(" [priority={:?}]", self.priority));
+        }
+        if self.no_throttling {
+            out.push_str(" [no_throttling]");
+        }
+        if self.prefer_dgpu {
+            out.push_str(" [prefer_dgpu]");
         }
         out
     }
@@ -387,68 +542,12 @@ pub fn build_command(spec: &LaunchSpec) -> LaunchCommand {
         }
     }
 
-    // Client optimizations: pass CVars according to profile and settings.
+    // Optimization CVars come before the player's own arguments, so a CVar the player set by
+    // hand (the FPS limit from the options tab, say) wins over the profile.
     let opt = &spec.optimization;
-    let is_optimized = opt.profile == "optimized";
-    if opt.fast_lighting {
-        let shadow_lights = if is_optimized { 8 } else { 16 };
-        args.extend([
-            "--cvar".into(),
-            "light.soft_shadows=false".into(),
-            "--cvar".into(),
-            "light.blur=false".into(),
-            "--cvar".into(),
-            format!("light.max_shadowcasting_lights={shadow_lights}"),
-        ]);
-    }
-    if opt.unlock_fps {
-        args.extend([
-            "--cvar".into(),
-            "display.vsync=false".into(),
-            "--cvar".into(),
-            "display.max_fps=0".into(),
-        ]);
-    } else if is_optimized {
-        // A weak machine is better off with a steady 60 than with VSync stalls or an uncapped
-        // render loop competing with the game thread.
-        args.extend([
-            "--cvar".into(),
-            "display.vsync=false".into(),
-            "--cvar".into(),
-            "display.max_fps=60".into(),
-        ]);
-    }
-    if let Some(res) = opt.light_resolution {
-        args.extend(["--cvar".into(), format!("light.resolution_scale={res}")]);
-    }
-    if opt.profile != "standard" {
-        args.extend([
-            "--cvar".into(),
-            "res.prototype_reload_watch=false".into(),
-            "--cvar".into(),
-            "res.texturepreloadingenabled=true".into(),
-            "--cvar".into(),
-            "res.texture_preload_cache=true".into(),
-        ]);
-        // Mute while unfocused is the player's own setting (`client_mute_unfocused`), and the
-        // thread priority and render target pool stay at the engine's defaults: a profile must
-        // not override what the player chose or starve the rest of the system.
-        if is_optimized {
-            args.extend([
-                "--cvar".into(),
-                "light.max_light_count=256".into(),
-                "--cvar".into(),
-                "light.max_occluder_count=256".into(),
-                "--cvar".into(),
-                "res.check_bad_file_extensions=false".into(),
-                "--cvar".into(),
-                "res.checkpathcasing=false".into(),
-                "--cvar".into(),
-                "display.force_sync_windows=false".into(),
-                "--cvar".into(),
-                "midi.parallelism=1".into(),
-            ]);
-        }
+    for cvar in opt.cvars() {
+        args.push("--cvar".into());
+        args.push(cvar);
     }
 
     for extra in safe_extra_args(&spec.extra_args) {
@@ -504,24 +603,25 @@ pub fn build_command(spec: &LaunchSpec) -> LaunchCommand {
     env.push(("DOTNET_MULTILEVEL_LOOKUP".into(), "0".into()));
     if opt.server_gc {
         env.push(("DOTNET_gcServer".into(), "1".into()));
-        env.push(("DOTNET_GCDynamicAdaptationMode".into(), "1".into()));
-        env.push(("DOTNET_gcConcurrent".into(), "1".into()));
-        env.push(("DOTNET_TC_QuickJitForLoops".into(), "1".into()));
+        // Server GC pins one heap thread per core by default; the game shares the machine with
+        // the desktop, the browser and voice chat, so let Windows schedule them.
+        env.push(("DOTNET_GCNoAffinitize".into(), "1".into()));
+    }
+    if opt.low_latency_gc {
+        // Read by the Loader: `GCSettings.LatencyMode = SustainedLowLatency`.
         env.push(("BEBRA_OPTIMIZE".into(), "1".into()));
+        env.push(("DOTNET_GCRetainVM".into(), "1".into()));
+    }
+    // Read by the `Bebra.PerfPatch` client patch.
+    if opt.patch_outline {
+        env.push(("BEBRA_PERF_OUTLINE".into(), "1".into()));
+    }
+    if opt.patch_status_icons {
+        env.push(("BEBRA_PERF_STATUS_ICONS".into(), "1".into()));
     }
     if let Some(root) = &spec.dotnet_root {
         env.push(("DOTNET_ROOT".into(), root.display().to_string()));
     }
-
-    let priority = if opt.high_priority {
-        if is_optimized {
-            ProcessPriority::High
-        } else {
-            ProcessPriority::AboveNormal
-        }
-    } else {
-        ProcessPriority::Normal
-    };
 
     let env_remove = CLEARED_ENV
         .iter()
@@ -534,7 +634,9 @@ pub fn build_command(spec: &LaunchSpec) -> LaunchCommand {
         args,
         env,
         env_remove,
-        priority,
+        priority: opt.priority(),
+        no_throttling: opt.no_throttling,
+        prefer_dgpu: opt.prefer_dgpu,
     }
 }
 
@@ -626,8 +728,18 @@ pub fn find_loader() -> Result<PathBuf> {
 /// build publishes into `loader/out`. `None` means this build has no patch, so the launcher must
 /// not pretend it can change the HWID.
 pub fn bundled_hwid_patch() -> Option<PathBuf> {
+    bundled_patch("Bebra.HwidPatch.dll")
+}
+
+/// The performance client patch (`Bebra.PerfPatch`), found the same way as
+/// [`bundled_hwid_patch`].
+pub fn bundled_perf_patch() -> Option<PathBuf> {
+    bundled_patch("Bebra.PerfPatch.dll")
+}
+
+fn bundled_patch(file_name: &str) -> Option<PathBuf> {
     let loader = find_loader().ok()?;
-    let path = loader.parent()?.join("Bebra.HwidPatch.dll");
+    let path = loader.parent()?.join(file_name);
     path.is_file().then_some(path)
 }
 
@@ -667,7 +779,6 @@ pub fn spawn(cmd: &LaunchCommand, stdout_log: &Path, stderr_log: &Path) -> Resul
         let flags = match cmd.priority {
             ProcessPriority::Normal => 0,
             ProcessPriority::AboveNormal => 0x00008000,
-            ProcessPriority::High => 0x00000080,
         };
         if flags != 0 {
             c.creation_flags(flags);
@@ -679,8 +790,20 @@ pub fn spawn(cmd: &LaunchCommand, stdout_log: &Path, stderr_log: &Path) -> Resul
     for (k, v) in &cmd.env {
         c.env(k, v);
     }
-    c.spawn()
-        .map_err(|e| Error::Other(format!("failed to start {}: {e}", cmd.program.display())))
+    // The GPU preference is read when the process starts, so it is written before. Failures in
+    // these two only cost performance and must not block the game.
+    if let Err(e) = crate::wintune::set_gpu_preference(&cmd.program, cmd.prefer_dgpu) {
+        eprintln!("could not set the GPU preference: {e}");
+    }
+    let child = c
+        .spawn()
+        .map_err(|e| Error::Other(format!("failed to start {}: {e}", cmd.program.display())))?;
+    if cmd.no_throttling {
+        if let Err(e) = crate::wintune::disable_power_throttling(&child) {
+            eprintln!("could not turn off power throttling: {e}");
+        }
+    }
+    Ok(child)
 }
 
 #[cfg(test)]
@@ -733,14 +856,7 @@ mod tests {
             extra_args: vec![],
             patches: vec![],
             hwid: None,
-            optimization: OptimizationConfig {
-                profile: "standard".into(),
-                server_gc: false,
-                fast_lighting: false,
-                unlock_fps: false,
-                high_priority: false,
-                light_resolution: None,
-            },
+            optimization: OptimizationConfig::default(),
         }
     }
 
@@ -1068,6 +1184,8 @@ mod tests {
             env: vec![("MY_TEST_VAR".into(), "world".into())],
             env_remove: vec!["ROBUST_AUTH_TOKEN".into()],
             priority: ProcessPriority::Normal,
+            no_throttling: false,
+            prefer_dgpu: false,
         };
         std::env::set_var("ROBUST_AUTH_TOKEN", "should-not-reach-the-child");
         let status = spawn(&cmd, &out, &err).unwrap().wait().unwrap();
@@ -1089,6 +1207,8 @@ mod tests {
             env: vec![],
             env_remove: vec![],
             priority: ProcessPriority::Normal,
+            no_throttling: false,
+            prefer_dgpu: false,
         };
         let err = spawn(&cmd, &tmp.path().join("o"), &tmp.path().join("e")).unwrap_err();
         assert!(err.to_string().contains("failed to start"));
@@ -1259,65 +1379,117 @@ mod tests {
         );
     }
 
-    #[test]
-    fn optimization_balanced_profile_adds_cvars_and_server_gc() {
-        let mut s = spec();
-        s.optimization = OptimizationConfig {
-            profile: "balanced".into(),
-            server_gc: true,
-            fast_lighting: false,
-            unlock_fps: false,
-            high_priority: true,
-            light_resolution: None,
-        };
-        let cmd = build_command(&s);
-        assert_eq!(cmd.priority, ProcessPriority::AboveNormal);
-        assert_eq!(env_of(&cmd, "DOTNET_gcServer").as_deref(), Some("1"));
-        assert_eq!(
-            env_of(&cmd, "DOTNET_GCDynamicAdaptationMode").as_deref(),
-            Some("1")
-        );
-        assert_eq!(env_of(&cmd, "BEBRA_OPTIMIZE").as_deref(), Some("1"));
-        assert!(cmd
-            .args
-            .contains(&"res.prototype_reload_watch=false".to_string()));
-        assert!(cmd
-            .args
-            .contains(&"res.texturepreloadingenabled=true".to_string()));
-        assert!(cmd
-            .args
-            .contains(&"res.texture_preload_cache=true".to_string()));
+    fn cvar_of(cmd: &LaunchCommand, name: &str) -> Option<String> {
+        let prefix = format!("{name}=");
+        cmd.args
+            .windows(2)
+            .filter(|w| w[0] == "--cvar")
+            .find_map(|w| w[1].strip_prefix(&prefix).map(String::from))
     }
 
     #[test]
-    fn optimization_optimized_profile_caps_fps_and_leaves_player_settings_alone() {
+    fn standard_profile_changes_nothing() {
+        let cmd = build_command(&spec());
+        assert_eq!(cmd.priority, ProcessPriority::Normal);
+        assert!(!cmd.no_throttling && !cmd.prefer_dgpu);
+        for name in [
+            "light.soft_shadows",
+            "display.vsync",
+            "display.max_fps",
+            "parallax.low_quality",
+        ] {
+            assert_eq!(cvar_of(&cmd, name), None, "{name}");
+        }
+        for name in [
+            "DOTNET_gcServer",
+            "BEBRA_OPTIMIZE",
+            "BEBRA_PERF_OUTLINE",
+            "BEBRA_PERF_STATUS_ICONS",
+        ] {
+            assert_eq!(env_of(&cmd, name), None, "{name}");
+            assert!(
+                cmd.env_remove.iter().any(|n| n == name),
+                "{name} must not leak"
+            );
+        }
+    }
+
+    #[test]
+    fn balanced_profile_keeps_the_picture() {
         let mut s = spec();
-        s.optimization = OptimizationConfig {
-            profile: "optimized".into(),
-            server_gc: true,
-            fast_lighting: true,
-            unlock_fps: false,
-            high_priority: true,
-            light_resolution: Some(0.35),
-        };
+        s.optimization = OptimizationConfig::balanced(8);
         let cmd = build_command(&s);
-        assert_eq!(cmd.priority, ProcessPriority::High);
-        assert!(cmd.args.contains(&"light.soft_shadows=false".to_string()));
-        assert!(cmd.args.contains(&"light.blur=false".to_string()));
-        assert!(cmd
-            .args
-            .contains(&"light.resolution_scale=0.35".to_string()));
-        assert!(cmd
-            .args
-            .contains(&"light.max_shadowcasting_lights=8".to_string()));
-        assert!(cmd.args.contains(&"light.max_light_count=256".to_string()));
-        assert!(cmd.args.contains(&"midi.parallelism=1".to_string()));
-        assert!(cmd.args.contains(&"display.vsync=false".to_string()));
-        assert!(cmd.args.contains(&"display.max_fps=60".to_string()));
+        assert_eq!(cmd.priority, ProcessPriority::AboveNormal);
+        assert!(cmd.no_throttling);
+        assert!(!cmd.prefer_dgpu);
+        assert_eq!(env_of(&cmd, "DOTNET_gcServer").as_deref(), Some("1"));
+        assert_eq!(env_of(&cmd, "DOTNET_GCNoAffinitize").as_deref(), Some("1"));
+        assert_eq!(env_of(&cmd, "BEBRA_OPTIMIZE").as_deref(), Some("1"));
+        assert_eq!(env_of(&cmd, "BEBRA_PERF_OUTLINE").as_deref(), Some("1"));
+        assert_eq!(env_of(&cmd, "BEBRA_PERF_STATUS_ICONS"), None);
+        assert_eq!(
+            cvar_of(&cmd, "parallax.low_quality").as_deref(),
+            Some("true")
+        );
+        assert_eq!(
+            cvar_of(&cmd, "light.ambient_occlusion_resolution_scale").as_deref(),
+            Some("0.25")
+        );
+        // Lighting, frame rate and effects stay as the player has them.
+        for name in [
+            "light.soft_shadows",
+            "light.resolution_scale",
+            "light.ambient_occlusion",
+            "display.vsync",
+            "display.max_fps",
+            "accessibility.disable_heat_distortion",
+        ] {
+            assert_eq!(cvar_of(&cmd, name), None, "{name}");
+        }
+    }
+
+    #[test]
+    fn server_gc_needs_enough_cores() {
+        assert!(!OptimizationConfig::balanced(4).server_gc);
+        assert!(!OptimizationConfig::optimized(4).server_gc);
+        assert!(OptimizationConfig::optimized(6).server_gc);
+    }
+
+    #[test]
+    fn optimized_profile_caps_fps_and_leaves_player_settings_alone() {
+        let mut s = spec();
+        s.optimization = OptimizationConfig::optimized(8);
+        let cmd = build_command(&s);
+        assert_eq!(cmd.priority, ProcessPriority::AboveNormal);
+        assert!(cmd.no_throttling && cmd.prefer_dgpu);
+        for (name, value) in [
+            ("light.soft_shadows", "false"),
+            ("light.blur", "false"),
+            ("light.resolution_scale", "0.35"),
+            ("light.max_shadowcasting_lights", "64"),
+            ("light.ambient_occlusion", "false"),
+            ("render.tile_edges", "false"),
+            ("audio.hrtf", "false"),
+            ("accessibility.disable_heat_distortion", "true"),
+            ("display.vsync", "false"),
+            ("display.max_fps", "60"),
+        ] {
+            assert_eq!(cvar_of(&cmd, name).as_deref(), Some(value), "{name}");
+        }
+        // AO is off, so its resolution is not set as well.
+        assert_eq!(
+            cvar_of(&cmd, "light.ambient_occlusion_resolution_scale"),
+            None
+        );
         for owned_by_player_or_engine in [
             "audio.mute_unfocused",
             "sys.game_thread_priority",
             "display.post_shader_render_target_pool_max_size",
+            // Gameplay penalties are not cosmetic.
+            "accessibility.disable_flash_effect",
+            "accessibility.disable_blurry_vision",
+            "accessibility.disable_drunk_overlay",
+            "duty.low_end_mode_saved",
         ] {
             assert!(
                 !cmd.args
@@ -1326,32 +1498,83 @@ mod tests {
                 "{owned_by_player_or_engine} is not the profile's to set"
             );
         }
-        assert_eq!(env_of(&cmd, "DOTNET_gcServer").as_deref(), Some("1"));
-        assert_eq!(env_of(&cmd, "BEBRA_OPTIMIZE").as_deref(), Some("1"));
+        assert_eq!(
+            env_of(&cmd, "BEBRA_PERF_STATUS_ICONS").as_deref(),
+            Some("1")
+        );
     }
 
     #[test]
-    fn unlock_fps_means_no_cap_in_every_profile() {
-        for profile in ["optimized", "custom"] {
+    fn every_switch_works_on_its_own() {
+        let on = |f: fn(&mut OptimizationConfig)| {
             let mut s = spec();
-            s.optimization = OptimizationConfig {
-                profile: profile.into(),
-                server_gc: true,
-                fast_lighting: false,
-                unlock_fps: true,
-                high_priority: true,
-                light_resolution: None,
-            };
-            let cmd = build_command(&s);
-            assert!(cmd.args.contains(&"display.vsync=false".to_string()));
-            assert!(
-                cmd.args.contains(&"display.max_fps=0".to_string()),
-                "{profile}"
-            );
-            assert!(
-                !cmd.args.contains(&"display.max_fps=60".to_string()),
-                "{profile}"
-            );
-        }
+            f(&mut s.optimization);
+            build_command(&s)
+        };
+        let cmd = on(|o| o.fast_lighting = true);
+        assert_eq!(cvar_of(&cmd, "light.blur").as_deref(), Some("false"));
+        assert_eq!(cvar_of(&cmd, "light.resolution_scale"), None);
+        let cmd = on(|o| o.light_lowres = true);
+        assert_eq!(
+            cvar_of(&cmd, "light.resolution_scale").as_deref(),
+            Some("0.35")
+        );
+        assert_eq!(cvar_of(&cmd, "light.soft_shadows"), None);
+        let cmd = on(|o| o.particles_lite = true);
+        assert_eq!(cvar_of(&cmd, "particles.quality").as_deref(), Some("2"));
+        let cmd = on(|o| o.audio_lite = true);
+        assert_eq!(cvar_of(&cmd, "audio.tick_rate").as_deref(), Some("20"));
+        let cmd = on(|o| o.low_latency_gc = true);
+        assert_eq!(env_of(&cmd, "DOTNET_GCRetainVM").as_deref(), Some("1"));
+        assert_eq!(env_of(&cmd, "DOTNET_gcServer"), None);
+        let cmd = on(|o| o.server_gc = true);
+        assert_eq!(env_of(&cmd, "DOTNET_gcServer").as_deref(), Some("1"));
+        assert_eq!(env_of(&cmd, "BEBRA_OPTIMIZE"), None);
+        assert_eq!(
+            on(|o| o.high_priority = true).priority,
+            ProcessPriority::AboveNormal
+        );
+        assert!(on(|o| o.no_throttling = true).no_throttling);
+        assert!(on(|o| o.prefer_dgpu = true).prefer_dgpu);
+    }
+
+    #[test]
+    fn unlock_fps_wins_over_the_steady_cap() {
+        let mut s = spec();
+        s.optimization = OptimizationConfig {
+            unlock_fps: true,
+            ..OptimizationConfig::optimized(8)
+        };
+        let cmd = build_command(&s);
+        assert_eq!(cvar_of(&cmd, "display.vsync").as_deref(), Some("false"));
+        assert_eq!(cvar_of(&cmd, "display.max_fps").as_deref(), Some("0"));
+        assert!(!cmd.args.contains(&"display.max_fps=60".to_string()));
+    }
+
+    #[test]
+    fn player_cvars_come_after_the_profile() {
+        let mut s = spec();
+        s.optimization = OptimizationConfig::optimized(8);
+        s.extra_args = vec!["--cvar".into(), "display.max_fps=144".into()];
+        let cmd = build_command(&s);
+        let profile = cmd.args.iter().position(|a| a == "display.max_fps=60");
+        let player = cmd.args.iter().position(|a| a == "display.max_fps=144");
+        assert!(
+            profile.is_some() && profile < player,
+            "the engine applies the last value"
+        );
+    }
+
+    #[test]
+    fn presets_resolve_by_name() {
+        assert_eq!(
+            OptimizationConfig::preset("standard", 8),
+            Some(OptimizationConfig::default())
+        );
+        assert_eq!(
+            OptimizationConfig::preset("optimized", 8),
+            Some(OptimizationConfig::optimized(8))
+        );
+        assert_eq!(OptimizationConfig::preset("custom", 8), None);
     }
 }

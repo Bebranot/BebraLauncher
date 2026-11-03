@@ -4,6 +4,7 @@ export interface RecommendedHub {
 }
 // Typed wrappers over the app's Tauri commands (app/src-tauri/src/commands.rs).
 import { invoke } from "@tauri-apps/api/core";
+import type { OptimizationKey } from "./optimization";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 export interface AppInfo {
@@ -99,6 +100,10 @@ export interface HubSetting {
   enabled: boolean;
 }
 
+/** The switches of one optimization profile; all keys are always present. */
+export type OptimizationConfig = Record<OptimizationKey, boolean>;
+export type OptimizationPresets = Record<"standard" | "balanced" | "optimized", OptimizationConfig>;
+
 export interface Settings {
   /** Settings file format; written back unchanged so an older UI cannot undo a migration. */
   schema_version: number;
@@ -127,10 +132,7 @@ export interface Settings {
   extra_args: string;
   enabled_patches: string[];
   opt_profile: string;
-  opt_fast_lighting: boolean;
-  opt_unlock_fps: boolean;
-  opt_high_priority: boolean;
-  opt_server_gc: boolean;
+  opt_custom: OptimizationConfig;
   bg_type: "space" | "custom" | "none" | string;
   bg_custom_name: string | null;
   bg_dim: number;
@@ -300,6 +302,7 @@ export const api = {
   selectAccount: (account: string | null) => invoke<void>("select_account", { account }),
   getSettings: () => invoke<Settings>("get_settings"),
   setSettings: (settings: Settings) => invoke<Settings>("set_settings", { settings }),
+  optimizationPresets: () => invoke<OptimizationPresets>("optimization_presets"),
   getHwid: () => invoke<HwidState>("get_hwid"),
   setHwidAuto: (enabled: boolean) => invoke<HwidState>("set_hwid_auto", { enabled }),
   regenerateHwid: () => invoke<HwidState>("regenerate_hwid"),

@@ -217,29 +217,79 @@ export const de: Dictionary = {
     "Verbessert Bildraten-Stabilität und Client-Leistung.",
   "opt.profile.standard": "Standard (Original-Client)",
   "opt.profile.standardDesc":
-    "Standard-Spielstart ohne Modifikationen: unveränderte Grafik und Engine-Standardverhalten.",
+    "Nichts wird geändert: Der Client startet unverändert.",
   "opt.profile.balanced": "Ausgewogen (empfohlen)",
   "opt.profile.balancedDesc":
-    "Optimiert .NET-Speicher (Server GC + DATAS) und Textur-Cache, erhöht Prozesspriorität. Beseitigt Mikroruckler ohne Grafikverlust.",
+    "Unsichtbare Anpassungen: günstigere Ambient Occlusion und Weltraumhintergrund, leichtere Partikel, ruhigerer Garbage Collector, Prozesspriorität und Umriss-Patch. Das Bild bleibt gleich.",
   "opt.profile.optimized": "Optimiert (für schwache PCs)",
   "opt.profile.optimizedDesc":
-    "Für schwache PCs und Laptops: keine weichen Schatten und keine Lichtunschärfe, leichtere Lichtkarte, 60-FPS-Grenze und hohe Prozesspriorität.",
+    "Härtere Lichtkanten, niedrigere Lichtauflösung, keine Ambient Occlusion und keine kosmetischen Shader, leichteres Audio, gleichmäßige 60 FPS, dedizierte Grafikkarte und Statussymbol-Patch. Nichts ist unscharf, keine Spieleffekte werden ausgeblendet.",
   "opt.profile.custom": "Benutzerdefiniert",
   "opt.profile.customDesc":
-    "Individuelle Optimierungsoptionen unten anpassen.",
+    "Eigene Schalter unten. Sie starten mit den Einstellungen des vorherigen Profils.",
   "opt.optDetails": "Detaillierte Einstellungen",
-  "opt.optServerGc": ".NET-Speicheroptimierung (Server GC + DATAS)",
-  "opt.optServerGcHint":
-    "Aktiviert parallele Server-Garbage-Collection mit dynamischer Anpassung zur Vermeidung von Rucklern.",
-  "opt.optFastLighting": "Schnelle Beleuchtung (keine weichen Schatten)",
-  "opt.optFastLightingHint":
-    "Deaktiviert anspruchsvolle weiche Schatten und Lichtunschärfe für deutlich höhere FPS.",
-  "opt.optUnlockFps": "Bildrate entsperren (VSync aus)",
-  "opt.optUnlockFpsHint":
-    "Hebt Bildratenbegrenzung auf und schaltet VSync für minimale Eingabeverzögerung ab.",
-  "opt.optHighPriority": "Erhöhte Prozesspriorität",
-  "opt.optHighPriorityHint":
-    "Weist dem Spielprozess unter Windows erhöhte CPU-Priorität zu, um Ruckler durch Hintergrund-Apps zu vermeiden.",
+  "opt.swOverridden": "Ohne Wirkung, solange der andere Schalter aktiv ist.",
+  "opt.group.lighting": "Beleuchtung",
+  "opt.group.effects": "Effekte",
+  "opt.group.audio": "Audio",
+  "opt.group.fps": "Bildrate",
+  "opt.group.memory": "Speicher und Laufzeit",
+  "opt.group.windows": "Windows",
+  "opt.group.patches": "Client-Patches",
+  "opt.sw.fast_lighting": "Harte Lichtkanten",
+  "opt.sw.fast_lightingHint":
+    "Keine weichen Schatten und kein Licht-Unschärfe-Durchgang. Schattenkanten werden scharf, die FPS in beleuchteten Räumen steigen spürbar.",
+  "opt.sw.light_lowres": "Lichtkarte in niedriger Auflösung",
+  "opt.sw.light_lowresHint":
+    "Das Licht wird mit 35 % der Bildschirmauflösung berechnet, höchstens 64 Lichtquellen mit Schatten. Das Licht wirkt etwas blockiger.",
+  "opt.sw.ao_lowres": "Ambient Occlusion in Viertelauflösung",
+  "opt.sw.ao_lowresHint":
+    "Ambient Occlusion läuft in einem Viertel der Auflösung. Sieht gleich aus, belastet die Grafikkarte weniger.",
+  "opt.sw.ao_off": "Keine Ambient Occlusion",
+  "opt.sw.ao_offHint":
+    "Ambient Occlusion ist ganz aus. Die größte Ersparnis, aber Ecken und Wandübergänge wirken flach. Überschreibt die Option darüber.",
+  "opt.sw.parallax_low": "Einfacher Weltraumhintergrund",
+  "opt.sw.parallax_lowHint":
+    "Günstiger Parallax-Renderer. Der Weltraum hinter den Fenstern wird einfacher gezeichnet.",
+  "opt.sw.particles_lite": "Leichtere Partikel",
+  "opt.sw.particles_liteHint":
+    "Partikel in mittlerer Qualität, bei vielen Emittern früher herunterskaliert. Rauch und Funken sind spärlicher.",
+  "opt.sw.calm_effects": "Keine kosmetischen Shader",
+  "opt.sw.calm_effectsHint":
+    "Schaltet rein dekorative Vollbildeffekte ab: Hitzeflimmern, Singularitätsverzerrung, Regenbogen-Overlay, Nachtsichtrauschen und KI-Störungen. Spieleffekte (Blitz, verschwommene Sicht, Betrunkenheit) bleiben.",
+  "opt.sw.tile_edges_off": "Keine Kantenübergänge der Felder",
+  "opt.sw.tile_edges_offHint":
+    "Zeichnet keine Übergangs-Sprites zwischen verschiedenen Bodenbelägen. Die Übergänge werden hart.",
+  "opt.sw.audio_lite": "Leichteres Audio",
+  "opt.sw.audio_liteHint":
+    "Kein HRTF, Positionsaudio wird 20-mal pro Sekunde statt 30-mal aktualisiert, Umgebungsgeräusche werden seltener geprüft. Die Räumlichkeit ist etwas ungenauer.",
+  "opt.sw.unlock_fps": "FPS-Begrenzung aufheben",
+  "opt.sw.unlock_fpsHint":
+    "Kein VSync und keine Bildbegrenzung. Geringste Latenz, aber die Grafikkarte läuft am Limit und wird heiß.",
+  "opt.sw.steady_fps": "Gleichmäßige 60 FPS",
+  "opt.sw.steady_fpsHint":
+    "Kein VSync, Bilder auf 60 begrenzt. Weniger Wärme und Lärm. Wirkungslos, solange die FPS-Begrenzung aufgehoben ist.",
+  "opt.sw.server_gc": "Server-Garbage-Collector (.NET)",
+  "opt.sw.server_gcHint":
+    "Die Speicherbereinigung läuft auf allen Kernen mit kürzeren Pausen, braucht aber mehr RAM. Die Profile aktivieren ihn nur auf PCs mit mindestens 6 logischen Kernen.",
+  "opt.sw.low_latency_gc": "GC-Modus mit niedriger Latenz",
+  "opt.sw.low_latency_gcHint":
+    "Der Client vermeidet blockierende Vollbereinigungen während des Spiels, und der GC gibt Speicher nicht ans System zurück. Weniger Ruckler, mehr RAM-Verbrauch.",
+  "opt.sw.high_priority": "Erhöhte Prozesspriorität",
+  "opt.sw.high_priorityHint":
+    "Das Spiel läuft mit der Priorität „Höher als normal“ und überlässt Browser und Discord seltener die CPU.",
+  "opt.sw.no_throttling": "Keine Windows-Energiedrosselung",
+  "opt.sw.no_throttlingHint":
+    "Verzichtet auf EcoQoS, damit das Spiel im Hintergrund oder minimiert nicht gebremst wird. Ein Laptop braucht im Hintergrund mehr Strom.",
+  "opt.sw.prefer_dgpu": "Dedizierte Grafikkarte bevorzugen",
+  "opt.sw.prefer_dgpuHint":
+    "Bittet Windows, das Spiel auf der Hochleistungs-GPU auszuführen (Laptops mit zwei Grafikkarten). Wird am selben Ort gespeichert wie Einstellungen, Anzeige, Grafik; beim Ausschalten wird nur der Wert des Launchers entfernt.",
+  "opt.sw.patch_outline": "Patch: Umriss seltener aktualisieren",
+  "opt.sw.patch_outlineHint":
+    "Der Hover-Umriss wird etwa 33-mal pro Sekunde statt in jedem Frame neu berechnet. Der Patch wird in den Client injiziert; wirkt etwas falsch, lässt er sich ausschalten.",
+  "opt.sw.patch_status_icons": "Patch: Statussymbole zwischenspeichern",
+  "opt.sw.patch_status_iconsHint":
+    "Die Liste der Statussymbole einer Entität wird 100 ms wiederverwendet statt in jedem Frame neu aufgebaut. Der Patch wird in den Client injiziert; wirkt etwas falsch, lässt er sich ausschalten.",
 
   "opt.configTitle": "Konfigurationsverwaltung",
   "opt.configDesc": "Exportieren und importieren Sie Einstellungen und Lieblingsserver.",

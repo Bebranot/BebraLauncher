@@ -145,6 +145,7 @@ fn main() {
         .manage(state)
         .invoke_handler(tauri::generate_handler![
             commands::app_info,
+            commands::optimization_presets,
             commands::list_servers,
             commands::list_accounts,
             commands::select_account,
