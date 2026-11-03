@@ -1,82 +1,105 @@
 # Дизайн: с чего начать (передача работы)
 
-Точка входа для работы над внешним видом (файл в репозитории, `docs/**/*.md` не игнорируется).
+Точка входа для работы над внешним видом. Файл в репозитории (`docs/**/*.md` не игнорируется).
 
 ## Как смотреть интерфейс
 
-Быстрее всего в браузере, без Tauri, на тестовых данных:
-
 ```powershell
 cd app
-pnpm dev          # http://127.0.0.1:1420, вместо бэкенда подставляется src/dev-mock.ts
+pnpm dev          # http://127.0.0.1:1420, вместо бэкенда — src/dev-mock.ts
 ```
 
-- Мок срабатывает только в режиме разработки и только вне Tauri. В нём 7 серверов, 2 аккаунта, 2 пакета, новости, диагностика.
-- Размер окна приложения: по умолчанию 1000x650, минимум 800x500 (как у официального лаунчера). В панели браузера удобно ставить 900x600.
-- Настоящее приложение с настоящим бэкендом: `pnpm dev` + `cargo build -p bebra-app` + `target/debug/bebra-app.exe`. Обычный `cargo build` не вшивает фронтенд, окно грузит 127.0.0.1:1420.
-- Для проверки через отладочный порт WebView2: `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222`, дальше CDP по WebSocket (скрипт-клиент был во временной папке сессии; на Node 22+ хватает встроенного `WebSocket`).
-- Проверки перед коммитом: `pnpm check`, `pnpm test`, из корня `cargo clippy --workspace --all-targets -- -D warnings`.
+- Мок включается только при `import.meta.env.DEV` и вне Tauri (`app/src/main.ts`). Данные: 7 серверов, 2 аккаунта, 2 пакета, новости, диагностика, журнал.
+- Окно приложения: по умолчанию 1000x650, минимум 800x500 (`tauri.conf.json`). В панели браузера удобно 900x600.
+- Настоящий бэкенд: `pnpm dev` + `cargo build -p bebra-app` + `target/debug/bebra-app.exe`. Обычный `cargo build` не вшивает фронтенд — окно грузит `127.0.0.1:1420`.
+- Отладочный порт WebView2: `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222`, дальше CDP по WebSocket.
+- Перед коммитом: `pnpm check`, `pnpm test` (в `app/`), `cargo clippy --workspace --all-targets -- -D warnings` (из корня).
 
 ## Дизайн (редизайн 2026-10-04)
 
-Минимализм: плоские поверхности, тон вместо линий, скругления 6/8/12 px, один акцент, тонкие скроллбары, лёгкие анимации (появление вкладок, диалогов, спиннер). Расположение как в официальном лаунчере (2026-10-04): шапка = логотип слева, справа Discord/Сайт над аккаунтом, линия акцента; `TabBar` внизу окна (рисуется в `App.svelte` после `main`); поиск, фильтры и обновление внизу вкладки серверов, панель фильтров над ними. Новые темы (nord, dracula, rose, amber, lagoon, forest, mono, sand, sky) заданы четырьмя цветами в `DERIVED` (`themes.ts`), остальное считает `deriveCustom`. Настройки: карточки-секции и переключатели вместо флажков (`Option.svelte`). Новая тема `dark` (графит + синий акцент), прежняя «официальная» стала `classic`. По умолчанию градиент и узор выключены.
+- Стиль: плоские поверхности, тон вместо линий, скругления 6/8/12 px, один акцент, тонкие скроллбары, лёгкие анимации (вкладки, диалоги, спиннер).
+- Тема по умолчанию — `dark` (графит + синий акцент); прежняя «официальная» — `classic`. Градиент и узор по умолчанию выключены (`settings.rs`).
+- Расположение (как в официальном лаунчере):
+  - шапка: логотип слева, справа Discord/Сайт над аккаунтом, под шапкой линия акцента (`Header.svelte`);
+  - `TabBar` внизу окна (рисуется в `App.svelte` после `main`);
+  - в вкладке серверов поиск, фильтры и обновление внизу; панель фильтров (`FiltersPanel`) над ними.
+- Настройки: карточки-секции и переключатели вместо флажков (`Option.svelte` — чекбокс показан как switch).
+- Точка на вкладке «Обновления» в `TabBar` — когда `app.updateAvailable`.
 
-Прозрачные подложки считаются от цвета текста: `--tint`, `--tint-hover`, `--line`, `--accent-soft`, `--on-accent` (цвет текста на акценте), `--radius`, `--radius-sm`, `--shadow`. Кнопки: `.btn` + `.primary` / `.soft` / `.ghost` / `.on`. Старые переменные темы остались, но `--tab-selected`, `--sep`, `--alt-row` в новом виде почти не используются.
+## Темы и токены
+
+- `lib/themes.ts`:
+  - `PALETTES` — 8 палитр (`dark`, `classic`, `light`, `dark_red`, `dark_purple`, `midnight_blue`, `emerald_dusk`, `copper_night`);
+  - `DERIVED` — 9 тем, заданы четырьмя цветами (`nord`, `dracula`, `rose`, `amber`, `lagoon`, `forest`, `mono`, `sand`, `sky`); остальное считает `deriveCustom`;
+  - `custom` — своя тема (`DEFAULT_CUSTOM`);
+  - `backgroundFill` (градиент), `stripePattern` (узор), `applyTheme` ставит CSS-переменные из `VARIABLES`.
+- Переменные темы (меняются): `--bg --popup --fg --muted --accent --sub --ctrl-mid --ctrl-high --btn-hover --tab-hover --border-mid --border-high --scroll-sep --stripe-edge --on-accent --bg-fill --decor --overlay --font`, плюс устаревшие `--tab-selected --sep --sep-fade --alt-row` (в `var()` не читаются нигде, только объявлены).
+- Производные в `app.css` (считаются от цвета текста): `--tint`, `--tint-hover`, `--line` (= `--scroll-sep`), `--accent-soft`, `--radius` (8px), `--radius-sm` (6px), `--shadow`. `--page-surface` — полупрозрачный фон `.shell` (страница).
+- Постоянные цвета: `--good #57c969`, `--warn #e8c547`, `--bad #e46363` (пинг, ошибки).
+- Не вшивать цвета в компоненты: брать переменные, тогда работают все темы.
+
+## Компоненты и классы (`app/src/app.css`)
+
+- Кнопки: `.btn` + модификатор `.primary` / `.soft` / `.ghost` / `.on`; `.icon` — кнопка с иконкой. Склейка кнопок: `.btn.open-r`, `.btn.open-l` (срез с одной стороны), `.btn.open-both` (без срезов).
+- Блоки: `.card` (карточка вкладки «Обновления»), `.rule` (разделитель).
+- Прочее: `.link`, `.spinner`, `.good` / `.warn` / `.error`, `.sub`, `.numeric`, `.ping`, `.stats`.
 
 ## Локализация
 
-`lib/locales/{ru,en,uk,de}.ts` (ru эталон, типы требуют те же ключи), `lib/languages.ts` (`UI_LANGUAGES`, `nativeName` = название языка на нём самом, `detectLang`). Чтобы добавить язык: файл в `locales/`, код в `UI_LANGUAGES`, строка в `dictionaries` (`i18n.svelte.ts`), названия регионов в `filters.ts` (`REGIONS`), дата в `format.ts` (`DATE_LOCALE`). Коды языков (`ru-RU`, `RU-ru`) нигде не показываем: `nativeName` для фильтра языков, тегов сервера и пакетов.
-
-## Откуда взят вид (историческая справка)
-
-- Официальный лаунчер: `Forks/space-wizard SS14 launcher/SS14.Launcher/Theme/*.xaml`, `Views/*` (шапка, золотая линия, вкладки снизу, AngleBox-кнопки, таблица с экспандерами, фильтры, окно подключения).
-- MusyaLoader: `Forks/MusyaLoader/SS14.Launcher/Theme/AppThemeManager.cs` (палитры, формула своей темы, градиент, узор), `Views/MainWindowTabs/OptionsTabView.xaml` (какие настройки бывают).
-- Лаунчер личный, копировать из форков можно (MusyaLoader под AGPL, поэтому для публикации потребуется пересмотр).
+- `lib/locales/{ru,en,uk,de}.ts`. `ru` — эталон, типы берутся из него. `i18n.test.ts` требует, чтобы в каждом языке были те же ключи и плейсхолдеры, что в `ru`.
+- `lib/languages.ts`: `UI_LANGUAGES`, `nativeName` (название языка на нём самом), `detectLang`.
+- Чтобы добавить язык: файл в `locales/`, код в `UI_LANGUAGES`, строка в `dictionaries` (`i18n.svelte.ts`), названия регионов в `REGIONS` (`filters.ts`), локаль даты в `DATE_LOCALE` (`format.ts`).
+- Коды языков (`ru-RU`, `RU-ru`) не показываем: `nativeName` — для фильтра языков, тегов сервера и пакетов.
+- Строки UI только через `t("ключ", {…})`.
 
 ## Где что лежит (`app/src`)
 
 | Файл | За что отвечает |
 | --- | --- |
-| `app.css` | глобальные стили: переменные цветов, кнопки `.btn`, чекбоксы, поля, скроллбары, золотая линия `.gold-line`, `.rule` |
-| `lib/themes.ts` | `PALETTES` (8 палитр), `DERIVED` (9 тем по четырём цветам), `deriveCustom` (своя тема), `backgroundFill` (градиент), `stripePattern` (узор), `applyTheme` ставит CSS-переменные |
-| `lib/store.svelte.ts` | всё состояние: вкладка, фильтры, сортировка, серверы, пинги, аккаунты, подключение, настройки (автосохранение через `updateSettings`) |
-| `lib/filters.ts` | поиск, фильтры (коды из официального лаунчера), сортировка, названия регионов и языков |
+| `app.css` | глобальные переменные, кнопки, поля, скроллбары, `.card`, `.rule` |
+| `lib/themes.ts` | палитры, темы, `deriveCustom`, градиент, узор, `applyTheme` |
+| `lib/store.svelte.ts` | состояние: вкладка, фильтры, сортировка, серверы, пинги, аккаунты, подключение, настройки (автосохранение через `updateSettings`), `app.update` |
+| `lib/filters.ts` | поиск, фильтры (коды как в официальном лаунчере), сортировка, регионы и языки |
 | `lib/format.ts` | текст раунда, игроки, цвет пинга, `gridTemplate` (колонки таблицы), размеры, время |
-| `lib/i18n.svelte.ts`, `lib/locales/*`, `lib/languages.ts` | строки, языки, `t("ключ", {…})` |
+| `lib/i18n.svelte.ts`, `lib/locales/*`, `lib/languages.ts` | строки, языки, `t()` |
+| `lib/speed.ts` | `SpeedMeter`: скорость (бит/с) по скользящему окну 3 с |
 | `App.svelte` | каркас: Header, вкладка, TabBar, оверлей подключения, диалоги, Toast |
-| `lib/Header.svelte`, `Logo.svelte`, `AccountDropdown.svelte` | шапка, логотип (SVG), список аккаунтов |
-| `lib/TabBar.svelte` | вкладки внизу окна (рисуется в `App.svelte` после `main`) |
+| `lib/Header.svelte`, `Logo.svelte`, `AccountDropdown.svelte` | шапка, логотип (HTML/CSS: квадрат «B» + текст, не SVG), список аккаунтов |
+| `lib/TabBar.svelte` | вкладки внизу окна |
 | `lib/ServersTab.svelte`, `FavoritesTab.svelte`, `RecentTab.svelte`, `NewsTab.svelte`, `OptionsTab.svelte`, `ModsTab.svelte`, `UpdatesTab.svelte` | вкладки |
-| `lib/speed.ts` | скорость загрузки (бит/с) по скользящему окну байтового счётчика |
 | `lib/ServerTable.svelte`, `ServerEntry.svelte`, `FiltersPanel.svelte` | таблица, строка-экспандер, фильтры |
-| `lib/ConnectingOverlay.svelte`, `Toast.svelte`, `Modal.svelte`, `*Dialog.svelte`, `DialogHost.svelte` | окно подключения, уведомления, диалоги |
-| `lib/Icon.svelte`, `Option.svelte` | иконки (пути SVG), строка-чекбокс настроек |
+| `lib/RoundTimer.svelte` | колонка «Раунд»: `setInterval` 1 с на каждую строку |
+| `lib/ConnectingOverlay.svelte`, `Toast.svelte`, `Modal.svelte`, `DialogHost.svelte` | окно подключения, уведомления, модалки |
+| `lib/*Dialog.svelte` | `ConfirmConnectDialog`, `LoginDialog`, `DirectConnectDialog`, `AddFavoriteDialog`, `EditFavoriteDialog` |
+| `lib/Icon.svelte`, `Option.svelte` | иконки (пути SVG), строка-настройка |
+| `lib/api.ts` | вызовы Tauri-команд |
 | `dev-mock.ts` | тестовый бэкенд для браузера |
+| `lib/changelog.ts`, `lib/UpdatesTab.svelte` | журнал версий и вкладка «Обновления» (событие `update` от бэкенда) |
+| не разобрано | `ErpOverlay.svelte`, `ErpPromo.svelte`, `SpaceBackground.svelte`, `rofl.svelte.ts` — в этом документе не описаны |
 
-## Цветовые переменные (меняются темой)
+Референсы вида: официальный лаунчер (`..\Forks\space-wizard SS14 launcher\SS14.Launcher\Theme\*.xaml`, `Views\*`) и MusyaLoader (`..\Forks\MusyaLoader\...\AppThemeManager.cs`, `OptionsTabView.xaml`). Лаунчер личный; копировать из форков можно, MusyaLoader под AGPL — для публикации нужен пересмотр.
 
-`--bg --popup --fg --muted --ctrl-mid --ctrl-high --accent --sub --stripe-edge --btn-hover --tab-selected --tab-hover --sep --sep-fade --border-mid --border-high --alt-row --scroll-sep`, а также `--bg-fill` (фон страницы: цвет или градиент), `--decor` (узор или `none`), `--overlay`, `--font`. Не вшивайте цвета в компоненты: берите переменные, тогда работают все темы. Постоянные цвета: `--good #57C969`, `--warn #E8C547`, `--bad #E46363` (пинг, ошибки), `--cut: 8px` (размер среза углов кнопки).
+## Что в дизайне ещё не доделано
 
-Кнопка: класс `.btn`; `.open-r` и `.open-l` убирают срез справа/слева для склейки кнопок; `.open-both` без срезов; `.icon` для кнопки с иконкой.
+- Иконка приложения: заглушка «B» (`app/src-tauri/icons/source.png`; пересоздать через `pnpm tauri icon`).
+- Логотип в шапке — простой HTML/CSS; официальный лаунчер использует картинку.
+- Своей заголовочной панели нет: стандартная рамка Windows (`tauri.conf.json` без `decorations`).
+- Узор `--decor` почти не виден на тёмных темах: можно поднять контраст.
+- Свою тему и палитры, кроме `dark`/`light`, после редизайна глазами не проверяли целиком.
+- Проверить светлую и «свою» тему на всех экранах (ConnectingOverlay, диалоги, Toast).
+- Колонка «Раунд» тикает раз в секунду в каждой строке; при сотнях серверов можно ограничить видимыми.
+- Таблица без виртуализации: 180 строк работают, 1000+ могут тормозить.
 
-## Что в дизайне ещё не доделано (идеи)
+## Вкладка «Обновления»
 
-- Иконка приложения: заглушка «B» на градиенте (`app/src-tauri/icons/source.png`, пересоздать через `pnpm tauri icon`).
-- Логотип в шапке: простой SVG-текст; официальный лаунчер использует картинку.
-- Нет своей заголовочной панели окна (стандартная рамка Windows).
-- Узор `--decor` почти не виден на тёмных темах (цвета близки): можно поднять контраст.
-- Свою тему и остальные палитры (кроме dark/light) после редизайна глазами не проверяли целиком.
-- Колонка «Раунд» тикает раз в секунду для всех строк; при сотнях серверов можно ограничить видимыми.
-- Проверить светлую тему и «свою» тему на всех экранах (ConnectingOverlay, диалоги, Toast).
-- Таблица: нет виртуализации (180 строк работают, 1000+ может тормозить).
+- `lib/UpdatesTab.svelte` (карточки `.card`), состояние — `app.update` (`store.svelte.ts`), события `update` от бэкенда (`selfupdate.rs`), разбор журнала — `lib/changelog.ts`.
+- В `dev-mock.ts` команда `check_update` проигрывает весь путь: найдено, загрузка, готово.
+- На минимальной ширине 800 px шапка помещается впритык: новые вкладки и длинные слова проверять в каждом языке.
 
 ## Ловушки
 
-- `$effect`, который читает и пишет одни и те же данные, зацикливает страницу и вешает вкладку (был такой баг с пингом): внутри ставить `untrack`.
-- Svelte-компонент без `<script>` не имеет типов для TS: нужен пустой `<script lang="ts"></script>`. `export type` в компоненте только в `<script module>`.
-- Scoped CSS Svelte: одинаковые имена классов у разных элементов одного компонента конфликтуют (был баг `.empty`).
-- CSP: `default-src 'self'`, шрифты `font-src 'self' data:`; внешние ресурсы не грузятся.
-- Строки интерфейса только через `t()`; ключи ru и en проверяются типами и тестом (должны совпадать, плейсхолдеры тоже).
-
-## Вкладка «Обновления» (2026-10-04)
-`lib/UpdatesTab.svelte` (карточки `.card` из app.css), состояние в `app.update` (`store.svelte.ts`), события `update` от бэкенда, разбор журнала `lib/changelog.ts`. В `dev-mock.ts` кнопка «Проверить» проигрывает весь путь: найдено, загрузка, готово. На вкладке в шапке точка, когда версия найдена. При 800 px шапка помещается впритык: новые вкладки или длинные слова проверять на минимальной ширине (в каждом языке).
+- `$effect`, который читает и пишет одни и те же данные, зацикливает страницу и вешает вкладку (был баг с пингом). Внутри — `untrack` (так сделано в `store.svelte.ts`, `ConnectingOverlay.svelte`, `LoginDialog.svelte`).
+- Svelte-компонент без логики держит пустой `<script lang="ts"></script>` (см. `Logo.svelte`) — иначе нет типов для TS.
+- `export type` в компоненте — только в `<script module>` (правило Svelte; в репозитории такого нет).
+- Scoped CSS: одинаковые имена классов у разных элементов одного компонента конфликтуют (был баг с `.empty`).
+- CSP (`tauri.conf.json`): `default-src 'self'`, `font-src 'self' data:`, `connect-src` только ipc; внешние ресурсы не грузятся.

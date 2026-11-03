@@ -1,236 +1,237 @@
-# Протокол SS14-лаунчера (результат Фазы 0)
+# Протокол SS14-лаунчера
 
-Пометки: **[код]** — подтверждено исходниками официального лаунчера 0.40.1
-(`Forks\space-wizard SS14 launcher`, пути относительно `SS14.Launcher\`),
-**[live]** — проверено живым запросом 2026-10-03, **[док]** — есть в docs.spacestation14.com,
-**[?]** — НЕ проверено, нельзя опираться без сверки.
+Пометки: **[код]** — исходники официального лаунчера 0.40.1 (`Forks\space-wizard SS14 launcher`, пути относительно `SS14.Launcher\`);
+**[live]** — живой запрос (дата в скобках); **[док]** — docs.spacestation14.com; **[?]** — не проверено, опираться нельзя.
+**(не реализовано в лаунчере)** — поведение upstream, которого нет в `crates/` и `app/` (проверено поиском).
+Наш код: `crates/core/src`, `loader/`.
 
-Статус разделов: 1–8 написаны (2026-10-03). Проверено живьём: список/`/info` через хаб (1), манифест и POST-скачивание
-блобов (3), движок (6.2), логин, продление и ping (7), запуск клиента с подключением (8). Не проверено живьём: модули (6.3),
-zip-режим (4), ACZ (2), redial из игры (8.1). Ссылки `[код: ...]` указывают на файлы официального лаунчера в `..\Forks\`.
+Статус: разделы 1–8 сверены с кодом 2026-11-03. Живые проверки не повторялись, даты в пометках.
 
-**Главный вывод Фазы 0:** лаунчер НЕ запускает Robust.Client напрямую. Он запускает отдельный
-`SS14.Loader.exe` (.NET 10), который грузит Robust.Client.dll из zip движка и отдаёт ему контент
-из `content.db`. Без Loader игру не запустить → см. раздел 8 и открытое решение в разделе 9.
+**Главный вывод:** лаунчер НЕ запускает Robust.Client напрямую. Он запускает `SS14.Loader.exe` (.NET 10), который грузит
+Robust.Client.dll из zip движка и отдаёт ему контент из `content.db`. См. раздел 8 и решение в разделе 9.
 
 ---
 
 ## 1. Хаб, `/status`, `/info`
 
-### 1.1 Базовые URL [код: ConfigConstants.cs:30-53]
-Каждый «URL» на самом деле набор из основного и fallback-зеркала (`UrlFallbackSet`).
+### 1.1 Базовые URL и сеть [код: ConfigConstants.cs:30-53; наш код: `hub.rs`, `auth.rs`, `engine.rs`, `http.rs`]
 
 | Что | Основной | Fallback |
 |---|---|---|
 | Хаб | `https://hub.spacestation14.com/` | `https://hub.fallback.spacestation14.com/` |
 | Auth | `https://auth.spacestation14.com/` | `https://auth.fallback.spacestation14.com/` |
 | Билды движка (manifest.json, modules.json) | `https://robust-builds.cdn.spacestation14.com/` | `https://robust-builds.fallback.cdn.spacestation14.com/` |
-| Данные лаунчера (info.json, assets/) | `https://launcher-data.cdn.spacestation14.com/` | `https://launcher-data.fallback.cdn.spacestation14.com/` |
+| Данные лаунчера (info.json, assets/) | `https://launcher-data.cdn.spacestation14.com/` | `…fallback…` (**не реализовано в лаунчере**) |
 
-Все базовые URL обязаны оканчиваться на `/` (проверяется в `HubApi.GetServers`).
+Базовые URL нормализуются к завершающему `/`.
 
-**Fallback-стратегия** [код: Utility/UrlFallbackSet.cs, HappyEyeballsHttp.cs]: запрос идёт
-в первый URL; если за 3 с (`AttemptDelay`) нет ответа, параллельно стартует второй;
-побеждает первый успешный ответ (happy-eyeballs). Статистика успехов ведётся, но на выбор не влияет.
+- **`UrlFallbackSet.send`** (GET): старт с первого зеркала; через 3 с (`ATTEMPT_DELAY`) или сразу при ошибке транспорта
+  стартует следующее. Побеждает первый ответ **с любым статусом** (5xx не переключает зеркало). Upstream «первый успешный» — не так.
+- **`send_ordered`** (POST login/refresh/logout): зеркала по очереди, без параллели. Дальше — при ошибке транспорта или статусе
+  вне `accept` (login/refresh: 2xx и 401; logout: 2xx).
+- `most_successful`: считаются только 2xx. Используется лишь для `ROBUST_AUTH_SERVER` (7.4).
+- Сеть: connect timeout 10 с; User-Agent `BebraLauncher/<версия>`; прокси `http(s)://`, `socks5(h)://` (в ошибках без userinfo).
 
-Лаунчер поддерживает **несколько хабов**: встроенный + пользовательские (`DataManager.Hubs`,
-сортировка по `Priority`). Дубли серверов отбрасываются, побеждает хаб с более высоким приоритетом
-(`ServerListCache.cs:62-122`). Для MVP нужен только встроенный.
+**Несколько хабов** (`hub::list_servers_from_hubs`): параллельный опрос. URL хаба (`is_valid_hub_url`): `https://` или `http://`
+только для `localhost`/`127.0.0.1`/`[::1]`; без userinfo, query, fragment; ≤ 300 символов.
+Дубли по `address` сливаются: `players` — максимум, теги объединяются, пустые `name`/`map`/`preset` дополняются.
+Сортировка: `players` убыв., затем `address`. Ошибка только если все хабы упали.
+Upstream отбрасывает дубли по приоритету хаба (`ServerListCache.cs:62-122`); приоритетов у нас нет.
 
-### 1.2 Список серверов: `GET {hub}api/servers` [код: HubApi.cs:23-33] [live]
-Ответ `application/json` — массив. На 2026-10-03 это 181 сервер, ~65 КБ.
+### 1.2 Список серверов: `GET {hub}api/servers` [код: HubApi.cs:23-33] [live: 2026-10-03]
+Ответ — JSON-массив (181 сервер, ~65 КБ).
 
 ```jsonc
 {
-  "address": "ss14s://eridani.imperialconnect.space/",   // ss14:// или ss14s://
-  "statusData": {
-    "name": "…",                    // string|null
-    "players": 6,                   // int
-    "soft_max_players": 100,        // int
-    "round_start_time": "2026-10-03T08:38:01.2306510Z",  // ISO-8601 UTC, может отсутствовать
-    "run_level": 1,                 // 0 PreRoundLobby, 1 InRound, 2 PostRound; может быть null
-    "tags": ["lang:ru","region:eu_e"],   // string[]|null
-    // ↓ есть в живом ответе, но НЕ в модели лаунчера 0.40.1 — игнорируем/опционально:
-    "map": "Cluster", "preset": "Секрет", "round_id": 79337, "panic_bunker": false
+  "address": "ss14s://eridani.imperialconnect.space/",   // ключ сервера в хабе: строка как есть
+  "statusData": {                                         // null допустим (сервер не отчитался)
+    "name": "…", "players": 6, "soft_max_players": 100,
+    "round_start_time": "2026-10-03T08:38:01.2306510Z",   // ISO-8601 UTC, может отсутствовать
+    "run_level": 1,                                       // см. 1.4
+    "tags": ["lang:ru","region:eu_e"],                    // null → []
+    "map": "Cluster", "preset": "Секрет", "round_id": 79337, "panic_bunker": false, "auth_methods": null  // опциональны
   },
-  "inferredTags": []                // тоже есть вживую, лаунчер 0.40.1 не читает
+  "inferredTags": []                                      // null → []
 }
 ```
-Таймаут запроса списка в лаунчере — 10 с (`ServerListCache.cs:51`).
-Модель: `HubApi.ServerListEntry(Address, StatusData)`, `ServerApi.ServerStatus` [код: Api/ServerApi.cs:10-18].
+- Таймаут 10 с на запрос (`LIST_TIMEOUT`, [код: ServerListCache.cs:51]).
+- `429`: ждать `Retry-After` (секунды; нет или мусор — 1 с), не дольше 10 с, максимум 2 повтора, затем ошибка.
+- Тело ≤ 8 MiB; записей учитывается ≤ 5000.
+- Запись, которую не разобрать, пропускается и считается в `skipped`; остальные показываются.
+- Все поля `statusData` опциональны (`players` по умолчанию 0); неизвестные поля игнорируются.
+- Типы: `HubServerEntry` (`hub.rs`), `ServerStatus` (`server.rs`) [код: Api/ServerApi.cs:10-18].
 
-**Для нашего парсера:** все поля `statusData` кроме `players` считать необязательными,
-неизвестные поля не ломают разбор (serde без `deny_unknown_fields`).
+### 1.3 Адреса серверов [код: UriHelper.cs; наш код: `addr.rs` `ServerAddr::parse`]
+- Схемы: `ss14://` (HTTP), `ss14s://` (HTTPS), синонимы `http://`/`https://`. Без схемы — `ss14://`. Схема регистронезависима.
+- Отвергаются: пустая строка, управляющие символы, userinfo (`@`), `?`, `#`, пробелы в хосте/пути, порт `0` или нечисловой,
+  IPv6 без скобок.
+- Хост: lower-case, IDNA, IPv4, IPv6 в `[...]`. `SS14://EXAMPLE.COM` и `ss14://example.com` — один сервер; хаб ключуется исходной строкой.
+- **Порт по умолчанию:** `ss14://` без порта → **1212** (API и UDP); `ss14s://` без порта → 443.
+- API-база: `http(s)://host[:port]/path/`. От неё: `status`, `info`, `client.zip`, а для ACZ — `manifest.txt`, `download`.
+- Адрес для клиента (`--ss14-address`): `ss14[s]://host[:port]/path`, `/` если пути нет; порт только явный.
+- UDP по умолчанию (`--connect-address`): `udp://host:port/`, порт = явный, иначе 1212 (`ss14`) / 443 (`ss14s`).
 
-### 1.3 Адреса серверов [код: UriHelper.cs]
-- Схемы: `ss14://` (HTTP) и `ss14s://` (HTTPS). Без схемы → подставляется `ss14://`.
-- Адрес HTTP-API сервера: `ss14` → `http`, `ss14s` → `https`.
-- **Порт по умолчанию:** для `ss14://` без порта — **1212**; для `ss14s://` — стандартный 443.
-- К пути добавляется завершающий `/`; затем `status`, `info`, `client.zip`.
-- Хост пустой → адрес невалиден.
+### 1.4 Статус: `GET {api}/status` [код: ServerStatusCache.cs:78-120; наш код: `server.rs` `fetch_status`] [док] [live]
+- Формат — как `statusData` (1.2). Таймаут **5 с** (`STATUS_TIMEOUT`), тело ≤ 4 MiB.
+- Не-2xx, сетевая ошибка, битый JSON — ошибка (UI показывает «offline»).
+- `players`, `soft_max_players`: int, float (`12.0`) или строка (`"12"`). Отрицательные и нечисловые → 0.
+- `run_level`: `0|1|2` или имя: `PreRoundLobby`/`lobby` → 0, `InRound`/`in_round` → 1, `PostRound` → 2 (регистр не важен, `_`/`-` игнорируются). Прочее → `None`.
+- Таймаут — штатная ситуация [live: 2026-10-03, один из 6 загруженных серверов завис].
 
-### 1.4 Статус сервера: `GET {api}/status` [код: ServerStatusCache.cs:78-120] [док] [live]
-Напрямую у игрового сервера. Тот же формат, что `statusData` из 1.2.
-Таймаут **5 с** (`ServerStatusTimeout`). Любая ошибка сети/JSON → сервер «Offline».
-Клиент округляет `players`/`soft_max_players` вверх до 0 (`Math.Max(0, …)`).
-`run_level`: InRound → «в раунде»; PostRound и PreRoundLobby → «в лобби»; иначе «неизвестно».
-Живая проверка: из 6 самых загруженных серверов 5 ответили 200, один (`eridani…`) завис по таймауту
-с этой машины — **таймаут/Offline штатная ситуация**, обрабатывать без паники.
+### 1.4a Теги [код: upstream ServerTagInfer; наш код: `server.rs` `infer_tags`, `all_tags`]
+Теги: `18+`, `region:<код>`, `lang:<код>`, `rp:<none|low|med|high>`, `no_tag_infer`.
+Вывод из имени (регистр не важен; нет `no_tag_infer`; применяется при слиянии списка хаба):
+- `lang:ru` при `[ru]`, `[rus]`, `[ру]`, ` ru `; иначе `lang:en` при `[en]`, `[eng]`, ` en ` — только если нет `lang:*`;
+- `18+` при `18+`, `+18`, `[erp]` — если нет `18+`;
+- `rp:high` (`[hrp]`, `[hrp+]`, ` hrp `) > `rp:med` (`mrp`) > `rp:low` (`lrp`) > `rp:none` (`nrp`) — если нет `rp:*`.
 
-### 1.4a Доп. теги [код: ServerTagInfer, Api/ServerApi.cs:30-69]
-Теги — строки: `18+`, `region:<код>`, `lang:<код>`, `rp:<none|low|med|high>`, `no_tag_infer`.
-Лаунчер дополнительно *выводит* теги из имени сервера (если нет `no_tag_infer`).
-[?] Правила вывода (`ServerTagInfer`) ещё не прочитаны — это UI-фича, не блокер MVP.
+### 1.5 Информация: `GET {api}/info` [код: ServerStatusCache.cs:232-240; наш код: `server.rs`] [док]
+- **Перед подключением** (`fetch_info`): `GET {api}info`, без query, таймаут **15 с** (`INFO_TIMEOUT`); применяется самохостинг (раздел 2, шаг 0).
+- **Только показ** (`fetch_info_preview`): `GET {api}info?can_skip_build=1`, таймаут 5 с, `build` может отсутствовать, без самохостинга. Семантика `can_skip_build` не описана в доке [?].
+- **Через хаб** (`HubClient::server_info`): `GET {hub}api/servers/info?url=<urlencoded address>`, таймаут 5 с [код: HubApi.cs:35-39] [live].
+  Хаб проксирует `/info`, работает, даже если сервер недоступен напрямую (проверено на `eridani…`). Самохостинг — в `play::prepare`.
+- Тело ≤ 4 MiB.
 
-### 1.5 Информация о сервере: `GET {api}/info` [код: ServerStatusCache.cs:232-240, Models/ServerInfo.cs] [док]
-Прямой запрос: `GET {api}/info?can_skip_build=1`.
-[?] Точная семантика `can_skip_build` в доках не описана; при реальном скачивании билда
-(Фаза 1) запрашивать `/info` **без** этого параметра, пока не сверимся с RobustToolbox.
-
-**Через хаб (для серверов из хаба):** `GET {hub}api/servers/info?url=<urlencoded ss14-адрес>`
-[код: HubApi.cs:35-39] [live] — хаб проксирует `/info`. Работает даже когда сам сервер
-недоступен с нашей машины (проверено на `eridani…`). Формат ответа тот же.
-
-Ответ [код: Models/ServerInfo.cs] [live]:
 ```jsonc
 {
-  "connect_address": "udp://eridani.imperialconnect.space:1214/", // string|null — UDP-адрес игры
+  "connect_address": "udp://eridani.imperialconnect.space:1214/",   // см. правила ниже
   "auth": { "mode": "Required", "public_key": "<base64 libsodium sealed-box key>" },
-                                                   // mode: Optional | Required | Disabled
-  "build": {                                       // может отсутствовать
-    "engine_version": "277.0.0",
-    "version": "20260904051054",
-    "fork_id": "eridani",
-    "hash": "8F4A…",                // SHA-256 всего client.zip, hex [код: Updater.Zip.cs:81-92]; zip-режим
-    "download_url": "https://…/SS14.Client.zip",  // zip-режим (legacy), может быть null
-    "manifest_url": "https://…/manifest",         // manifest-режим
-    "manifest_hash": "EBA9…",       // BLAKE2b-256 текста манифеста, hex [live: проверено]
-    "manifest_download_url": "https://…/download",
-    "acz": false                    // «Auto Client Zip» — клиент берётся с самого сервера [?] детали
+           // mode: Optional | Required | Disabled, регистр не важен; иное → Unknown (как Optional). Нет auth → Optional
+  "build": {                                 // может отсутствовать; пустые строки = отсутствует
+    "engine_version": "277.0.0", "version": "20260904051054", "fork_id": "eridani",
+    "engine_type": "Robust",                 // null/пусто → "Robust"; также multiverse, supermatter (раздел 6)
+    "hash": "8F4A…",                         // SHA-256 всего client.zip, hex [код: Updater.Zip.cs:81-92]
+    "download_url": "…/SS14.Client.zip",     // zip-режим (legacy), может быть null
+    "manifest_url": "…/manifest",            // manifest-режим
+    "manifest_hash": "EBA9…",                // BLAKE2b-256 текста манифеста, hex [live]
+    "manifest_download_url": "…/download",
+    "acz": false                             // Auto Client Zip: клиент берётся с самого сервера
   },
-  "desc": "…",                      // string|null
-  "links": [ { "name": "Дискорд", "icon": "discord", "url": "…" } ],
-  "privacy_policy": { "link": "…", "identifier": "…", "version": "…" }   // опционально
+  "desc": "…",                               // string|null
+  "links": [ { "name": "Дискорд", "icon": "discord", "url": "…" } ],   // null → []
+  "privacy_policy": { "link": "…", "identifier": "…", "version": "…" }  // опционально
 }
 ```
-Поля `build.*` — основа Фазы 1 (выбор zip vs manifest, hash, engine). Разбор — в разделе 2.
-`auth.public_key` лаунчер лишь передаёт клиенту (раздел 8); что именно с ним делает клиент — [?], в коде лаунчера не видно.
+- `connect_address` [код: addr.rs `normalize_connect_address`]: только `udp://host:port[/]` с явным ненулевым портом, без userinfo
+  и пробелов; нормализуется в `udp://host:port/`. Иначе игнорируется (берётся адрес по умолчанию, 1.3).
+- `privacy_policy`: до показа ссылки и согласия подключаться нельзя. Согласие — пара `(identifier, version)`, смена версии требует
+  согласия заново (`is_accepted`); хранит приложение.
+- `auth.public_key` лаунчер только передаёт клиенту (`ROBUST_AUTH_PUBKEY`, 8.2). Что с ним делает клиент — [?].
 
-### 1.6 Что отсюда следует для архитектуры core
-- `HubClient::list_servers() -> Vec<ServerEntry>`; один и тот же `UrlFallbackSet` (happy eyeballs) для хаба/auth/CDN.
-- `ServerAddr::parse()` с правилами из 1.3 + `api_base()`.
-- `ServerStatus` отдельно от `ServerInfo`; статусы опрашивать параллельно с лимитом (181 сервер!), таймаут 5 с.
-- Для hub-серверов `/info` брать через хаб; для адресов, введённых руками (прямое подключение) — напрямую.
-
----
-
-## 2. Выбор способа загрузки билда [код: Updater.cs:679-730, Connector.cs:450-485]
-
-Вход — объект `build` из `/info` (раздел 1.5).
-
-**Шаг 0 — ACZ / самохостинг** (Connector.cs:464-478). Если `build.acz == true` ИЛИ `download_url` пуст:
-- `download_url := {api}/client.zip`;
-- если `acz == true`: `manifest_url := {api}/manifest.txt`, `manifest_download_url := {api}/download`.
-
-Здесь `{api}` — HTTP-адрес игрового сервера (раздел 1.3). Живой пример: `game.hardlight.space` отдаёт
-`acz:true` и пустые `manifest_url`/`download_url` [live]. Манифестный режим при ACZ включится только
-если сервер ещё и прислал `manifest_hash` (см. шаг 1), иначе пойдёт zip с `/client.zip`. [?] проверить на ACZ-сервере в Фазе 1.
-
-**Шаг 1 — режим.** Манифестный, если **все три** поля непусты: `manifest_url`, `manifest_download_url`,
-`manifest_hash`. Иначе zip, если есть `download_url`. Иначе ошибка «No download information».
-Манифестный режим предпочтителен: докачивает только недостающие файлы (delta).
-Живой опрос 12 самых загруженных серверов: 11 имеют манифест+zip, 1 — ACZ.
-
-**Шаг 2 — уже скачано?** (`CheckExisting`, Updater.cs:391-454). Ищем в ContentDB версию:
-1. есть `manifest_hash` → `ContentVersion.Hash == manifest_hash` (источник истины);
-2. иначе есть `hash` → `ContentVersion.ZipHash == hash`;
-3. иначе по `(fork_id, version)` («и надеемся на лучшее», для тестов).
-
-Несколько кандидатов → предпочитается совпадение `ForkVersion`+`ForkId`+версии движка.
-Нашли, но `fork_id`/`version`/`engine_version` у сервера отличаются → создаётся **копия** записи версии
-(манифест копируется строками, а не блобами), движок пересчитывается (`DuplicateExistingVersion`).
-Совпало всё → только `LastUsed = now`.
-
-**Шаг 3 — зависимости.** После скачивания: `ContentEngineDependency` получает `('Robust', engine_version)` и,
-если в контенте есть `manifest.yml`, модули из него (раздел 6.3).
-
-**Транзакции/обрыв** (Updater.cs:482-525): загрузка идёт в одной SQLite-транзакции. При исключении, если уже
-скачаны блобы, их id сохраняются в `InterruptedDownload*`, а недостроенная `ContentVersion` удаляется, транзакция
-коммитится: докачка продолжится с готовых блобов. Старые «обрывки» чистятся через 7 суток.
+### 1.6 Что это значит для core
+- `HubClient::list_servers` / `list_servers_from_hubs`; `ServerAddr::parse` + `api_base()`.
+- `/info` для hub-серверов — через хаб (`play::request_info`), для адресов, введённых вручную, — напрямую.
 
 ---
 
-## 3. Manifest-режим (delta) [код: Updater.Manifest.cs] [док: delta-updates-and-manifests]
+## 2. Выбор способа загрузки билда [код: updater.rs, play.rs, server.rs]
 
-### 3.1 Манифест: `GET {manifest_url}` [код: :88-142] [live: проверено на rmc14]
-- Заголовок запроса `Accept-Encoding: zstd`. Сервер отвечает `Content-Encoding: zstd`
-  (сжатый размер 2.6 МБ → 9.1 МБ текста). Без этого заголовка отдаёт plain-текст.
-  Лаунчер раскрывает zstd, если *последний* `Content-Encoding` равен `zstd` (HttpUtility.cs:27).
-- Ответ также содержит заголовок `X-Manifest-Hash` [live]; лаунчер его **не использует**.
-- Формат (UTF-8, без BOM, `\n`):
+Вход — `build` из `/info` (1.5).
+
+**Шаг 0 — ACZ / самохостинг** (`BuildInfo::apply_self_hosting`) [код: Connector.cs:464-478]. Если `acz == true` или `download_url` пуст:
+- `download_url := {api}client.zip`;
+- если `acz == true`: `manifest_url := {api}manifest.txt`, `manifest_download_url := {api}download`.
+
+Применяется в `fetch_info` и в `play::prepare` (через хаб). Пример [live]: `game.hardlight.space` — `acz:true`, пустые `manifest_url`/`download_url`.
+Манифест-режим при ACZ — только если сервер прислал `manifest_hash` (шаг 1), иначе zip с `/client.zip`. [?] ACZ с `manifest_hash` не проверен.
+
+**Шаг 1 — режим** (`download_mode`). Манифест, если непусты **все три**: `manifest_url`, `manifest_download_url`, `manifest_hash`.
+Иначе zip, если есть `download_url`. Иначе ошибка «server gave no download information at all».
+Манифест предпочтителен (delta). [live: 11 из 12 популярных серверов — манифест+zip, 1 — ACZ.]
+
+**Шаг 2 — уже есть?** (`content_db::find_version`, `updater::install_content`). Поиск `ContentVersion`:
+1. `manifest_hash` → `Hash` (источник истины); иначе
+2. `hash` → `ZipHash`; иначе
+3. `(fork_id, version)` — только если хешей нет (для тестов).
+
+Кандидатов несколько: сначала совпавший по `ForkVersion`+`ForkId`+версии движка, затем `LastUsed DESC, Id DESC`.
+- Совпало всё → `touch_version` (`LastUsed = now`), загрузки нет.
+- Отличаются fork/version/engine → `duplicate_version`: новая строка `ContentVersion` с теми же хешами и `ContentManifest`
+  (блобы не копируются), `Robust` := `engine_version`. Только если модулей нет или движок совпадает; иначе — обычная установка.
+
+**Шаг 3 — зависимости.** Манифест-режим: `ContentEngineDependency('Robust', engine_version)` пишется после проверки манифеста.
+`manifest.yml` разбирается в `prepare_launch`: модули получают версии и ставятся (6.3), затем движок (6.2).
+Порядок `play::prepare`: `/info` → аккаунт и место (< 500 МиБ свободно → `DiskFull`) → движок качается параллельно, если не установлен
+→ `install_content` → `cleanup` (5.4) → `prepare_launch` → команда запуска (8.2).
+
+**Прерывание и докачка:** `InterruptedDownload` создаётся до загрузки блобов. Блобы коммитятся пачками (≤ 200 файлов или ≤ 32 МиБ)
+с `InterruptedDownloadContent` и heartbeat (`Added`). Строка `ContentVersion` — **только в конце**, одной транзакцией, после проверки
+хеша манифеста (upstream создаёт версию раньше и удаляет недостроенную). Повтор не запрашивает блобы, уже лежащие в БД.
+Zip: пачки ≤ 64 файла / ≤ 32 МиБ; версия — в конце. Осиротевшие строки старше 168 ч — см. 5.4.
+
+---
+
+## 3. Manifest-режим (delta) [код: Updater.Manifest.cs; наш код: `download.rs`, `manifest.rs`] [док: delta-updates-and-manifests]
+
+### 3.1 Манифест: `GET {manifest_url}` [код: :88-142] [live: rmc14]
+- Запрос: `Accept-Encoding: zstd`, таймаут 120 с. Если **последний** `Content-Encoding` = `zstd` — распаковка; иначе plain.
+  Лимиты: сжатое ≤ 256 МиБ, текст ≤ 512 МиБ. [live: 2.6 МБ сжатых → 9.1 МБ текста.]
+- Заголовок `X-Manifest-Hash` [live] не читается.
+- Формат (UTF-8, без BOM; `\r\n` терпим):
   ```
   Robust Content Manifest 1
   <HEX64 BLAKE2b-256 файла> <путь>
-  ...
   ```
-  Разделитель — **первый** пробел (пути могут содержать пробелы: 18 таких в живом манифесте).
-  Первая строка обязана быть ровно `Robust Content Manifest 1`, иначе ошибка.
-- **Проверка:** `BLAKE2b-256` от ВСЕГО текста (включая заголовок и финальный `\n`) должен совпасть с
-  `build.manifest_hash` (hex без учёта регистра). **[live: совпало: 20F419AA...15C0]**
-- Наблюдения [live]: 70 827 записей, без директорий, отсортировано по пути побайтно (UTF-8), хеш 64 hex-символа.
-  Один и тот же хеш может встречаться у нескольких путей (дедупликация блобов).
+  - первая строка — ровно `Robust Content Manifest 1`;
+  - разделитель — **первый** пробел (в путях бывают пробелы; live: 18 таких);
+  - отвергаются: пустой путь, `/` в конце, абсолютный путь, `\`, `:`, управляющие символы, сегменты `""`/`.`/`..`, дубликаты путей.
+- **Проверка:** BLAKE2b-256 всего текста (с заголовком и финальным `\n`) == `build.manifest_hash` (hex, любой регистр). [live: совпало, 20F419AA…15C0]
+- [live]: 70 827 записей, без директорий, отсортированы по пути побайтно; один хеш может быть у нескольких путей.
 
-### 3.2 Что докачивать [код: :144-184]
-Для каждой записи манифеста ищем `Content.Hash` в БД. Нет → индекс записи в список загрузки
-(каждый уникальный хеш один раз, даже если встречается в манифесте несколько раз).
+### 3.2 Что докачивать [код: :144-184; наш код: `missing_entries`]
+Для каждой записи ищется `Content.Hash` в БД. Нет → в список загрузки. Каждый уникальный хеш — один раз, по первому вхождению.
 
-### 3.3 Скачивание блобов [код: :186-407, :409-439] **[live: проверено 2026-10-03 на lizard.spacestation14.com: 6 552 уникальных блоба, все BLAKE2b сошлись, манифест-хеш пересчитан из БД и совпал]**
-1. **Проверка протокола:** `OPTIONS {manifest_download_url}` → заголовки `X-Robust-Download-Min-Protocol` и
-   `X-Robust-Download-Max-Protocol`; наш протокол `1` обязан лежать в [min, max]. **[live: 204, min=1 max=1]**
-2. `POST {manifest_download_url}`:
-   - заголовки: `X-Robust-Download-Protocol: 1`, `Accept-Encoding: zstd`, `Content-Type: application/octet-stream`;
-   - тело: массив **int32 little-endian**: индексы записей манифеста (в порядке манифеста), ровно 4 байта на файл.
-3. Ответ (после снятия HTTP-zstd, если есть `Content-Encoding: zstd`) это поток:
+### 3.3 Скачивание блобов [код: :186-407, :409-439; наш код: `download_blobs`, `read_blob_stream`] [live: 2026-10-03, lizard.spacestation14.com: 6 552 блоба, все BLAKE2b сошлись, манифест-хеш пересчитан из БД и совпал]
+Таймауты: `OPTIONS` 120 с; `POST` — без общего таймаута, только idle 45 с между чтениями.
+
+1. **Протокол:** `OPTIONS {manifest_download_url}` → 2xx, заголовки `X-Robust-Download-Min-Protocol` и `X-Robust-Download-Max-Protocol`. Протокол `1` обязан лежать в [min, max]. [live: 204, min=1 max=1]
+2. **Запрос:** `POST {manifest_download_url}`, заголовки `X-Robust-Download-Protocol: 1`, `Accept-Encoding: zstd`,
+   `Content-Type: application/octet-stream`; тело — int32 LE индексов записей манифеста (4 байта на файл), только недостающие.
+3. **Ответ** (после снятия HTTP-zstd; несколько zstd-кадров подряд допустимы):
    ```
    int32 LE  flags                 // bit0 = PreCompressed
-   повторять для каждого запрошенного файла, в порядке запроса:
-     int32 LE  uncompressedLength
+   для каждого запрошенного файла, в порядке запроса:
+     int32 LE  uncompressedLength  // < 0 → ошибка; ≤ 512 МиБ на файл, ≤ 4 ГиБ на поток
      [если PreCompressed] int32 LE compressedLength   // 0 = файл НЕ сжат
-     байты: если compressedLength > 0 -> compressedLength байт zstd-кадра, иначе uncompressedLength байт «как есть»
+     байты: compressedLength > 0 → zstd-кадр такой длины; иначе uncompressedLength байт как есть
    ```
-4. Для каждого файла: восстановить несжатые данные, посчитать BLAKE2b-256, сверить с хешем записи манифеста;
-   несовпадение → ошибка «Hash mismatch while downloading». Размер после распаковки обязан быть равен `uncompressedLength`.
-5. Хранение в БД: если поток PreCompressed и файл пришёл сжатым, кладём сжатые байты как есть (`Compression=2`).
-   Если поток не PreCompressed, лаунчер сам пробует сжать zstd и сохраняет сжатое, только если экономит
-   больше 10 байт (`CompressionSavingsThreshold`).
-6. После загрузки: заполнение `ContentManifest(VersionId, Path, ContentId)` для всех записей.
-   Все блобы обязаны быть в БД (иначе `UnreachableException`).
+4. **Проверка файла:** распаковка с контролем размера (ровно `uncompressedLength`); BLAKE2b-256 результата == хеш записи манифеста.
+   Несовпадение → `HashMismatch`, файл не сохраняется.
+5. **Хранение** (`PreparedBlob`): файл пришёл сжатым (`PreCompressed` и `compressedLength > 0`) → байты как есть, `Compression = 2`.
+   Иначе (plain, в том числе внутри `PreCompressed`-потока) → лаунчер сжимает сам zstd уровня 1, берёт сжатое только если экономит
+   больше 10 байт (`COMPRESSION_SAVINGS_THRESHOLD`), иначе `Compression = 0`. Пустой файл не сжимается.
+6. **После загрузки:** создаётся `ContentVersion` (2, шаг 2), `ContentManifest(VersionId, Path, ContentId)` заполняется для всех записей;
+   блоб, которого нет в БД, — ошибка (`missing blob for <path>`; upstream — `UnreachableException`). `compute_manifest_hash` (5.3)
+   должен совпасть с хешем манифеста, иначе транзакция откатывается.
 
 ---
 
-## 4. Zip-режим (legacy) [код: Updater.Zip.cs]
+## 4. Zip-режим (legacy) [код: Updater.Zip.cs; наш код: `zipmode.rs`]
 
-1. `GET {download_url}` во временный файл (прогресс по байтам). Fallback-зеркал нет, это прямой URL билда.
-2. Проверка: `SHA-256` всего zip (hex, без учёта регистра) == `build.hash`, если `hash` задан; иначе просто
-   запоминаем посчитанный хеш в `ZipHash`. Несовпадение → `InvalidOperationException`.
-3. Загрузка в БД, для каждой записи zip (`ZipIngest`): пропуск директорий (`entry.Name == ""`);
-   `BLAKE2b-256` содержимого; если такого блоба нет, вставка; сжатие zstd применяется, если
-   `entry.Length - entry.CompressedLength > 10` (решение по размеру *внутри zip*); запись в `ContentManifest`.
-4. Манифест-хеш версии считается вручную (раздел 5.3) и пишется в `ContentVersion.Hash`.
+1. `GET {download_url}` в `*.zip.part` (scratch). Зеркал нет. Idle 45 с, лимит 2 ГиБ, прогресс по байтам.
+2. **Проверка:** SHA-256 всего zip (hex) == `build.hash`, если `hash` задан; иначе `HashMismatch`, ничего не сохраняется.
+   SHA-256 всегда пишется в `ContentVersion.ZipHash`.
+3. **Разбор** (`ingest_zip`): директории пропускаются (имя пустое или атрибут директории Unix/DOS; имя с `/` в конце без атрибутов — тоже).
+   Пути — по правилам 3.1; дубликаты — ошибка. Содержимое: BLAKE2b-256; уже существующий блоб не вставляется.
+   Сжатие: по расширению уже сжатых форматов (`png`, `jpg`, `webp`, `ogg`, `mp3`, `mp4`, `webm`, `zip`, `woff2` и др.) — `Compression = 0`;
+   иначе zstd уровня 1 по 3.3 шаг 5. Upstream решает по размеру внутри zip (`Length - CompressedLength > 10`).
+   Лимиты: файл ≤ 2 ГиБ, всего ≤ 4 ГиБ.
+4. **Версия** — одной транзакцией: `ContentVersion` (`Hash` = manifest-хеш по 5.3; `ZipHash` = SHA-256 zip), `ContentManifest`, `Robust`.
 
 ---
 
-## 5. ContentDB [код: Models/ContentManagement/*, Migrations/*.sql]
+## 5. ContentDB [код: Models/ContentManagement/*, Migrations/*.sql; наш код: `content_db/`, `paths.rs`]
 
 ### 5.1 Расположение и режим
-- Файл `content.db`. Windows: `%LOCALAPPDATA%\Space Station 14\launcher\content.db` [код: LauncherPaths.cs:33-36,81-87]
-  (имя `launcher` можно переопределить env `SS14_LAUNCHER_APPDATA_NAME`).
-- `PRAGMA journal_mode=WAL` (чтобы докачка не блокировалась запущенной игрой).
-- Строка подключения: `Mode=ReadWriteCreate;Pooling=False;Foreign Keys=True`. Без пула, чтобы WAL
-  усекался сразу после закрытия (WAL может раздуваться >100 МБ).
-- Миграции 0000-0004 (скрипты в репозитории). Схема ниже итоговая.
+- `<root>\content.db`, `<root>` = `%LOCALAPPDATA%\BebraLauncher` [код: `paths.rs` `DataDirs`]. Портативно: рядом с exe есть `portable.txt` или `.portable` → `<папка exe>\data`.
+- Upstream `%LOCALAPPDATA%\Space Station 14\launcher\content.db` и `SS14_LAUNCHER_APPDATA_NAME` — **не реализовано в лаунчере**.
+- Соединение (`rusqlite`): `journal_mode=WAL` (докачка не блокируется игрой), `synchronous=NORMAL`, `foreign_keys=ON`, `busy_timeout=5 с`,
+  `cache_size=-64000`, `temp_store=MEMORY`, `mmap_size=256 МиБ`. Upstream-строка `Mode=ReadWriteCreate;Pooling=False;Foreign Keys=True` не используется.
+  После загрузки: `wal_checkpoint(PASSIVE)`. После очистки с удалениями: `wal_checkpoint(TRUNCATE)` и `VACUUM` (best effort).
+- Миграции `0000_Initial` … `0004_RunningClient` (`MIGRATIONS`, журнал `SchemaVersions`). `0000` ставит `PRAGMA user_version = 1` (наша метка).
+  `0001_Blake2B` стирает таблицы: выполняется только для БД с меткой или пустой; иначе ошибка с инструкцией переместить файл.
 
-### 5.2 Схема (итог по Script0000-0004)
+### 5.2 Схема (итог миграций 0000-0004)
 ```sql
 ContentVersion(Id INTEGER PK AUTOINCREMENT, Hash BLOB NOT NULL /*BLAKE2b манифеста*/, ForkId TEXT, ForkVersion TEXT,
                LastUsed DATE NOT NULL, ZipHash BLOB /*SHA-256 zip*/)
@@ -244,176 +245,199 @@ InterruptedDownload(Id PK AUTOINCREMENT, Added DATE)
 InterruptedDownloadContent(Id PK AUTOINCREMENT, InterruptedDownloadId -> CASCADE, ContentId -> Content CASCADE, UNIQUE(ContentId))
 RunningClient(ProcessId INTEGER PK, MainModule TEXT, UsedVersion -> ContentVersion ON DELETE RESTRICT)
 ```
-`ModuleName='Robust'` в `ContentEngineDependency` это версия движка.
+- `ModuleName='Robust'` — версия движка.
+- Код пишет `Compression` 0 и 2 (1 Deflate читает Loader).
+- Блоб пишется целиком параметром `INSERT`. `zeroblob(32)` — только временный `Hash` в `create_version` (затем `set_version_hash`). Лимит файла 512 МиБ.
 
-**Совместимость критична:** Loader (раздел 8) читает `Content`/`ContentManifest`/`RunningClient` напрямую
-(ContentDbFileApi.cs:105-139). Если мы пишем в `content.db`, схема и семантика обязаны совпадать с оф. лаунчером.
-Блобы пишутся через `zeroblob(n)` + инкрементальная запись в BLOB (SQLite incremental blob I/O), чтобы не держать файл в памяти.
+**Совместимость критична:** Loader читает `Content`/`ContentManifest`/`RunningClient` напрямую (`ContentDbFileApi`). Схему и смысл `Compression` не менять.
 
-### 5.3 Хеш манифеста версии, посчитанный локально [код: Updater.cs:788-824]
-`BLAKE2b-256( "Robust Content Manifest 1\n" + для каждой записи по возрастанию Path: "<HEX хеша> <путь>\n" )`,
-UTF-8 без BOM. Должен совпасть с `manifest_hash` сервера (в DEBUG-сборке лаунчер это ассертит).
+### 5.3 Хеш манифеста версии [код: Updater.cs:788-824; наш код: `manifest::compute_hash`]
+`BLAKE2b-256( "Robust Content Manifest 1\n" + для каждой записи по возрастанию Path (побайтно, UTF-8): "<HEX> <путь>\n" )`, UTF-8 без BOM.
+Для манифест-версий сверяется с `manifest_hash` сервера (3.3 шаг 6); для zip-версий становится `ContentVersion.Hash` (4 шаг 4).
 
-### 5.4 Уборка [код: Updater.cs:308-389]
-- Хранить не более **15** версий всего и не более **3** одного `ForkId` (`MaxVersionsToKeep`, `MaxForkVersionsToKeep`).
-  Сначала удаляются давно не использованные (`ORDER BY LastUsed DESC`, лишние под нож).
-- Версию, которую использует живой клиент (`RunningClient` + проверка, что процесс жив и `MainModule` совпадает), не трогать.
-- Старые `InterruptedDownload` > 168 ч удаляются; затем осиротевшие `Content` без ссылок удаляются.
-- «Очистить всё» запрещено, пока клиент запущен; после очистки `VACUUM`.
-
----
-
-## 6. Движок и модули [код: Models/EngineManager/*]
-
-### 6.1 Индекс билдов: `GET https://robust-builds.cdn.spacestation14.com/manifest.json` [live: 1.2 МБ]
-Словарь `версия -> { date, insecure, redirect?, platforms: { <rid>: { url, sha256, sig } } }`.
-- `redirect` это версия-псевдоним: идти по цепочке до записи без `redirect` (EngineManagerDynamic.Manifest.cs:86-93).
-  Настоящая версия движка может отличаться от запрошенной (в `ContentLaunchInfo` пишется итоговая).
-- `insecure: true` → отказ («Specified engine version is insecure!»). Много старых версий помечены insecure.
-- RID-ы [live, 277.0.0]: `win-x64`, `win-arm64`, `linux-x64/arm64`, `osx-x64/arm64`, `freebsd-*`. Выбор: BFS по
-  графу импортов `runtime.json`; для нас достаточно: x64 → `win-x64`, ARM64 → `win-arm64`.
-- URL файлов лежат на `https://robust-builds.playss14.com/builds/<ver>/Robust.Client_<rid>.zip` [live],
-  т.е. на другом хосте, чем индекс. Не хардкодить, брать `url` из манифеста.
-- Манифест лаунчер кеширует 15 минут; если нужной версии нет в кеше, перезапрашивает сразу.
-
-### 6.2 Установка движка [код: EngineManagerDynamic.cs:74-141]
-Скачать zip в `%APPDATA%\Space Station 14\launcher\engines\<версия>.zip` (**Roaming**, в отличие от content.db в Local).
-Запись `InstalledEngineVersion(version, signature)` хранится в БД настроек лаунчера (раздел 7.3).
-**Лаунчер НЕ проверяет `sha256` при скачивании**: только запоминает `sig`; подпись проверяет Loader при каждом запуске.
-Наше ядро проверяет `sha256` и Ed25519-подпись сразу после скачивания. **[live: движок 291.0.0 win-x64, 7.5 МБ — sha256 и подпись сошлись]**
-Удаление: движки, на которые не ссылается ни одна версия контента (с учётом redirect), удаляются.
-
-### 6.3 Модули (например `Robust.Client.WebView`) [код: :143-241, IEngineManager.cs:39-56]
-- Нужные модули берутся из `manifest.yml` в контенте: YAML (camelCase, неизвестные поля игнорировать):
-  `modules: [..]`, `multiWindow: bool`.
-- Индекс: `GET https://robust-builds.cdn.spacestation14.com/modules.json` ->
-  `{ "modules": { <name>: { "versions": { <ver>: { insecure, platforms: { <rid>: {url, sha256, sig} } } } } } }` [live].
-- **Выбор версии модуля:** модули идентифицируются *минимальной* версией движка. Берём максимальную `ver` из
-  имеющихся такую, что `ver <= engine_version` (сравнение как System.Version).
-- Скачать zip, **проверить Ed25519-подпись `sig`** (hex) по всему файлу публичным ключом из `signing_key`
-  (PEM SPKI, раздел 7.5); при провале ошибка; затем распаковать в `%APPDATA%\...\launcher\modules\<name>\<ver>\`.
-- Каталог модуля передаётся клиенту через env `ROBUST_MODULE_<NAME>` (раздел 8).
+### 5.4 Уборка [код: Updater.cs:308-389; наш код: `cull.rs`, `updater::cleanup`/`cleanup_all`, `storage.rs`]
+- **Политика** (`cleanup`, после установки в `play::prepare`): не более **15** версий всего и **3** на `ForkId`; остаются самые недавние (`LastUsed DESC, Id DESC`).
+- **Защищённые:** `in_use` и версии из `RunningClient`. Строка `RunningClient` проверяется по pid и `MainModule`: процесс жив или
+  не проверен — строка остаётся; процесса нет — строка удаляется. Ошибка FK при удалении версии = «используется».
+- Затем: `InterruptedDownload` без heartbeat дольше 168 ч удаляются (минимум 10 мин). Если что-то удалено — удаляются `Content`
+  без ссылок из `ContentManifest` и `InterruptedDownloadContent`.
+- **Полная очистка** (`cleanup_all`, лимиты 0): всё, кроме версий живых клиентов. Запрета «пока клиент запущен» нет (upstream — не реализовано).
+- Движки и модули — отдельно (`storage::clean`/`clean_all`, 6.2, 6.3).
 
 ---
 
-## 7. Авторизация [код: Api/AuthApi.cs, Models/Logins/LoginManager.cs] (логин проверен живьём 2026-10-03, см. NOTES.md)
+## 6. Движок и модули [код: Models/EngineManager/*; наш код: `engine.rs`, `modules.rs`]
 
-База: `https://auth.spacestation14.com/` (+ fallback, раздел 1.1). Тела JSON в camelCase
-(`JsonSerializerDefaults.Web`, Helpers.AsJson / JsonContent.Create). [?] Точные имена полей сверить в Фазе 2 по реальному ответу.
+### 6.1 Индекс: `GET {builds}manifest.json` [live: 1.2 МБ]
+- База — `robust-builds` + fallback (1.1). `engine_type` `multiverse` → `https://cdn.spacestationmultiverse.com/` (при ошибке `ssmv-engine-manifest`);
+  `supermatter` → `https://cdn.simplestation.org/supermatter/`. У них свои ключи (7.5).
+- Словарь `версия → { insecure?, redirect?, platforms: { <rid>: { url, sha256, sig } } }`.
+- `redirect` — псевдоним: идти по цепочке до записи без `redirect` (≤ 32 переходов). Итоговая версия может отличаться от запрошенной.
+- `insecure: true` → ошибка «marked insecure».
+- RID: `win-x64`; на ARM64 сначала `win-arm64`, затем `win-x64`. Прочие RID (`linux-*`, `osx-*`, `freebsd-*`) не используются.
+- URL файлов берётся из индекса [live: `robust-builds.playss14.com/builds/<ver>/Robust.Client_<rid>.zip`], хостом может отличаться. Не хардкодить.
+- Кеша нет (upstream 15 мин — **не реализовано в лаунчере**): индекс запрашивается при каждой установке.
 
-| Действие | Запрос | Успех | Ошибка |
+### 6.2 Установка движка [код: EngineManagerDynamic.cs:74-141; наш код: `engine::install_engine`]
+- Файлы: `<root>\engines\<version>.zip` и `<version>.sig`; `version` — итоговая (после redirect), `[A-Za-z0-9._+-]`, ≤ 100, не с точки.
+  Upstream — `%APPDATA%\…\engines\` и `InstalledEngineVersion` в БД настроек: у нас этого нет.
+- **Переиспользование:** оба файла есть, `.sig` == `sig` из индекса (без учёта регистра), SHA-256 zip == `sha256` → загрузки нет.
+- **Установка:** скачивание в `<version>.zip.<pid>-<nanos>.part` (idle 45 с, лимит 2 ГиБ) → SHA-256 == `sha256` →
+  Ed25519 `sig` (hex, 64 байта) по всему файлу (`signature::verify`) → атомарная замена zip → `.sig` последним (маркер завершения).
+- Ошибка SHA-256 или подписи → `.part` удаляется.
+- Upstream не проверяет `sha256` при скачивании (Loader проверяет подпись при каждом запуске). Мы проверяем сразу.
+  [live: движок 291.0.0 win-x64, 7.5 МБ — sha256 и подпись сошлись.]
+- **Удаление** (`storage::clean`): `*.zip`/`*.sig`, чья версия не числится в `Robust`-зависимостях ни одной версии, удаляются; `*.part` — всегда.
+  [?] Несоответствие по коду: зависимость хранит **запрошенную** версию, файл назван **итоговой**. При redirect файл удаляется
+  при каждой очистке и качается заново. Проверить в работе.
+
+### 6.3 Модули [код: Models/EngineManager/*, IEngineManager.cs:39-56; наш код: `modules.rs`]
+- Список — из `manifest.yml` контента: YAML, camelCase, неизвестные ключи игнорируются, всё опционально: `modules: [имя, …]`, `multiWindow: bool`.
+  Пустой файл — «ничего особого». Модуль `Robust` (без учёта регистра) — ошибка.
+- Индекс: `GET {builds}modules.json` → `{ "modules": { <name>: { "versions": { <ver>: { insecure?, platforms: { <rid>: {url, sha256, sig} } } } } } }`
+  [live]. Нужен, если есть модули, которых ещё нет в зависимостях версии.
+- **Выбор версии** (`version_for_engine`): модули именуются *минимальной* версией движка → берётся максимальная `ver <= engine_version`
+  (числовое сравнение, суффикс `-fix-physics` отбрасывается), только не-insecure с платформой `rid`. Равные по числам — по исходной строке.
+- Версия пишется в `ContentEngineDependency(module, ver)`; первая запись побеждает.
+- **Установка:** если `<dir>\.installed` (JSON `{sha256, files, bytes}`) совпадает с индексом и с фактическими числом и размером файлов — готово.
+  Иначе: скачать, проверить SHA-256 и Ed25519 `sig` **до** распаковки, распаковать в `<ver>.tmp-<pid>-<nanos>`, `.installed` записать последним, переименовать.
+  Версии нет в индексе, но папка цела — запуск разрешён.
+- Путь: `<root>\modules\<name>\<version>\`; клиенту — `ROBUST_MODULE_<NAME>` (8.2). Живьём не проверено.
+
+---
+
+## 7. Авторизация [код: Api/AuthApi.cs, Models/Logins/LoginManager.cs; наш код: `auth.rs`, `accounts.rs`] (логин проверен живьём 2026-10-03, см. NOTES.md)
+
+База: `https://auth.spacestation14.com/` + fallback (1.1). JSON в camelCase, `null`-поля отправляются. Таймаут 30 с. Ответ ≤ 64 КиБ.
+Поля ответа читаются и в camelCase, и в PascalCase.
+
+| Действие | Запрос | Успех | Отказ / ошибка |
 |---|---|---|---|
-| Вход | `POST api/auth/authenticate` `{username?, userId?, password, tfaCode?}` | 200 `{token, username, userId, expireTime}` | 401 `{errors[], code}`; code: `InvalidCredentials`, `AccountUnconfirmed`, `TfaRequired`, `TfaInvalid`, `AccountLocked` |
-| Продление | `POST api/auth/refresh` `{token}` | 200 `{expireTime, newToken}` | 401 = токен мёртв, нужен повторный вход |
-| Проверка | `GET api/auth/ping`, заголовок `Authorization: SS14Auth <token>` | 2xx = жив | 401 = мёртв **[live: с мусорным токеном 401]** |
-| Выход | `POST api/auth/logout` `{token}` | 2xx | ошибки глотаются, токен живёт до истечения |
-| Регистрация/сброс | `api/auth/register`, `resetPassword`, `resendConfirmation` | | для нас **не нужны**: регистрация и управление аккаунтом на сайте (`account.spacestation14.com`) |
+| Вход | `POST api/auth/authenticate` `{username \| userId, password, tfaCode?}` (второе поле `null`) | 2xx `{token, username, userId, expireTime}` | 401 `{errors[], code}` → `Denied`; тело не читается → `code = Unknown`; прочее → ошибка |
+| Продление | `POST api/auth/refresh` `{token}` | 2xx `{newToken, expireTime}` | 401 → `None` (нужен вход); прочее → ошибка |
+| Проверка | `GET api/auth/ping`, `Authorization: SS14Auth <token>` | 2xx → жив | 401 → мёртв [live: мусорный токен → 401]; прочее → ошибка |
+| Выход | `POST api/auth/logout` `{token}` | 2xx | не 2xx → ошибка; локальный аккаунт всё равно удаляется |
+| Регистрация/сброс/письмо | `register`, `resetPassword`, `resendConfirmation` | — | **не реализовано в лаунчере** (регистрация на сайте) |
 
-### 7.1 Правила токенов [код: ConfigConstants.cs:12-16, LoginManager.cs]
-- `expireTime` абсолютное время. Токен истёк, если `expireTime <= now`.
-- Продлевать, если до истечения **меньше 15 суток** (`TokenRefreshThreshold`); при запуске для всех аккаунтов,
-  при долгом аптайме раз в **7 суток**. Запросы разносятся по времени (200 мс x индекс).
-- Если продление не нужно, а статус «неизвестен», проверка через `ping`.
-- Сетевая ошибка при продлении/проверке: токен мёртвым не считать (`AuthApiException`, статус остаётся).
+`code` (регистр не важен): `None`, `InvalidCredentials`, `AccountUnconfirmed`, `TfaRequired` (запросить 2FA-код и повторить), `TfaInvalid`, `AccountLocked`; иное → `Unknown`.
+Транспорт: login/refresh/logout — `send_ordered`, ping — `send` (1.1).
 
-### 7.2 Что лаунчер делает с токеном при запуске игры
-Токен и параметры уходят клиенту **через переменные окружения** (раздел 8.2). Подтверждение личности при
-входе на игровой сервер делает **клиент (Robust)**, лаунчер в рукопожатии не участвует. Протокол клиент-сервер-auth
-в коде лаунчера отсутствует и нам не нужен (всё делает Robust.Client).
-Если `auth.mode == Disabled` или аккаунт не выбран, `ROBUST_AUTH_*` не передаются, а имя берётся
-из `FallbackUsername` = `JoeGenero` (гостевой вход).
+### 7.1 Правила токенов [код: LoginManager.cs; наш код: `accounts::freshness`, `ensure_fresh`]
+- `expireTime` — абсолютное время (RFC 3339). Истёк при `expireTime <= now` → вход без сети.
+- Продлевать, если до истечения **≤ 15 суток** (`REFRESH_THRESHOLD`). Новый токен, который уже истёк, считается истёкшим. Не удалось сохранить — ошибка «войти заново».
+- Иначе при `verify` — `ping`; 401 → нужен вход.
+- Сетевая ошибка при продлении или проверке — ошибка, аккаунт не меняется.
+- Вызывается при запуске игры для выбранного аккаунта (`app/src-tauri/src/game.rs`). Upstream проверяет все аккаунты при старте и раз в 7 суток с разносом 200 мс — **не реализовано в лаунчере**.
 
-### 7.3 Как хранит оф. лаунчер и чего НЕ делаем мы
-Токены лежат в **открытом виде** в SQLite настроек лаунчера (`Login(UserId, UserName, Token, Expires)`,
-DataManager.cs:295,455-464). Пароль после входа нигде не хранится. Наше ТЗ требует безопасного хранения:
-токены кладём в Windows Credential Manager / DPAPI (`CryptProtectData`), пароль не логируем и не сохраняем,
-в логах токены маскируем. Решение по реализации в Фазе 2.
+### 7.2 Что лаунчер делает с токеном при запуске игры [код: Connector.cs:316-326; наш код: `play::auth_env`, `launch::build_command`]
+- Токен уходит **только через env** (8.2), и только если аккаунт выбран, нет `--no-connect` и `auth.mode != Disabled`.
+  Тогда же `ROBUST_AUTH_USERID`, `ROBUST_AUTH_PUBKEY`, `ROBUST_AUTH_SERVER`.
+- `auth.mode == Required` без аккаунта (и без `--no-connect`) → `AuthRequired` до загрузки.
+- Гость: `ROBUST_AUTH_*` не передаются, имя — `guest_name` (по умолчанию `FALLBACK_USERNAME` = `JoeGenero`). Унаследованные `ROBUST_AUTH_*` удаляются из env.
+- URL auth-сервера **не берётся из `/info`**: иначе сервер направил бы `ROBUST_AUTH_SERVER` на себя и получил токен. Только из наших зеркал (7.4).
+- Подтверждение личности делает **клиент (Robust)**; протокол клиент-сервер-auth в лаунчере не нужен.
 
-### 7.4 Что передаётся в `ROBUST_AUTH_SERVER`
-`ConfigConstants.AuthUrl.GetMostSuccessfulUrl()`: тот из двух auth-URL (основной/fallback), через который
-было больше успешных запросов.
+### 7.3 Хранение аккаунтов [код: upstream DataManager.cs:295,455-464; наш код: `accounts::CredentialStore`, `secret.rs`]
+- Upstream хранит токены открытым текстом в SQLite (`Login(UserId, UserName, Token, Expires)`); пароль не хранит.
+- Мы: **Windows Credential Manager** (generic, `LOCAL_MACHINE`). Target `BebraLauncher/account/<user id>`, blob — JSON `StoredAccount {user_id, username, token, expire_time}`,
+  ≤ 2560 байт. При чтении пропускается элемент с несовпадающим `user_id` или битый.
+- Пароль уходит только в `authenticate`, не хранится и не логируется. `Token`: `Debug`/`Display` его не выводят, сравнение константное.
 
-### 7.5 Публичный ключ подписи [код: signing_key]
-Файл `signing_key` (PEM, SPKI, Ed25519, `MCowBQYDK2VwAyEApQ9mAhMLbmhQqRH7itgNo75S5rCSMsMXvVRmMv1d9NQ=`)
-лежит рядом с лаунчером. Им проверяются подписи движка (в Loader) и модулей (в лаунчере).
-Ключ сверен с апстримом (raw.githubusercontent.com/space-wizards/SS14.Launcher/master/SS14.Launcher/signing_key): **идентичен**; подпись реального движка им проверена.
-Ядро (`crates/core/src/signature.rs`) встраивает ещё два ключа — `signing_key_multiverse.pem` и
-`signing_key_supermatter.pem`; для движков с такими именами (`multiverse`, `supermatter`) Loader получает свой файл ключа
-(`launch.rs`, `ensure_signing_key_file_for_engine`). Источник этих двух ключей в документации не описан.
+### 7.4 `ROBUST_AUTH_SERVER` [код: ConfigConstants.cs:12-16 `GetMostSuccessfulUrl`; наш код: `UrlFallbackSet::most_successful`]
+Из двух auth-URL тот, у которого больше 2xx-ответов (при равенстве — основной). `ROBUST_AUTH_SERVERS` = `unset@<тот же URL>` (8.2). Смысл формата у клиента — [?].
+
+### 7.5 Публичные ключи подписи [код: signing_key; наш код: `signature.rs`, `launch::ensure_signing_key_file_for_engine`]
+- `signing_key` (PEM SPKI, Ed25519): `MCowBQYDK2VwAyEApQ9mAhMLbmhQqRH7itgNo75S5rCSMsMXvVRmMv1d9NQ=`. Совпадает с `crates/core/src/signing_key.pem` и с upstream
+  (`raw.githubusercontent.com/space-wizards/SS14.Launcher/master/SS14.Launcher/signing_key`). Подпись реального движка проверена [live].
+- Движки `multiverse` и `supermatter` — свои ключи (`signing_key_multiverse.pem`, `signing_key_supermatter.pem`). Источник не описан в доке [?].
+- Файл записывается в `<root>\signing_key[_<engine>]` атомарно при каждом запуске, если содержимое другое; путь — аргумент 3 Loader.
+- Проверяют: Loader — движок при каждом запуске (выключателя нет); core — движок после скачивания (6.2) и модули (6.3).
 
 ---
 
-## 8. Запуск клиента [код: Connector.cs:271-398, 499-621; SS14.Loader/*]
+## 8. Запуск клиента [код: Connector.cs:271-398, 499-621; SS14.Loader/*; наш код: `launch.rs`, `play.rs`, `loader/`]
 
-### 8.1 Loader это отдельная программа
-`SS14.Loader.exe` это .NET 10 приложение из репозитория лаунчера (MIT, как и `Robust.LoaderApi`).
-Что оно делает (Loader/Program.cs):
-1. Читает `signing_key`, проверяет Ed25519-подпись **всего** engine-zip (`sig` из 6.1); провал → код выхода 2.
-   В нашей версии Loader выключателя подписи нет (см. `loader/README.md`).
-2. Открывает engine-zip, находит `Robust.Client.dll`, берёт `LoaderEntryPointAttribute`, создаёт точку входа.
-3. Монтирует контент из `content.db` (`ContentDbFileApi`) и вызывает `Main` движка с нашими аргументами.
-4. `RedialApi`: для «перезахода» клиент перезапускает **лаунчер**: `<launcher> --commands :RedialWait R<hex причины> C<hex адреса>`
-   (путь берётся из env `SS14_LAUNCHER_PATH`). [код: LauncherCommands.cs, LauncherMessaging.cs]
-   Команды: `:Ping` (показать окно), `:RedialWait` (подождать), `R<hex>`/`r<текст>` (причина), `C<hex>`/`c<адрес>` (подключиться).
-   Реализовано у нас (app/src-tauri/src/redial.rs): вместо named pipe используется плагин single-instance (второй процесс
-   передаёт argv первому), `SS14_LAUNCHER_PATH` ставит `core::launch` (наш exe). Вживую с настоящим redial НЕ проверено,
-   разбор команд покрыт тестами. Ссылка `ss14://…` одним аргументом только открывает сервер (оф. лаунчер подключается сразу).
+### 8.1 Loader — отдельная программа
+`SS14.Loader.exe` — .NET 10 в `loader/` (часть файлов upstream, MIT; наши отличия — в `loader/README.md`). Делает (`loader/SS14.Loader/Program.cs`):
+1. Читает ключ (аргумент 3), проверяет Ed25519-подпись **всего** engine-zip по `sig` (аргумент 2). Проверка и парсинг zip идут по одному буферу.
+   Провал → код **2**. `SS14_DISABLE_SIGNING` удалён: отключить проверку нельзя.
+2. Открывает zip, находит `Robust.Client.dll`, создаёт точку входа (`LoaderEntryPointAttribute`) [код: upstream, не проверено нами].
+3. Применяет патчи клиента из `SS14_LOADER_PATCHES` (.dll через `;`, Harmony) — до старта движка.
+4. Монтирует оверлей (`SS14_LOADER_OVERLAY_ZIP`, поверх игры), затем `content.db` (`SS14_LOADER_CONTENT_DB` + `SS14_LOADER_CONTENT_VERSION`).
+   Пишет `RunningClient` (читает cull, 5.4). Вызывает `Main` движка.
+5. Коды выхода: `0` ок; `1` меньше трёх аргументов; `2` подпись; `3` `Run()` неуспешен; `4` необработанное исключение.
 
-### 8.2 Запуск процесса
-```
-SS14.Loader.exe <путь к engine zip> <sig hex> <путь к signing_key> [аргументы движка...]
-```
-Аргументы движка (порядок как в коде):
-```
---username <имя аккаунта | JoeGenero>
---cvar display.compat=<True|False>        # режим GLES2; True если включён «compat» в настройках
---cvar launch.launcher=true
---launcher --connect-address <udp://...>  # connect_address из /info или udp://{host}:{port} из адреса сервера
---ss14-address <ss14[s]://...>            # исходный адрес сервера
---cvar build.download_url=...   build.manifest_url=...   build.manifest_download_url=...
---cvar build.version=...        build.fork_id=...        build.hash=...
---cvar build.manifest_hash=...  build.engine_version=...  # передаются только непустые;
-                                                          # без engine_version/manifest_hash клиент НЕ подключится на новых CDN
-```
-`--launcher` подразумевает `--connect` (клиент сразу идёт на сервер, без главного меню).
+**Redial** [код: upstream `RedialApi.cs`; наш код: `loader/SS14.Loader/RedialApi.cs`, `app/src-tauri/src/redial.rs`]:
+клиент запускает **лаунчер**: `$SS14_LAUNCHER_PATH --commands :RedialWait R<hex причины> C<hex адреса>` (из env перед запуском удаляются `ROBUST_AUTH_*`, `SS14_LOADER_*`, `SS14_DISABLE_SIGNING`).
+Команды: `:Ping`, `:RedialWait`, `R<hex>`/`r<текст>` (причина; текст от сервера недоверенный), `C<hex>`/`c<адрес>`.
+У нас вместо named pipe — `tauri-plugin-single-instance` (argv второго процесса передаётся первому). Вживую не проверено; разбор покрыт тестами.
+`ss14://…` одним аргументом только открывает сервер без подключения (upstream подключается сразу).
 
-Переменные окружения [код: :316-326, :520-563]:
+### 8.2 Запуск процесса [код: Connector.cs:499-621; наш код: `launch::build_command`, `launch::spawn`]
+Путь к Loader: `BEBRA_LOADER` (имя обязано быть `SS14.Loader.exe`), затем `loader\` рядом с exe, затем `loader\out` в предках (dev).
+`Bebra.HwidPatch.dll` ищется рядом с Loader.
+
+```
+SS14.Loader.exe <engine zip> <sig hex> <signing_key> --username <имя> --cvar display.compat=<True|False> --cvar launch.launcher=true
+  [--launcher --connect-address <udp://…> --ss14-address <ss14[s]://…>]   # без них — главное меню
+  [--cvar build.<name>=<value> …]    # download_url, manifest_url, manifest_download_url, version, fork_id, hash, manifest_hash, engine_version; только непустые
+  [--cvar …]                         # профиль оптимизации
+  [--cvar name=value …]              # пользовательские
+```
+- `--launcher` подразумевает `--connect`. `display.compat=True` — режим совместимости (GLES2).
+- Профиль оптимизации добавляет `light.*` (тени, блики, лимит теней), `display.vsync`/`display.max_fps` (60 для `optimized`, 0 при разблокировке FPS),
+  `light.resolution_scale`; при профиле ≠ `standard` — `res.*` (кеш, предзагрузка текстур); при `optimized` ещё `light.max_light_count`/`max_occluder_count=256`, `midi.parallelism=1`.
+- Пользовательские аргументы: только `--cvar name=value` (имя `[A-Za-z0-9_.]`, ≤ 100; значение ≤ 500 без управляющих). Остальное отбрасывается.
+
+Переменные окружения [код: Connector.cs:316-326, 520-563; наш код: `launch.rs`]:
 
 | Переменная | Значение |
 |---|---|
-| `ROBUST_AUTH_TOKEN` / `_USERID` / `_PUBKEY` / `_SERVER` | токен, GUID аккаунта, `auth.public_key` сервера, самый успешный auth-URL. Только если `auth.mode != Disabled` и аккаунт выбран |
-| `SS14_LOADER_CONTENT_DB` | путь к `content.db` |
-| `SS14_LOADER_CONTENT_VERSION` | `ContentVersion.Id` |
-| `SS14_LOADER_OVERLAY_ZIP` | опционально, zip-«подложка»; у нас — текстовые пакеты (`core::packs`) |
-| `ROBUST_MODULE_<NAME>` | каталог модуля (`.` -> `_`, верхний регистр), напр. `ROBUST_MODULE_ROBUST_CLIENT_WEBVIEW` |
-| `SS14_LAUNCHER_PATH` | путь к exe лаунчера (для redial) |
-| `DOTNET_TieredPGO=1`, `DOTNET_ReadyToRun=0`, `DOTNET_MULTILEVEL_LOOKUP=0` | настройки .NET. `DOTNET_gcServer=1` только для спец. контента. **`DOTNET_ROLL_FORWARD` НЕ ставить** (комментарий в коде: Loader всегда на runtime лаунчера) |
-| `SS14_DISABLE_SIGNING` | не передаётся: `core::launch` удаляет эту переменную из env процесса |
+| `ROBUST_AUTH_TOKEN` | токен (секрет; в логах не печатается). Только если аккаунт передаётся (7.2) |
+| `ROBUST_AUTH_USERID` | GUID аккаунта |
+| `ROBUST_AUTH_PUBKEY` | `auth.public_key` из `/info` |
+| `ROBUST_AUTH_SERVER` | самый успешный auth-URL (7.4) |
+| `ROBUST_AUTH_SERVERS` | `unset@<тот же URL>` |
+| `SS14_LOADER_CONTENT_DB` | путь к `content.db` (всегда) |
+| `SS14_LOADER_CONTENT_VERSION` | `ContentVersion.Id` (всегда) |
+| `SS14_LOADER_OVERLAY_ZIP` | опционально: zip текстовых пакетов (`core::packs`) |
+| `SS14_LOADER_PATCHES` | опционально: пути к .dll патчей через `;` |
+| `ROBUST_MODULE_<NAME>` | каталог модуля: `.`→`_`, верхний регистр, `_`→`__` (`A_B` → `A__B`). `Robust.Client.WebView` → `ROBUST_MODULE_ROBUST_CLIENT_WEBVIEW` |
+| `SS14_LAUNCHER_PATH` | путь к exe лаунчера (redial), опционально |
+| `BEBRA_HWID_MODERN`, `BEBRA_HWID_LEGACY` | опционально (задан HWID); читает патч `Bebra.HwidPatch` |
+| `DOTNET_TieredPGO=1`, `DOTNET_ReadyToRun=0`, `DOTNET_MULTILEVEL_LOOKUP=0` | всегда |
+| `DOTNET_gcServer=1`, `DOTNET_GCDynamicAdaptationMode=1`, `DOTNET_gcConcurrent=1`, `DOTNET_TC_QuickJitForLoops=1`, `BEBRA_OPTIMIZE=1` | при `server_gc` в профиле |
+| `DOTNET_ROOT` | если задан `dotnet_root`; `play::prepare` сейчас его не задаёт |
+| `DOTNET_ROLL_FORWARD` | **не ставить** (Loader всегда на runtime лаунчера); удаляется из env |
 
-`UseShellExecute=false`; stdout/stderr клиента пишутся в `logs\client.stdout.log` и `client.stderr.log`
-(`FileShare.ReadWrite|Delete`). Лаунчер ждёт 300 мс: если клиент умер с кодом != 0, это «клиент упал сразу».
-Токен передаётся в env: в логи команду запуска писать **без значений env** (оф. лаунчер логирует только аргументы).
+Остальные имена из `CLEARED_ENV` (включая `SS14_DISABLE_SIGNING`) удаляются из окружения процесса, если мы их не задали.
 
-### 8.3 Нужный .NET [код: Launcher.props, download_net_runtime.py, Bootstrap/Program.cs, publish.py]
-- TFM `net10.0`, рантайм **.NET 10.0.0** (`dotnet-runtime-10.0.0-win-x64.zip` с `builds.dotnet.microsoft.com`).
-- Оф. релиз кладёт рядом: `bin_x64\` (лаунчер), `bin_x64\loader\` (Loader), `dotnet_x64\` (рантайм); Bootstrap-exe
-  выставляет `DOTNET_ROOT=dotnet_x64` и стартует лаунчер. Loader наследует `DOTNET_ROOT` и берёт рантайм оттуда.
-- Нативные зависимости Loader: SQLite (e_sqlite3), libsodium, Robust.Natives(.Zstd); приходят с publish.
-- VC++ Redistributable x64 нужен на Windows (в лаунчере есть проверка `VcRedistCheck.cs`). [?] детали позже.
+Запуск [код: Connector.cs; наш код: `launch::spawn`]:
+- stdin — null; stdout/stderr — файлы. Приложение пишет каждую игру в свои `logs\client-<started_at>-<session>.stdout.log` / `.stderr.log`
+  (общее имя убрано, P2-40). Файл дописывается; при ≥ 8 МиБ переименовывается в `.1`.
+- Приоритет: `AboveNormal` (`0x8000`) при `high_priority`; `High` (`0x80`) только для профиля `optimized`.
+- Лог команды (`describe()`): программа, аргументы, **имена** env. Значения не выводятся.
+- Upstream ждёт 300 мс и отличает «упал сразу» по коду выхода — **не реализовано в лаунчере**. Завершение логируется (`game.rs`: `game pid … exited, code …`).
+
+### 8.3 Нужный .NET
+- Loader: TFM `net10.0` (`loader/Directory.Build.props`, `loader/SS14.Loader/SS14.Loader.csproj`). Dev-публикация:
+  `dotnet publish loader/SS14.Loader/SS14.Loader.csproj -c Release -r win-x64 --self-contained false -o loader/out`
+  (нужен .NET 10 runtime, `loader/README.md`). Установщик self-contained (`scripts/build-release.ps1`) [?].
+- `DOTNET_ROOT` лаунчер не выставляет (`dotnet_root: None`). Upstream-схема (`dotnet_x64\`, Bootstrap, `download_net_runtime.py`, `publish.py`, `VcRedistCheck.cs`, `Launcher.props`) в репозитории отсутствует — **не реализовано в лаунчере**.
+- Нативное: SQLite (SQLitePCL.Batteries_V2), Harmony (`Lib.Harmony` 2.4.3, нужен для .NET 10). VC++ redistributable: [?].
 
 ---
 
 ## 9. Выводы для нашей архитектуры и принятое решение
 
-**Core (Rust) реализуем сами:** хаб/`/status`/`/info`, выбор режима, zip- и manifest-загрузка, ContentDB (схема 5.2),
-индекс/скачивание движка и модулей + Ed25519-проверки, авторизация (token store), сборка команды запуска и env.
+**Core (Rust) реализован:** хаб, `/status`, `/info` (1); выбор режима, zip и manifest (2-4); ContentDB по схеме 5.2 (5);
+движок и модули с SHA-256 и Ed25519 (6); аккаунты и токены (7); команда запуска и env (8).
 
-**Loader нельзя написать на Rust**: он хостит управляемый Robust.Client.dll в .NET-процессе.
-Принято вариант A: `SS14.Loader` собирается из исходников официального лаунчера (MIT, каталог `loader/`) через `dotnet publish`
-и поставляется с установщиком вместе с .NET 10 runtime (см. `loader/README.md`). Варианты B (скачивать Loader у оф. лаунчера)
-и C (переписать на .NET) отклонены.
+**Loader на Rust не пишем:** он хостит управляемый Robust.Client.dll в .NET-процессе. Принят вариант A: `SS14.Loader` собирается из `loader/`
+(upstream MIT с нашими отличиями, см. `loader/README.md`) через `dotnet publish` и поставляется с .NET 10 runtime.
+Варианты B (скачивать Loader у оф. лаунчера) и C (переписать на .NET) отклонены.
 
-Вес: в установщике Loader self-contained (~96 МБ в ресурсах по NOTES.md). [?] Оценка .NET runtime + Loader для «малого веса» не замерялась.
+Вес: в установщике Loader self-contained (~96 МБ, NOTES.md). [?] Оценка .NET runtime + Loader не замерялась.
 
-**Прочее для Фазы 1:** схему `content.db` не менять; тесты хеширования (BLAKE2b-256 без ключа = `blake2b(digest_size=32)`),
-парсер манифеста, парсер `/info`; скачивание блобов сначала на малом наборе файлов, с явного согласия пользователя.
+**Тесты протокола:** BLAKE2b-256 и SHA-256; парсер манифеста и его хеш; поток блобов (`PreCompressed`, обрывы, лимиты); zip-режим;
+`/info`, `/status`, хаб (включая 429); миграции и cull; Ed25519; разбор redial; `module_env_name`; `build_command`.

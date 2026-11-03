@@ -64,12 +64,24 @@ dotnet restore loader/Bebra.HwidPatch/Bebra.HwidPatch.csproj --locked-mode
 dotnet publish loader/Bebra.HwidPatch/Bebra.HwidPatch.csproj -c Release --no-restore -o loader/out
 ```
 
-`packages.lock.json` in `SS14.Loader/` and `Robust.LoaderApi/` is committed: after an intended
-package change run `dotnet restore --force-evaluate` and commit the updated lock files. CI and the
-release script restore with `--locked-mode` and fail when the lock file does not match.
+`packages.lock.json` in `SS14.Loader/`, `Robust.LoaderApi/` and `Bebra.HwidPatch/` is committed: after an
+intended package change run `dotnet restore --force-evaluate` and commit the updated lock files. CI and
+the release script restore with `--locked-mode` and fail when a lock file does not match.
 
 `THIRD-PARTY-NOTICES.txt` lists the licences of everything shipped in the installer's `loader`
 folder; `scripts/build-release.ps1` copies it into `loader/out-sc`. Update it when a package or a
 native library is added.
+
+## Переменные окружения
+
+Читаются Loader'ом (или клиентским патчем). Значения по умолчанию — в коде.
+
+| Переменная | Что делает |
+|---|---|
+| `SS14_LOADER_PATCHES` | `;`-список путей к патч-`.dll`; выставляет лаунчер. Без неё патчи не загружаются |
+| `BEBRA_PATCH_LOG` | `1` или `true`: вывод патч-подсистемы. По умолчанию молчит |
+| `BEBRA_OPTIMIZE` | `1` или `true`: GC `SustainedLowLatency` и приоритет потока `AboveNormal` |
+| `SS14_LOADER_CONTENT_POOL_SIZE` | Размер пула подключений к `content.db`, 1..8; по умолчанию `clamp(ядра, 2, 8)` |
+| `BEBRA_HWID_LEGACY`, `BEBRA_HWID_MODERN` | 32 байта в hex для `Bebra.HwidPatch`; выставляет лаунчер |
 
 Do not change behaviour in copied C# files without documenting it as described above.
