@@ -7,6 +7,7 @@ mod commands;
 mod game;
 mod news;
 mod pending;
+mod presence;
 mod redact;
 mod redial;
 mod selfupdate;

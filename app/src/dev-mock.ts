@@ -99,7 +99,7 @@ const DEFAULT_SETTINGS: Settings = {
   schema_version: 1,
   guest_name: "JoeGenero",
   compat_mode: false,
-  discord_rpc: true,
+  discord_rpc_mode: "vanilla",
   minimize_on_play: true,
   theme: "dark",
   theme_gradient: false,

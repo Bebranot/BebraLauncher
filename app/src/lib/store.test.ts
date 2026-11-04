@@ -44,7 +44,7 @@ const settings = (over: Partial<Settings> = {}): Settings => ({
   schema_version: 1,
   guest_name: "Joe",
   compat_mode: false,
-  discord_rpc: true,
+  discord_rpc_mode: "vanilla",
   minimize_on_play: true,
   theme: "dark",
   theme_gradient: true,

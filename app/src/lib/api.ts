@@ -109,7 +109,7 @@ export interface Settings {
   schema_version: number;
   guest_name: string;
   compat_mode: boolean;
-  discord_rpc: boolean;
+  discord_rpc_mode: string;
   minimize_on_play: boolean;
   theme: string;
   theme_gradient: boolean;

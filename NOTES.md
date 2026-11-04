@@ -102,6 +102,15 @@
 - `wintune.rs`: EcoQoS отключается `SetProcessInformation` после старта; GPU-предпочтение пишется в `HKCU\Software\Microsoft\DirectX\UserGpuPreferences` по полному пути exe и при выключении удаляется, только если значение ровно наше.
 - `loader/Bebra.PerfPatch/`: применяется из `ContentInit`, каждая часть по своей env. Кэш иконок безопасен, пока единственный вызывающий — `StatusIconOverlay` (он сортирует список на месте, это не мешает). Если в игре появятся новые вызовы `GetStatusIcons` — перепроверить.
 
+## Discord Rich Presence
+
+- `Settings::discord_rpc_mode`: `vanilla` (RPC движка), `launcher` (`presence.rs`), `off`. `discord.enabled` передаётся всегда и в обе стороны: cvar сохраняется в конфиге игры.
+- В режиме `launcher` с `close_on_play` статус ведёт игра: закрывшийся лаунчер не может держать соединение с Discord (`game_keeps_presence`).
+- `presence.rs` работает без библиотек: кадры `op u32 LE, длина u32 LE, JSON` в `\\.\pipe\discord-ipc-N`. Один поток на игру, обновление раз в 30 с и только при изменении; закрытие пайпа очищает статус.
+- ID приложения — от самой игры (`560499552273170473`, из `DiscordRichPresence.cs`), поэтому показывается «Space Station 14» и доступна картинка `logo`. Со своим ID картинки нужно загрузить в это приложение.
+- Лаунчер видит только сервер, который запустил: смены сервера внутри клиента без redial и ника в статусе нет. После перезапуска лаунчера во время игры статус не восстанавливается (`recover_sessions` его не запускает). При нескольких клиентах у каждого своё соединение, какой статус покажет Discord, не проверялось.
+- Адрес сервера в статус не попадает: он может быть приватным.
+
 ## Сборка и инструменты
 
 - Проверки: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`; в `app/`: `pnpm check`, `pnpm test`. CI (`.github/workflows/ci.yml`) делает то же, плюс сборку Loader и HWID-патча и отдельный job с NuGet audit.

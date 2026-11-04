@@ -195,7 +195,10 @@ export const en: Dictionary = {
     "The game uses another graphics mode (GLES2) that is less prone to driver bugs. Try it if you have graphics problems or crashes.",
   "opt.discordRpc": "Discord Rich Presence",
   "opt.discordRpcHint":
-    "Show game status and server name in your Discord profile.",
+    "Game status in your Discord profile. The launcher shows the server, round stage, map and player count, but has to stay open; if it closes on start, the game keeps the status.",
+  "opt.discordRpcVanilla": "From the game",
+  "opt.discordRpcLauncher": "From the launcher",
+  "opt.discordRpcOff": "Off",
   "opt.minimize": "Minimize the launcher while the game runs",
   "opt.minimizeHint": "The window comes back when the game closes.",
   "opt.autostart": "Start with Windows",

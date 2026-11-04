@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Older files had no `schema_version` at all (version 0); `parse` brings them up to this
 /// number before they are read (P2-39).
-pub const CURRENT_SCHEMA_VERSION: u32 = 1;
+pub const CURRENT_SCHEMA_VERSION: u32 = 2;
 
 /// How many favourite servers are kept. The ping call and the list do not need more.
 pub const FAVORITES_LIMIT: usize = 200;
@@ -111,6 +111,15 @@ fn migrate(from: u32, mut value: serde_json::Value) -> serde_json::Value {
             // 0 -> 1: the version field itself was added. A version-0 file has the same
             // fields otherwise, so there is nothing to move; the defaults fill the rest.
             0 => {}
+            // 1 -> 2: the `discord_rpc` switch became `discord_rpc_mode`. A switch that was on
+            // or never written means the game's own presence, which is also the default.
+            1 => {
+                if let Some(obj) = value.as_object_mut() {
+                    if let Some(serde_json::Value::Bool(false)) = obj.remove("discord_rpc") {
+                        obj.insert("discord_rpc_mode".to_string(), "off".into());
+                    }
+                }
+            }
             _ => break,
         }
         version += 1;
@@ -143,8 +152,8 @@ pub struct Settings {
     pub guest_name: String,
     /// Start the game in the GLES2 fallback renderer.
     pub compat_mode: bool,
-    /// Whether Discord Rich Presence is enabled in the game client.
-    pub discord_rpc: bool,
+    /// Who keeps the Discord Rich Presence: `vanilla` (the game client), `launcher` or `off`.
+    pub discord_rpc_mode: String,
     /// Minimize the launcher while the game runs, and bring it back when the game closes.
     pub minimize_on_play: bool,
     /// Id of the colour theme; the UI knows the list and falls back to the default.
@@ -383,7 +392,7 @@ impl Default for Settings {
             schema_version: CURRENT_SCHEMA_VERSION,
             guest_name: FALLBACK_USERNAME.to_string(),
             compat_mode: false,
-            discord_rpc: true,
+            discord_rpc_mode: "vanilla".to_string(),
             minimize_on_play: false,
             theme: "dark".to_string(),
             theme_gradient: false,
@@ -842,6 +851,11 @@ impl Settings {
         self.bg_dim = self.bg_dim.min(95);
         self.bg_blur = self.bg_blur.min(30);
 
+        match self.discord_rpc_mode.as_str() {
+            "vanilla" | "launcher" | "off" => {}
+            _ => self.discord_rpc_mode = "vanilla".to_string(),
+        }
+
         match self.client_window_mode.as_str() {
             "default" | "windowed" | "fullscreen" | "borderless" => {}
             _ => self.client_window_mode = "default".to_string(),
@@ -1266,7 +1280,33 @@ mod tests {
         assert_eq!(s.hubs.len(), 1);
         assert_eq!(s.extra_args, "");
         assert!(s.enabled_patches.is_empty());
-        assert!(s.discord_rpc);
+        assert_eq!(s.discord_rpc_mode, "vanilla");
+    }
+
+    #[test]
+    fn the_old_discord_switch_becomes_a_mode() {
+        let mode = |json: &str| parse(json.as_bytes()).unwrap().0.discord_rpc_mode;
+        assert_eq!(mode(r#"{"schema_version":1,"discord_rpc":false}"#), "off");
+        assert_eq!(
+            mode(r#"{"schema_version":1,"discord_rpc":true}"#),
+            "vanilla"
+        );
+        assert_eq!(
+            mode(r#"{"discord_rpc":false}"#),
+            "off",
+            "from version 0 too"
+        );
+        assert_eq!(mode(r#"{"schema_version":1}"#), "vanilla");
+    }
+
+    #[test]
+    fn an_unknown_discord_mode_falls_back_to_the_game() {
+        let s = Settings {
+            discord_rpc_mode: "invalid".into(),
+            ..Settings::default()
+        }
+        .sanitized();
+        assert_eq!(s.discord_rpc_mode, "vanilla");
     }
 
     /// A file written before the schema field existed is version 0: it is migrated, marked as

@@ -186,7 +186,10 @@ pub struct PlayParams {
     pub account: Option<Uuid>,
     pub guest_name: String,
     pub compat_mode: bool,
-    pub discord_rpc: bool,
+    /// See `Settings::discord_rpc_mode`.
+    pub discord_rpc_mode: String,
+    /// The interface language's code, for the launcher's own presence.
+    pub language: String,
     pub minimize_on_play: bool,
     pub close_on_play: bool,
     pub client_window_mode: String,
@@ -377,10 +380,12 @@ async fn prepare(
         }
     };
     let mut extra_args = Vec::new();
-    if !params.discord_rpc {
-        extra_args.push("--cvar".to_string());
-        extra_args.push("discord.enabled=false".to_string());
-    }
+    // Both ways: the game saves this cvar in its own config.
+    extra_args.push("--cvar".to_string());
+    extra_args.push(format!(
+        "discord.enabled={}",
+        game_keeps_presence(&params.discord_rpc_mode, params.close_on_play)
+    ));
     // The engine only knows two modes (`WindowMode`: 0 = windowed, 1 = fullscreen); there is no
     // borderless mode, so "borderless" gets fullscreen, which SDL3 creates as a desktop-fullscreen
     // window. The names used to be `display.window_mode`, `display.ui_scale` and
@@ -462,6 +467,21 @@ async fn prepare(
     })
     .await
     .map_err(|e| Failure::new(e.code(), e.detail()))
+}
+
+/// Does the game client keep the Discord presence? A launcher that closes after the start cannot
+/// keep it, so the game does then: its presence is better than none.
+fn game_keeps_presence(mode: &str, close_on_play: bool) -> bool {
+    match mode {
+        "off" => false,
+        "launcher" => close_on_play,
+        _ => true,
+    }
+}
+
+/// Does the launcher keep the Discord presence? Exactly one of the two does, unless it is off.
+fn launcher_keeps_presence(mode: &str, close_on_play: bool) -> bool {
+    mode == "launcher" && !close_on_play
 }
 
 fn stage_name(stage: Stage) -> &'static str {
@@ -618,10 +638,22 @@ fn run_game(
     if params.minimize_on_play {
         set_minimized(app, true);
     }
+    let presence = launcher_keeps_presence(&params.discord_rpc_mode, params.close_on_play)
+        .then(|| {
+            crate::presence::start(crate::presence::PresenceRequest {
+                client: params.client.clone(),
+                addr: params.addr.clone(),
+                server_name: params.server_name.clone(),
+                language: params.language.clone(),
+                started_at_secs,
+            })
+        })
+        .flatten();
     bebra_core::process::trim_working_set();
 
     let started = std::time::Instant::now();
     let code = child.wait().ok().and_then(|s| s.code());
+    drop(presence);
     let remaining = game.unregister_running(pid);
     // The journal entry goes first: the time below is credited by this run, and a crash between
     // the two must not let `recover_sessions` count the same time again (P1-22).
@@ -658,6 +690,23 @@ mod tests {
             pid,
             image_path: path.into(),
         }
+    }
+
+    #[test]
+    fn exactly_one_side_keeps_the_presence_unless_it_is_off() {
+        for close in [false, true] {
+            assert!(!game_keeps_presence("off", close));
+            assert!(!launcher_keeps_presence("off", close));
+            assert!(game_keeps_presence("vanilla", close));
+            assert!(!launcher_keeps_presence("vanilla", close));
+        }
+        assert!(launcher_keeps_presence("launcher", false));
+        assert!(!game_keeps_presence("launcher", false));
+        assert!(
+            game_keeps_presence("launcher", true),
+            "a launcher that closes hands the presence to the game"
+        );
+        assert!(!launcher_keeps_presence("launcher", true));
     }
 
     #[test]

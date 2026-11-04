@@ -810,12 +810,18 @@
         checked={s.compat_mode}
         onchange={(v) => app.updateSettings({ compat_mode: v })}
       />
-      <Option
-        label={t("opt.discordRpc")}
-        hint={t("opt.discordRpcHint")}
-        checked={s.discord_rpc}
-        onchange={(v) => app.updateSettings({ discord_rpc: v })}
-      />
+      <label class="field">
+        <span>{t("opt.discordRpc")}</span>
+        <select
+          value={s.discord_rpc_mode}
+          onchange={(e) => app.updateSettings({ discord_rpc_mode: e.currentTarget.value })}
+        >
+          <option value="vanilla">{t("opt.discordRpcVanilla")}</option>
+          <option value="launcher">{t("opt.discordRpcLauncher")}</option>
+          <option value="off">{t("opt.discordRpcOff")}</option>
+        </select>
+        <small class="sub">{t("opt.discordRpcHint")}</small>
+      </label>
       <Option
         label={t("opt.ignoreRedial")}
         hint={t("opt.ignoreRedialHint")}
