@@ -7,6 +7,8 @@
 
 Референсы (только чтение, `..\Forks\`): официальный лаунчер space-wizard и MusyaLoader. По ним ссылки `[код: ...]` в `docs/protocol.md`.
 
+Готовая сборка игры, если понадобится: `C:\LocalDutyAVS` (исходники LocalDuty и собранные клиент и сервер: `bin\Content.Client\Content.Client.exe`, `bin\Content.Server\Content.Server.exe`). Лежит вне репозитория, только на этой машине.
+
 ## Архитектурные решения
 
 - Игру запускает `SS14.Loader.exe` (.NET 10, `loader/`, из исходников официального лаунчера, MIT). Rust-ядро Loader заменить не может. Почему — `docs/protocol.md`, раздел 9.
