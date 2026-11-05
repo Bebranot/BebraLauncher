@@ -119,21 +119,14 @@ $headers = @{
 }
 # The launcher's "What is new" shows only the changelog groups and bullet items of the text, so the
 # plain lines of this header stay on the GitHub page. It must not contain list items.
-$label = if ($Label) { " $Label" } else { '' }
-$page = @"
-**Скачать:** файл ``$($setup.Name)`` в разделе Assets ниже. Нужны Windows 10 или 11 (x64).
-
-Установщик пока без подписи издателя, поэтому Windows SmartScreen может предупредить о неизвестном приложении: «Подробнее», затем «Выполнить в любом случае». Файл ``.sig`` скачивать не нужно, по нему лаунчер проверяет свои обновления. Подробности в [README](https://github.com/$Repo#readme) ([English](https://github.com/$Repo/blob/main/README.en.md)).
-
-**Download:** ``$($setup.Name)`` under Assets below. Requires Windows 10 or 11 (x64). The installer has no publisher signature yet, so Windows SmartScreen may warn you: "More info", then "Run anyway".
-
-$notes
-"@
+$header = (Get-Content "$PSScriptRoot/release-page.txt" -Raw -Encoding UTF8).Replace('{setup}', $setup.Name).Replace('{repo}', $Repo)
+$title = "BebraLauncher $version"
+if ($Label) { $title = "$title $Label" }
 $body = @{
     tag_name         = $tag
     target_commitish = $head
-    name             = "BebraLauncher $version$label"
-    body             = $page
+    name             = $title
+    body             = "$($header.Trim())`n`n$notes"
     draft            = $false
     prerelease       = $false
 } | ConvertTo-Json

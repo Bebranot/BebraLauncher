@@ -1,0 +1,5 @@
+**Скачать:** файл `{setup}` в разделе Assets ниже. Нужны Windows 10 или 11 (x64).
+
+Установщик пока без подписи издателя, поэтому Windows SmartScreen может предупредить о неизвестном приложении: «Подробнее», затем «Выполнить в любом случае». Файл `.sig` скачивать не нужно, по нему лаунчер проверяет свои обновления. Подробности в [README](https://github.com/{repo}#readme) ([English](https://github.com/{repo}/blob/main/README.en.md)).
+
+**Download:** `{setup}` under Assets below. Requires Windows 10 or 11 (x64). The installer has no publisher signature yet, so Windows SmartScreen may warn you: "More info", then "Run anyway".
