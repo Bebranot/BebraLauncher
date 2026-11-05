@@ -1,0 +1,35 @@
+name: Ошибка / Bug report
+description: Что-то работает не так / Something does not work
+labels: [bug]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Версия лаунчера / Launcher version
+      description: Настройки → О программе / Options → About
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: Что случилось / What happened
+      description: Что вы делали, чего ожидали и что получили / What you did, expected and got
+    validations:
+      required: true
+  - type: input
+    id: server
+    attributes:
+      label: Сервер / Server
+      description: Если ошибка связана с подключением / If the problem is about connecting
+  - type: textarea
+    id: log
+    attributes:
+      label: Лог / Log
+      description: Проверьте, что в тексте нет личных данных / Make sure it contains no personal data
+      render: text
+  - type: checkboxes
+    id: mods
+    attributes:
+      label: Моды / Mods
+      options:
+        - label: Ошибка повторяется с отключёнными модами / It still happens with mods turned off

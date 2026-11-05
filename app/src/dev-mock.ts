@@ -317,7 +317,75 @@ let mockHwid: HwidState = { auto: true, current: null, previous: null, patch: tr
 const randomHwid = () =>
   Array.from({ length: 64 }, () => "0123456789abcdef"[Math.floor(Math.random() * 16)]).join("");
 
+/**
+ * `?demo&theme=nord&lang=en`: fictional servers and a neutral account for the README screenshots
+ * (`scripts/readme-media`).
+ */
+function applyDemoMode(query: URLSearchParams) {
+  const hour = 3600_000;
+  servers.splice(
+    0,
+    servers.length,
+    server("ss14s://aurora.example", "Aurora Station | Medium RP", 64, 80, {
+      tags: ["lang:en", "rp:med", "region:eu_w"],
+      preset: "Secret",
+      map: "Meridian",
+    }),
+    server("ss14s://zarya.example", "Станция «Заря» | RP", 52, 70, {
+      tags: ["lang:ru", "rp:high", "region:eu_e"],
+      preset: "Extended",
+      map: "Saltern",
+    }),
+    server("ss14s://outpost.example", "Outpost Nine", 38, 60, {
+      tags: ["lang:en", "rp:low", "region:am_n_e"],
+      preset: "Nukeops",
+      map: "Marathon",
+    }),
+    server("ss14s://sector.example", "Дальний сектор | Без респавна", 27, 45, {
+      tags: ["lang:ru", "rp:none", "region:eu_e"],
+      preset: "Survival",
+      map: "Packed",
+    }),
+    server("ss14s://kolonie.example", "Kolonie Nord", 17, 40, {
+      tags: ["lang:de", "rp:med", "region:eu_w"],
+      preset: "Traitor",
+    }),
+    server("ss14s://lowpop.example", "Quiet Hours", 9, 30, {
+      tags: ["lang:en", "rp:low", "region:eu_w"],
+      run_level: 0,
+      map: null,
+      preset: null,
+    }),
+    server("ss14s://mayak.example", "Маяк", 4, 25, {
+      tags: ["lang:ru", "rp:low", "region:eu_e"],
+      round_start_time: new Date(Date.now() - 2 * hour).toISOString(),
+    }),
+  );
+  details["ss14s://aurora.example"] = {
+    description: "A friendly medium-roleplay crew. New players welcome.",
+    links: [
+      { name: "Discord", url: "https://example.com/discord" },
+      { name: "Rules", url: "https://example.com/rules" },
+    ],
+    auth: "required",
+  };
+  accounts = [
+    { ...accounts[0], username: "station_engineer" },
+    { ...accounts[1], username: "night_shift" },
+  ];
+  settings.guest_name = "Guest";
+  settings.dismissed_intel_warning = true;
+  settings.favorites = ["ss14s://aurora.example", "ss14s://zarya.example"];
+  settings.favorite_names = {};
+  settings.history = [];
+  settings.server_notes = {};
+  settings.language = query.get("lang") ?? "ru";
+  settings.theme = query.get("theme") ?? "dark";
+}
+
 export function installMock() {
+  const query = new URLSearchParams(location.search);
+  if (query.has("demo")) applyDemoMode(query);
   mockIPC(
     (cmd, args) => {
       const a = (args ?? {}) as Record<string, unknown>;

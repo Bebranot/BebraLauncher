@@ -40,6 +40,8 @@ NOTES.md
 # AGENTS.md, .mcp.json) stay ignored by the rules above.
 *.md
 !README.md
+!README.en.md
+!.github/**/*.md
 !CHANGELOG.md
 !PRODUCT.md
 !NOTES.md
