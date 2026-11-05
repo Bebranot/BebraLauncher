@@ -36,7 +36,7 @@ BebraLauncher lists Space Station 14 servers, remembers your accounts and starts
 
 **Client optimization.** The `standard`, `balanced` and `optimized` profiles, or individual switches.
 
-**Appearance.** 17 ready-made themes plus your own, shareable as JSON. Background, font and interface scale are configurable.
+**Appearance.** 17 ready-made themes plus your own, shareable as JSON. You can set your own picture as the background and adjust its dimming and blur. Font and interface scale are configurable too.
 
 **Localization and mods.** Text packs with translations (`.zip`) and client patches (`.dll`) on a separate tab.
 
@@ -128,3 +128,7 @@ The project's code is under the [MIT](LICENSE) license. `loader/` contains SS14.
 Some theme palettes and settings come from MusyaLoader (AGPL). Their license status is being reviewed.
 
 Space Station 14 belongs to its authors. The name is used only to say which game the launcher works with.
+
+## How it was made
+
+This project is vibe-coded: an AI wrote the code, while a human set the tasks, made the decisions and checked the results in the game. It was built with care over more than one day, with tests, a changelog and notes on the pitfalls found along the way. It is a beta for now, so bugs are possible. If you find one, [let us know](../../issues).
