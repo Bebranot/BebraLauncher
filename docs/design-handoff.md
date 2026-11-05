@@ -75,7 +75,7 @@ pnpm dev          # http://127.0.0.1:1420, вместо бэкенда — src/d
 | `lib/api.ts` | вызовы Tauri-команд |
 | `dev-mock.ts` | тестовый бэкенд для браузера |
 | `lib/changelog.ts`, `lib/UpdatesTab.svelte` | журнал версий и вкладка «Обновления» (событие `update` от бэкенда) |
-| не разобрано | `ErpOverlay.svelte`, `ErpPromo.svelte`, `SpaceBackground.svelte`, `rofl.svelte.ts` — в этом документе не описаны |
+| не разобрано | `SpaceBackground.svelte` — в этом документе не описан |
 
 Референсы вида: официальный лаунчер (`..\Forks\space-wizard SS14 launcher\SS14.Launcher\Theme\*.xaml`, `Views\*`) и MusyaLoader (`..\Forks\MusyaLoader\...\AppThemeManager.cs`, `OptionsTabView.xaml`). Лаунчер личный; копировать из форков можно, MusyaLoader под AGPL — для публикации нужен пересмотр.
 

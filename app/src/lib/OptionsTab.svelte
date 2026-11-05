@@ -18,8 +18,6 @@
   import { t, type Key } from "./i18n.svelte";
   import { OPTIMIZATION_GROUPS, type OptimizationKey } from "./optimization";
   import { nativeName, UI_LANGUAGES } from "./languages";
-  import ErpPromo from "./ErpPromo.svelte";
-  import { promo } from "./rofl.svelte";
   import Modal from "./Modal.svelte";
   import Option from "./Option.svelte";
   import { app } from "./store.svelte";
@@ -63,7 +61,6 @@
   let recommendedHubs = $state<RecommendedHub[]>([]);
 
   onMount(() => {
-    promo.checkSettingsVisit();
     void api.getAutostart().then((v) => (autostart = v)).catch(() => {});
     void api.getLinksRegistered().then((v) => (links = v)).catch(() => {});
     void api.getRecommendedHubs().then((r) => (recommendedHubs = r)).catch(() => {});
@@ -925,8 +922,6 @@
         </div>
       {/if}
     </section>
-
-    <ErpPromo />
 
     <!-- ------------------------------------------------------------ appearance -->
     <section id="opt-appearance">
