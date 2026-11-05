@@ -199,7 +199,7 @@ export const de: Dictionary = {
     "Das Spiel nutzt einen anderen Grafikmodus (GLES2), der weniger anfällig für Treiberfehler ist. Probieren Sie ihn bei Grafikproblemen oder Abstürzen.",
   "opt.discordRpc": "Discord Rich Presence",
   "opt.discordRpcHint":
-    "Spielstatus in deinem Discord-Profil. Der Launcher zeigt Server, Rundenphase, Karte und Spielerzahl, muss dafür aber geöffnet bleiben; schließt er sich beim Start, übernimmt das Spiel den Status.",
+    "Spielstatus in deinem Discord-Profil. Der Launcher zeigt Server, Charakter, Nutzernamen und Rundenzeit, Station und Preset im Tooltip des Symbols, muss dafür aber geöffnet bleiben; schließt er sich beim Start, übernimmt das Spiel den Status.",
   "opt.discordRpcVanilla": "Vom Spiel",
   "opt.discordRpcLauncher": "Vom Launcher",
   "opt.discordRpcOff": "Aus",

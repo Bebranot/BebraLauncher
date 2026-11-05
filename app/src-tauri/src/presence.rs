@@ -1,8 +1,9 @@
 //! Discord Rich Presence kept by the launcher while a game runs (`discord_rpc_mode = launcher`).
 //!
 //! The game's own presence is switched off then (`discord.enabled=false`). The launcher knows the
-//! server it started and asks its `/status`, so it does not see what happens inside the client: a
-//! redirect to another server shows only after the launcher is asked to redial.
+//! server it started and asks its `/status`, so a redirect to another server shows only after the
+//! launcher is asked to redial. What only the client knows, the character's name and the images
+//! the server asks for, comes from the `Bebra.PresencePatch` client patch through a file.
 //!
 //! Discord's local protocol is small: frames of `opcode: u32 LE, length: u32 LE, JSON` over the
 //! pipe `\\.\pipe\discord-ipc-N`. A handshake, then one `SET_ACTIVITY` per change; closing the pipe
@@ -10,6 +11,7 @@
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::Duration;
 
@@ -17,16 +19,25 @@ use bebra_core::http::Client;
 use bebra_core::server::{self, RunLevel, ServerStatus};
 use bebra_core::ServerAddr;
 use serde_json::{json, Value};
+use time::format_description::well_known::Rfc3339;
+use time::OffsetDateTime;
 
-/// The application of the game itself: Discord shows "Space Station 14" and its images. Replace
-/// it to show another name; the images below then have to exist in that application.
+/// The application of the game itself: Discord shows "Space Station 14" and its images, which is
+/// also where the images servers ask for are. Replace it to show another name; every image then
+/// has to exist in that application.
 const APP_ID: &str = "560499552273170473";
 const LARGE_IMAGE: &str = "logo";
 const LARGE_TEXT: &str = "Space Station 14";
 
-/// How often the server is asked and the presence refreshed. Discord allows about one update per
-/// 15 seconds.
-const REFRESH: Duration = Duration::from_secs(30);
+/// How often the presence is refreshed. Discord allows about one update per 15 seconds.
+const REFRESH: Duration = Duration::from_secs(15);
+/// The server is asked on every n-th refresh: unlike the character's name, the status comes over
+/// the network.
+const STATUS_EVERY: u32 = 2;
+/// Far above any real content; only the start of a damaged file is read.
+const CLIENT_FILE_LIMIT: u64 = 4096;
+/// Discord's limit for the name of an image.
+const IMAGE_KEY_MAX: usize = 32;
 /// Discord limits `details`, `state` and image texts to 2..=128 bytes.
 const TEXT_MIN: usize = 2;
 const TEXT_MAX: usize = 128;
@@ -142,41 +153,31 @@ fn open_pipe() -> Option<File> {
 
 /// The presence's words in one interface language.
 struct Texts {
-    on_server: &'static str,
     playing: &'static str,
     lobby: &'static str,
-    round: &'static str,
     round_end: &'static str,
 }
 
 fn texts(lang: &str) -> Texts {
     match lang {
         "ru" => Texts {
-            on_server: "На сервере: ",
             playing: "В игре",
             lobby: "Лобби",
-            round: "Раунд",
             round_end: "Конец раунда",
         },
         "uk" => Texts {
-            on_server: "На сервері: ",
             playing: "У грі",
             lobby: "Лобі",
-            round: "Раунд",
             round_end: "Кінець раунду",
         },
         "de" => Texts {
-            on_server: "Auf Server: ",
             playing: "Im Spiel",
             lobby: "Lobby",
-            round: "Runde",
             round_end: "Rundenende",
         },
         _ => Texts {
-            on_server: "On server: ",
             playing: "In game",
             lobby: "Lobby",
-            round: "Round",
             round_end: "Round end",
         },
     }
@@ -221,55 +222,121 @@ fn clip(text: &str) -> String {
     format!("{}{MARK}", text[..end].trim_end())
 }
 
-/// What Discord shows. The server's address is never used: it may be a private one.
+fn non_empty(text: Option<&str>) -> Option<&str> {
+    text.map(str::trim).filter(|t| !t.is_empty())
+}
+
+/// When the round began, in Unix seconds. Before the round there is no time to show; the server
+/// sends the start from the moment the round runs.
+fn round_start_secs(status: &ServerStatus) -> Option<i64> {
+    match status.run_level_kind()? {
+        RunLevel::PreRoundLobby => None,
+        RunLevel::InRound | RunLevel::PostRound => {
+            let start = status.round_start_time.as_deref()?;
+            let start = OffsetDateTime::parse(start, &Rfc3339).ok()?;
+            Some(start.unix_timestamp()).filter(|secs| *secs > 0)
+        }
+    }
+}
+
+/// What the client patch reports; everything is missing without the patch or before its first write.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct ClientInfo {
+    /// Nothing while the player controls no entity.
+    character: Option<String>,
+    main_icon: Option<String>,
+    second_icon: Option<String>,
+}
+
+/// The name of an image in the Discord application. The value comes from the server, and Discord
+/// also accepts addresses in this field: a server must not be able to show arbitrary pictures.
+fn image_key(text: Option<&str>) -> Option<&str> {
+    non_empty(text).filter(|key| {
+        key.len() <= IMAGE_KEY_MAX
+            && key
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    })
+}
+
+/// What Discord shows: the server and its image, who plays and for how long, and where in the
+/// image's hint. The line above all of it is the name of the Discord application. The server's
+/// address is never used: it may be a private one.
 fn build_activity(
     texts: &Texts,
     server_name: Option<&str>,
+    username: &str,
+    client: &ClientInfo,
     status: Option<&ServerStatus>,
-    started_at_secs: u64,
 ) -> Value {
-    let name = server_name
-        .map(str::trim)
-        .filter(|n| !n.is_empty())
-        .or_else(|| status.and_then(|s| s.name.as_deref()).map(str::trim))
-        .filter(|n| !n.is_empty());
-    let details = name.map_or_else(
-        || texts.playing.to_string(),
-        |n| format!("{}{n}", texts.on_server),
-    );
+    let server = non_empty(server_name)
+        .or_else(|| non_empty(status.and_then(|s| s.name.as_deref())))
+        .map(clip)
+        // Discord refuses the whole activity over a text shorter than its minimum.
+        .filter(|name| name.len() >= TEXT_MIN);
 
-    let mut state = Vec::new();
+    let who = match (
+        non_empty(client.character.as_deref()),
+        non_empty(Some(username)),
+    ) {
+        (Some(character), Some(username)) => format!("{character} ({username})"),
+        (Some(name), None) | (None, Some(name)) => name.to_string(),
+        (None, None) => String::new(),
+    };
+    let who = clip(&who);
+
+    let mut place = Vec::new();
     if let Some(status) = status {
         match status.run_level_kind() {
-            Some(RunLevel::PreRoundLobby) => state.push(texts.lobby.to_string()),
-            Some(RunLevel::InRound) => {
-                state.push(texts.round.to_string());
-                let map = status.map.as_deref().map_or("", str::trim);
-                if !map.is_empty() {
-                    state.push(map.to_string());
-                }
-            }
-            Some(RunLevel::PostRound) => state.push(texts.round_end.to_string()),
-            None => {}
+            Some(RunLevel::PreRoundLobby) => place.push(texts.lobby),
+            Some(RunLevel::PostRound) => place.push(texts.round_end),
+            Some(RunLevel::InRound) | None => {}
         }
-        state.push(if status.soft_max_players > 0 {
-            format!("{}/{}", status.players, status.soft_max_players)
-        } else {
-            status.players.to_string()
-        });
+        place.extend(non_empty(status.map.as_deref()));
+        place.extend(non_empty(status.preset.as_deref()));
     }
-    let state = clip(&state.join(" · "));
+    let place = clip(&place.join(" · "));
+
+    let main_icon = image_key(client.main_icon.as_deref());
+    let mut assets = json!({
+        "large_image": main_icon.unwrap_or(LARGE_IMAGE),
+        "large_text": if place.len() >= TEXT_MIN { place.as_str() } else { LARGE_TEXT },
+    });
+    // The second image only completes the server's own one, as in the game's presence.
+    if let (Some(main), Some(second)) = (main_icon, image_key(client.second_icon.as_deref())) {
+        if main != second {
+            assets["small_image"] = Value::from(second);
+        }
+    }
 
     let mut activity = json!({
-        "details": clip(&details),
-        "timestamps": { "start": started_at_secs },
-        "assets": { "large_image": LARGE_IMAGE, "large_text": LARGE_TEXT },
+        "details": server.as_deref().unwrap_or(texts.playing),
+        "assets": assets,
     });
-    // Discord refuses the whole activity over a text shorter than its minimum.
-    if state.len() >= TEXT_MIN {
-        activity["state"] = Value::from(state);
+    if who.len() >= TEXT_MIN {
+        activity["state"] = Value::from(who);
+    }
+    if let Some(start) = status.and_then(round_start_secs) {
+        activity["timestamps"] = json!({ "start": start });
     }
     activity
+}
+
+/// One value per line, see `Bebra.PresencePatch`.
+fn read_client_info(path: &Path) -> ClientInfo {
+    let mut text = String::new();
+    let read =
+        File::open(path).and_then(|file| file.take(CLIENT_FILE_LIMIT).read_to_string(&mut text));
+    if read.is_err() {
+        return ClientInfo::default();
+    }
+    let mut lines = text.lines();
+    let mut next = || non_empty(lines.next()).map(str::to_string);
+    ClientInfo {
+        character: next(),
+        main_icon: next(),
+        second_icon: next(),
+    }
 }
 
 /// What one game's presence needs to know.
@@ -279,7 +346,10 @@ pub struct PresenceRequest {
     pub server_name: Option<String>,
     /// The interface language's code, see [`resolve_language`].
     pub language: String,
-    pub started_at_secs: u64,
+    /// The account's name, or the guest name, the game plays under.
+    pub username: String,
+    /// Where the client patch writes what it knows.
+    pub client_file: Option<PathBuf>,
 }
 
 /// The presence of one running game: it ends when this is dropped.
@@ -317,6 +387,7 @@ fn run(request: &PresenceRequest, stopped: &mpsc::Receiver<()>) {
     let mut connection: Option<Connection<File>> = None;
     let mut status: Option<ServerStatus> = None;
     let mut shown: Option<Value> = None;
+    let mut refresh = 0u32;
 
     loop {
         if connection.is_none() {
@@ -336,15 +407,24 @@ fn run(request: &PresenceRequest, stopped: &mpsc::Receiver<()>) {
         }
         // No Discord, no reason to bother the server.
         if let Some(active) = connection.as_mut() {
-            // A failed request keeps the last known numbers.
-            if let Ok(fresh) = rt.block_on(server::fetch_status(&request.client, &request.addr)) {
-                status = Some(fresh);
+            if status.is_none() || refresh.is_multiple_of(STATUS_EVERY) {
+                // A failed request keeps the last known values.
+                if let Ok(fresh) = rt.block_on(server::fetch_status(&request.client, &request.addr))
+                {
+                    status = Some(fresh);
+                }
             }
+            let client = request
+                .client_file
+                .as_deref()
+                .map(read_client_info)
+                .unwrap_or_default();
             let activity = build_activity(
                 &words,
                 request.server_name.as_deref(),
+                &request.username,
+                &client,
                 status.as_ref(),
-                request.started_at_secs,
             );
             if shown.as_ref() != Some(&activity) {
                 match active.set_activity(pid, &activity) {
@@ -356,6 +436,7 @@ fn run(request: &PresenceRequest, stopped: &mpsc::Receiver<()>) {
                 }
             }
         }
+        refresh = refresh.wrapping_add(1);
         match stopped.recv_timeout(REFRESH) {
             Err(RecvTimeoutError::Timeout) => {}
             // The game ended; closing the pipe clears the presence.
@@ -480,35 +561,113 @@ mod tests {
         serde_json::from_str(json).unwrap()
     }
 
-    #[test]
-    fn the_activity_shows_server_phase_map_and_players() {
-        let s = status(r#"{"run_level":1,"map":"Cluster","players":12,"soft_max_players":100}"#);
-        let a = build_activity(&texts("ru"), Some("Local Duty"), Some(&s), 1000);
-        assert_eq!(a["details"], "На сервере: Local Duty");
-        assert_eq!(a["state"], "Раунд · Cluster · 12/100");
-        assert_eq!(a["timestamps"]["start"], 1000);
-        assert_eq!(a["assets"]["large_image"], LARGE_IMAGE);
+    /// 2026-11-04T12:00:00Z.
+    const ROUND_START: i64 = 1_793_793_600;
 
-        let lobby = status(r#"{"run_level":0,"map":"Cluster","players":3}"#);
-        let a = build_activity(&texts("en"), Some("S"), Some(&lobby), 0);
-        assert_eq!(
-            a["state"], "Lobby · 3",
-            "no map before the round, no limit if unknown"
-        );
+    fn in_body(name: &str) -> ClientInfo {
+        ClientInfo {
+            character: Some(name.to_string()),
+            main_icon: Some("corvax".to_string()),
+            second_icon: Some("logo".to_string()),
+        }
     }
 
     #[test]
-    fn the_activity_works_without_a_status_or_a_name() {
-        let a = build_activity(&texts("ru"), None, None, 0);
+    fn the_activity_shows_the_server_who_plays_for_how_long_and_where() {
+        let s = status(
+            r#"{"run_level":1,"map":"Cluster","preset":"Extended",
+                "round_start_time":"2026-11-04T12:00:00.1234567Z"}"#,
+        );
+        let a = build_activity(
+            &texts("ru"),
+            Some("Local Duty"),
+            "bebra",
+            &in_body("Иван Иванов"),
+            Some(&s),
+        );
+        assert_eq!(a["details"], "Local Duty");
+        assert_eq!(a["state"], "Иван Иванов (bebra)");
+        assert_eq!(a["timestamps"]["start"], ROUND_START);
+        assert_eq!(a["assets"]["large_image"], "corvax");
+        assert_eq!(a["assets"]["large_text"], "Cluster · Extended");
+        assert_eq!(a["assets"]["small_image"], "logo");
+    }
+
+    #[test]
+    fn the_lobby_has_no_character_and_no_round_time() {
+        let s = status(r#"{"run_level":0,"map":"Cluster","preset":"Extended"}"#);
+        let client = ClientInfo::default();
+        let a = build_activity(&texts("en"), Some("S1"), "bebra", &client, Some(&s));
+        assert_eq!(a["state"], "bebra");
+        assert_eq!(a["assets"]["large_text"], "Lobby · Cluster · Extended");
+        assert!(a.get("timestamps").is_none());
+    }
+
+    #[test]
+    fn the_round_end_keeps_the_round_time() {
+        let s =
+            status(r#"{"run_level":2,"map":"Cluster","round_start_time":"2026-11-04T12:00:00Z"}"#);
+        let client = ClientInfo::default();
+        let a = build_activity(&texts("en"), None, "bebra", &client, Some(&s));
+        assert_eq!(a["assets"]["large_text"], "Round end · Cluster");
+        assert_eq!(a["timestamps"]["start"], ROUND_START);
+    }
+
+    #[test]
+    fn a_broken_round_time_only_removes_the_timer() {
+        let s = status(r#"{"run_level":1,"map":"Cluster","round_start_time":"soon"}"#);
+        let client = ClientInfo::default();
+        let a = build_activity(&texts("en"), None, "bebra", &client, Some(&s));
+        assert_eq!(a["assets"]["large_text"], "Cluster");
+        assert!(a.get("timestamps").is_none());
+    }
+
+    #[test]
+    fn the_activity_works_without_a_status_or_names() {
+        let client = ClientInfo::default();
+        let a = build_activity(&texts("ru"), None, " ", &client, None);
         assert_eq!(a["details"], "В игре");
+        assert_eq!(a["assets"]["large_image"], LARGE_IMAGE);
+        assert_eq!(a["assets"]["large_text"], LARGE_TEXT);
+        assert!(a["assets"].get("small_image").is_none());
         assert!(
             a.get("state").is_none(),
             "Discord refuses a too short state"
         );
 
         let s = status(r#"{"name":"From status"}"#);
-        let a = build_activity(&texts("en"), Some("  "), Some(&s), 0);
-        assert_eq!(a["details"], "On server: From status");
+        let a = build_activity(&texts("en"), Some("  "), "a", &client, Some(&s));
+        assert_eq!(a["details"], "From status");
+        assert!(a.get("state").is_none(), "Discord refuses a one-byte text");
+    }
+
+    #[test]
+    fn only_the_name_of_an_image_is_accepted_from_a_server() {
+        assert_eq!(image_key(Some(" corvax_2-a ")), Some("corvax_2-a"));
+        assert_eq!(image_key(Some("https://example.com/a.png")), None);
+        assert_eq!(image_key(Some("mp:external/x")), None);
+        assert_eq!(image_key(Some(&"a".repeat(IMAGE_KEY_MAX + 1))), None);
+        assert_eq!(image_key(Some("  ")), None);
+
+        let client = ClientInfo {
+            main_icon: Some("https://example.com/a.png".to_string()),
+            second_icon: Some("logo".to_string()),
+            ..ClientInfo::default()
+        };
+        let a = build_activity(&texts("en"), None, "bebra", &client, None);
+        assert_eq!(a["assets"]["large_image"], LARGE_IMAGE);
+        assert!(a["assets"].get("small_image").is_none());
+    }
+
+    #[test]
+    fn the_same_image_is_not_shown_twice() {
+        let client = ClientInfo {
+            main_icon: Some("logo".to_string()),
+            second_icon: Some("logo".to_string()),
+            ..ClientInfo::default()
+        };
+        let a = build_activity(&texts("en"), None, "bebra", &client, None);
+        assert!(a["assets"].get("small_image").is_none());
     }
 
     #[test]
@@ -519,8 +678,43 @@ mod tests {
         assert!(clipped.ends_with("..."));
         assert_eq!(clip(" short "), "short");
 
-        let a = build_activity(&texts("ru"), Some(&long), None, 0);
+        let s = ServerStatus {
+            map: Some(long.clone()),
+            ..ServerStatus::default()
+        };
+        let a = build_activity(&texts("ru"), Some(&long), &long, &in_body(&long), Some(&s));
         assert!(a["details"].as_str().unwrap().len() <= TEXT_MAX);
+        assert!(a["state"].as_str().unwrap().len() <= TEXT_MAX);
+        assert!(a["assets"]["large_text"].as_str().unwrap().len() <= TEXT_MAX);
+    }
+
+    #[test]
+    fn the_patch_file_has_one_value_per_line() {
+        let dir = std::env::temp_dir().join(format!("bebra-presence-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("client.presence");
+
+        assert_eq!(
+            read_client_info(&file),
+            ClientInfo::default(),
+            "no file yet"
+        );
+        std::fs::write(&file, "").unwrap();
+        assert_eq!(read_client_info(&file), ClientInfo::default());
+
+        std::fs::write(&file, "\ncorvax\nlogo").unwrap();
+        let info = read_client_info(&file);
+        assert_eq!(info.character, None, "the player controls nothing");
+        assert_eq!(info.main_icon.as_deref(), Some("corvax"));
+        assert_eq!(info.second_icon.as_deref(), Some("logo"));
+
+        std::fs::write(&file, " Иван Иванов \ncorvax\nlogo").unwrap();
+        assert_eq!(
+            read_client_info(&file).character.as_deref(),
+            Some("Иван Иванов")
+        );
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

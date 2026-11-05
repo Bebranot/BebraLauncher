@@ -14,6 +14,9 @@ use crate::{Error, Result};
 /// Name used when nobody is signed in (guest play on servers that allow it).
 pub const FALLBACK_USERNAME: &str = "JoeGenero";
 
+/// Where the `Bebra.PresencePatch` client patch writes what the launcher's Discord status needs.
+pub const PRESENCE_FILE_ENV: &str = "BEBRA_PRESENCE_FILE";
+
 /// Variables the Loader and the client read. They must not leak from our own environment
 /// into a launch that doesn't set them.
 const CLEARED_ENV: &[&str] = &[
@@ -33,6 +36,7 @@ const CLEARED_ENV: &[&str] = &[
     "BEBRA_HWID_LEGACY",
     "BEBRA_PERF_OUTLINE",
     "BEBRA_PERF_STATUS_ICONS",
+    PRESENCE_FILE_ENV,
     "DOTNET_gcServer",
     "DOTNET_GCNoAffinitize",
     "DOTNET_GCRetainVM",
@@ -735,6 +739,12 @@ pub fn bundled_hwid_patch() -> Option<PathBuf> {
 /// [`bundled_hwid_patch`].
 pub fn bundled_perf_patch() -> Option<PathBuf> {
     bundled_patch("Bebra.PerfPatch.dll")
+}
+
+/// The client patch that reports the character's name and the server's Discord images
+/// (`Bebra.PresencePatch`), found the same way as [`bundled_hwid_patch`].
+pub fn bundled_presence_patch() -> Option<PathBuf> {
+    bundled_patch("Bebra.PresencePatch.dll")
 }
 
 fn bundled_patch(file_name: &str) -> Option<PathBuf> {

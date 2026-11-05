@@ -480,7 +480,7 @@ fn game_keeps_presence(mode: &str, close_on_play: bool) -> bool {
 }
 
 /// Does the launcher keep the Discord presence? Exactly one of the two does, unless it is off.
-fn launcher_keeps_presence(mode: &str, close_on_play: bool) -> bool {
+pub fn launcher_keeps_presence(mode: &str, close_on_play: bool) -> bool {
     mode == "launcher" && !close_on_play
 }
 
@@ -585,7 +585,7 @@ fn run_game(
     emit: &impl Fn(PlayEvent),
     params: &PlayParams,
     game: &Arc<GameState>,
-    prepared_game: play::PreparedGame,
+    mut prepared_game: play::PreparedGame,
 ) {
     let dirs = &params.dirs;
     emit(PlayEvent::Stage { stage: "starting" });
@@ -596,6 +596,18 @@ fn run_game(
         .unwrap_or_default()
         .as_secs();
     let (out_log, err_log) = client_log_paths(dirs, session_id, started_at_secs);
+    let keeps_presence = launcher_keeps_presence(&params.discord_rpc_mode, params.close_on_play);
+    // Next to the logs, which `launch::spawn` creates; of its own for the same reason they are.
+    let client_file = keeps_presence.then(|| {
+        dirs.logs()
+            .join(format!("client-{started_at_secs}-{session_id}.presence"))
+    });
+    if let Some(path) = &client_file {
+        prepared_game.command.env.push((
+            launch::PRESENCE_FILE_ENV.to_string(),
+            path.display().to_string(),
+        ));
+    }
 
     let mut child = match launch::spawn(&prepared_game.command, &out_log, &err_log) {
         Ok(c) => c,
@@ -627,7 +639,7 @@ fn run_game(
 
     emit(PlayEvent::Running {
         pid,
-        plays_as: prepared_game.plays_as,
+        plays_as: prepared_game.plays_as.clone(),
         address: params.history_key.clone(),
     });
     if params.close_on_play {
@@ -638,14 +650,15 @@ fn run_game(
     if params.minimize_on_play {
         set_minimized(app, true);
     }
-    let presence = launcher_keeps_presence(&params.discord_rpc_mode, params.close_on_play)
+    let presence = keeps_presence
         .then(|| {
             crate::presence::start(crate::presence::PresenceRequest {
                 client: params.client.clone(),
                 addr: params.addr.clone(),
                 server_name: params.server_name.clone(),
                 language: params.language.clone(),
-                started_at_secs,
+                username: prepared_game.plays_as.clone(),
+                client_file: client_file.clone(),
             })
         })
         .flatten();
@@ -654,6 +667,9 @@ fn run_game(
     let started = std::time::Instant::now();
     let code = child.wait().ok().and_then(|s| s.code());
     drop(presence);
+    if let Some(path) = &client_file {
+        let _ = std::fs::remove_file(path);
+    }
     let remaining = game.unregister_running(pid);
     // The journal entry goes first: the time below is credited by this run, and a crash between
     // the two must not let `recover_sessions` count the same time again (P1-22).

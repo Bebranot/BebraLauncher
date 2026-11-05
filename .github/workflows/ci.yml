@@ -92,6 +92,12 @@ jobs:
       - name: Build performance patch
         run: dotnet build loader/Bebra.PerfPatch/Bebra.PerfPatch.csproj -c Release -warnaserror --no-restore
 
+      - name: Restore presence patch (locked)
+        run: dotnet restore loader/Bebra.PresencePatch/Bebra.PresencePatch.csproj --locked-mode
+
+      - name: Build presence patch
+        run: dotnet build loader/Bebra.PresencePatch/Bebra.PresencePatch.csproj -c Release -warnaserror --no-restore
+
       # NuGet audit across direct and transitive packages. `dotnet package list` exits 0 even
       # when it finds something, so the JSON is checked explicitly.
       - name: Check packages for known vulnerabilities

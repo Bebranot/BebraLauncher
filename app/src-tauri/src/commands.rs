@@ -771,6 +771,16 @@ pub fn start_play(
                 ),
             }
         }
+        if game::launcher_keeps_presence(&settings.discord_rpc_mode, settings.close_on_play) {
+            match bebra_core::launch::bundled_presence_patch() {
+                Some(path) if !paths.contains(&path) => paths.push(path),
+                Some(_) => {}
+                None => crate::applog::line(
+                    "Bebra.PresencePatch.dll is missing next to the Loader; \
+                     the Discord status has no character name or server image",
+                ),
+            }
+        }
         (paths, optimization)
     };
 

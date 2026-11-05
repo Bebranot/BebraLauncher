@@ -32,6 +32,7 @@ before a release — code that changes behaviour without a line here is a bug:
 | `SS14.Loader/SS14.Loader.csproj` | `Lib.Harmony` package reference (all package versions are pinned in `Directory.Packages.props`) | Needed by `PatchManager` |
 | `Bebra.HwidPatch/` | Our project, separate from the Loader: a patch assembly that postfixes `GetLegacy`/`GetModern` of `Robust.Client.HWId.BasicHWId` and `Robust.Shared.Network.DummyHWId` and returns the value from `BEBRA_HWID_LEGACY`/`BEBRA_HWID_MODERN`. The types are found by name at patch time, patch application is idempotent, and a type that is not loaded yet makes the loader retry instead of failing the launch | Lets the launcher show a generated hardware ID without the player installing a mod by hand. The engine types still differ between builds, so a compile-time reference would break on the next engine update |
 | `Bebra.PerfPatch/` | Our project: a patch assembly applied from `ContentInit`. A prefix limits `Content.Client.Outline.InteractionOutlineSystem.FrameUpdate` to ~33 runs a second (`BEBRA_PERF_OUTLINE=1`); a prefix/postfix pair reuses the result of `Content.Client.StatusIcon.StatusIconSystem.GetStatusIcons` per entity for 100 ms (`BEBRA_PERF_STATUS_ICONS=1`). Methods are found by name; a missing one makes the loader retry and then give up, the game runs unpatched | Per-frame work whose result changes far less often than the frame rate. Each part is a separate switch in the launcher |
+| `Bebra.PresencePatch/` | Our project: a patch assembly applied from `ContentInit` when `BEBRA_PRESENCE_FILE` is set. A postfix on `Robust.Client.GameController.Update` checks once a second the `MetaDataComponent.EntityName` of the local entity and the cvars `discord.rich_main_icon_id`, `discord.rich_second_icon_id`, and replaces the file when they change. Types are found by name; an unexpected shape switches the patch off | The launcher keeps the Discord status, and only the client knows the character's name and the server's images |
 | `Directory.Build.props` | `LangVersion` fixed to `13.0` instead of `latest`, `RestorePackagesWithLockFile=true`, `RuntimeIdentifiers=win-x64`; `Directory.Packages.props` keeps the exact versions | The same sources must compile on any SDK; `packages.lock.json` plus `--locked-mode` in CI makes a dependency change visible; the RID entry lets the locked restore also serve the self-contained publish |
 
 The project files are not vendored at all: they are ours, and editing them needs no entry in the
@@ -57,17 +58,19 @@ dotnet publish loader/SS14.Loader/SS14.Loader.csproj -c Release -r win-x64 --sel
 # the installer version (self-contained, no .pdb) is produced by scripts/build-release.ps1
 ```
 
-The HWID and performance patches are built into `loader/out` as well: the launcher looks for
-`Bebra.HwidPatch.dll` and `Bebra.PerfPatch.dll` next to `SS14.Loader.exe`, so a dev build needs them.
+The HWID, performance and presence patches are built into `loader/out` as well: the launcher looks for
+`Bebra.HwidPatch.dll`, `Bebra.PerfPatch.dll` and `Bebra.PresencePatch.dll` next to `SS14.Loader.exe`, so a dev build needs them.
 
 ```
 dotnet restore loader/Bebra.HwidPatch/Bebra.HwidPatch.csproj --locked-mode
 dotnet publish loader/Bebra.HwidPatch/Bebra.HwidPatch.csproj -c Release --no-restore -o loader/out
 dotnet restore loader/Bebra.PerfPatch/Bebra.PerfPatch.csproj --locked-mode
 dotnet publish loader/Bebra.PerfPatch/Bebra.PerfPatch.csproj -c Release --no-restore -o loader/out
+dotnet restore loader/Bebra.PresencePatch/Bebra.PresencePatch.csproj --locked-mode
+dotnet publish loader/Bebra.PresencePatch/Bebra.PresencePatch.csproj -c Release --no-restore -o loader/out
 ```
 
-`packages.lock.json` in `SS14.Loader/`, `Robust.LoaderApi/`, `Bebra.HwidPatch/` and `Bebra.PerfPatch/` is committed: after an
+`packages.lock.json` in `SS14.Loader/`, `Robust.LoaderApi/`, `Bebra.HwidPatch/`, `Bebra.PerfPatch/` and `Bebra.PresencePatch/` is committed: after an
 intended package change run `dotnet restore --force-evaluate` and commit the updated lock files. CI and
 the release script restore with `--locked-mode` and fail when a lock file does not match.
 
@@ -87,5 +90,6 @@ native library is added.
 | `SS14_LOADER_CONTENT_POOL_SIZE` | Размер пула подключений к `content.db`, 1..8; по умолчанию `clamp(ядра, 2, 8)` |
 | `BEBRA_HWID_LEGACY`, `BEBRA_HWID_MODERN` | 32 байта в hex для `Bebra.HwidPatch`; выставляет лаунчер |
 | `BEBRA_PERF_OUTLINE`, `BEBRA_PERF_STATUS_ICONS` | `1`: включает соответствующую часть `Bebra.PerfPatch`; выставляет лаунчер |
+| `BEBRA_PRESENCE_FILE` | Куда `Bebra.PresencePatch` пишет имя управляемой сущности и иконки сервера для Discord; выставляет лаунчер |
 
 Do not change behaviour in copied C# files without documenting it as described above.

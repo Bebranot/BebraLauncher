@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- A class library loaded into the game by PatchManager; it is not run on its own. -->
+    <OutputType>Library</OutputType>
+    <AssemblyName>Bebra.PresencePatch</AssemblyName>
+    <!-- The game targets net10.0 and passes its own Robust.Client to the patch; referencing the
+         engine here would pin a version that does not have to match the loaded one. -->
+    <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Lib.Harmony" />
+  </ItemGroup>
+
+</Project>

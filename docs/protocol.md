@@ -375,7 +375,7 @@ RunningClient(ProcessId INTEGER PK, MainModule TEXT, UsedVersion -> ContentVersi
 
 ### 8.2 Запуск процесса [код: Connector.cs:499-621; наш код: `launch::build_command`, `launch::spawn`]
 Путь к Loader: `BEBRA_LOADER` (имя обязано быть `SS14.Loader.exe`), затем `loader\` рядом с exe, затем `loader\out` в предках (dev).
-`Bebra.HwidPatch.dll` и `Bebra.PerfPatch.dll` ищутся рядом с Loader.
+`Bebra.HwidPatch.dll`, `Bebra.PerfPatch.dll` и `Bebra.PresencePatch.dll` ищутся рядом с Loader.
 
 ```
 SS14.Loader.exe <engine zip> <sig hex> <signing_key> --username <имя> --cvar display.compat=<True|False> --cvar launch.launcher=true
@@ -410,6 +410,7 @@ SS14.Loader.exe <engine zip> <sig hex> <signing_key> --username <имя> --cvar 
 | `DOTNET_gcServer=1`, `DOTNET_GCNoAffinitize=1` | переключатель `server_gc` |
 | `BEBRA_OPTIMIZE=1`, `DOTNET_GCRetainVM=1` | переключатель `low_latency_gc` |
 | `BEBRA_PERF_OUTLINE=1`, `BEBRA_PERF_STATUS_ICONS=1` | переключатели `patch_outline`, `patch_status_icons`; читает патч `Bebra.PerfPatch` |
+| `BEBRA_PRESENCE_FILE` | файл для имени персонажа и иконок сервера, когда статус Discord ведёт лаунчер (`run_game`); читает патч `Bebra.PresencePatch` |
 | `DOTNET_ROOT` | если задан `dotnet_root`; `play::prepare` сейчас его не задаёт |
 | `DOTNET_ROLL_FORWARD` | **не ставить** (Loader всегда на runtime лаунчера); удаляется из env |
 

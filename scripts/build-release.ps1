@@ -53,6 +53,17 @@ if (-not (Test-Path (Join-Path $loaderOut 'Bebra.PerfPatch.dll'))) {
     throw "performance patch publish produced no Bebra.PerfPatch.dll in $loaderOut"
 }
 
+Write-Host '==> Presence patch'
+# Same as the HWID patch: loaded into the client from next to SS14.Loader.exe.
+dotnet restore loader/Bebra.PresencePatch/Bebra.PresencePatch.csproj --locked-mode
+if ($LASTEXITCODE -ne 0) { throw 'presence patch restore failed (packages.lock.json is out of date)' }
+dotnet publish loader/Bebra.PresencePatch/Bebra.PresencePatch.csproj -c Release --no-restore `
+    -p:DebugType=None -o $loaderOut
+if ($LASTEXITCODE -ne 0) { throw 'presence patch publish failed' }
+if (-not (Test-Path (Join-Path $loaderOut 'Bebra.PresencePatch.dll'))) {
+    throw "presence patch publish produced no Bebra.PresencePatch.dll in $loaderOut"
+}
+
 # Licences of everything shipped inside loader/: tauri packs loader/out-sc as the `loader`
 # resource, so the notice file lands next to the Loader in the installer.
 $notices = Join-Path $root 'loader/THIRD-PARTY-NOTICES.txt'
