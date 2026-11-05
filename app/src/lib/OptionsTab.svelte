@@ -1501,7 +1501,7 @@
     overflow-y: auto;
   }
   .toc-header {
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.05em;
@@ -1618,7 +1618,7 @@
     border-radius: 12px;
   }
   section > h2 {
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 600;
     letter-spacing: 0.08em;
     text-transform: uppercase;
@@ -1941,7 +1941,7 @@
     left: 6px;
     background: var(--accent);
     color: var(--on-accent);
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 600;
     padding: 2px 6px;
     border-radius: 4px;
@@ -1969,7 +1969,7 @@
     height: 24px;
     width: 24px;
     padding: 0;
-    font-size: 11px;
+    font-size: 12px;
     background: rgba(0, 0, 0, 0.65);
     color: #fff;
     border-radius: 4px;

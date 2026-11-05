@@ -134,7 +134,7 @@
   }
   h3 {
     margin-bottom: 4px;
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 600;
     letter-spacing: 0.08em;
     text-transform: uppercase;

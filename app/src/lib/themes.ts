@@ -471,6 +471,19 @@ export function isLight(c: string): boolean {
   return 0.2126 * p.r + 0.7152 * p.g + 0.0722 * p.b > 150;
 }
 
+/** Text on an accent fill: whichever of near-black and white reads better on it (WCAG contrast). */
+export function onAccent(accent: string): string {
+  const p = parseColor(accent);
+  if (!p) return "#FFFFFF";
+  const channel = (v: number) => {
+    const s = v / 255;
+    return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+  };
+  const luminance = 0.2126 * channel(p.r) + 0.7152 * channel(p.g) + 0.0722 * channel(p.b);
+  const dark = 0.2126 * channel(0x14) + 0.7152 * channel(0x15) + 0.0722 * channel(0x1a);
+  return (luminance + 0.05) / (dark + 0.05) > 1.05 / (luminance + 0.05) ? "#14151A" : "#FFFFFF";
+}
+
 const FONT_STACK = `"Noto Sans", "Segoe UI", system-ui, sans-serif`;
 
 /** The CSS `font-family` for the chosen font. The name was cleaned by the backend. */
@@ -513,7 +526,7 @@ export function applyTheme(options: ThemeOptions, root: HTMLElement = document.d
     options.decor ? stripePattern(tokens.background, tokens.altRow) : "none",
   );
   set("--overlay", isLight(tokens.background) ? "#00000055" : "#000000B3");
-  set("--on-accent", isLight(tokens.accent) ? "#14151A" : "#FFFFFF");
+  set("--on-accent", onAccent(tokens.accent));
   set("--font", fontFamily(options.font));
   root.dataset.theme = theme;
   root.dataset.bg = options.bg_type ?? "space";

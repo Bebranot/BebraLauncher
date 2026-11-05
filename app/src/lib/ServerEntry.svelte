@@ -432,7 +432,7 @@
     gap: 6px;
   }
   .tag {
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 500;
     padding: 1px 9px;
     background: var(--tint-hover);
@@ -505,7 +505,7 @@
   }
   .note-edit-link {
     flex: none;
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 500;
     align-self: flex-start;
   }
@@ -531,7 +531,7 @@
     display: flex;
   }
   .add-note-link {
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 500;
     color: var(--sub);
   }

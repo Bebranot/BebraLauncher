@@ -334,7 +334,7 @@
 
   .mod-changed {
     margin-top: 4px;
-    font-size: 11px;
+    font-size: 12px;
     color: var(--bad);
   }
 
@@ -555,14 +555,14 @@
   }
 
   .mod-filename {
-    font-size: 11px;
+    font-size: 12px;
     font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
     color: var(--sub);
     opacity: 0.8;
   }
 
   .status-pill {
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 500;
     padding: 3px 8px;
     border-radius: var(--radius-sm);

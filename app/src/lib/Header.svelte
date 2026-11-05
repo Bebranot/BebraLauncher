@@ -62,7 +62,7 @@
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 500;
     padding: 2px 8px;
     border-radius: 999px;

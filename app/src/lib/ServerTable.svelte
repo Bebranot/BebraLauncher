@@ -54,7 +54,7 @@
     aria-sort={sortable && app.sort.key === key ? (app.sort.desc ? "descending" : "ascending") : "none"}
   >
     <button class="hbtn" class:center {title} disabled={!sortable} onclick={() => sortBy(key)}>
-      {label}{#if sortable && app.sort.key === key}<span class="arrow" aria-hidden="true">{app.sort.desc ? "?" : "?"}</span>{/if}
+      {label}{#if sortable && app.sort.key === key}<span class="arrow" aria-hidden="true">{app.sort.desc ? "↓" : "↑"}</span>{/if}
     </button>
   </div>
 {/snippet}
@@ -98,7 +98,7 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 600;
     letter-spacing: 0.06em;
     text-transform: uppercase;
@@ -134,7 +134,6 @@
   }
   .arrow {
     margin-left: 4px;
-    font-size: 9px;
     color: var(--accent);
   }
   .scroll {
