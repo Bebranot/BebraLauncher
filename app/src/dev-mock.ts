@@ -104,7 +104,7 @@ const DEFAULT_SETTINGS: Settings = {
   theme: "dark",
   theme_gradient: false,
   theme_decor: false,
-  update_repo: "Bebranot/vabecide-musor",
+  update_repo: "Bebranot/BebraLauncher",
   update_check: true,
   update_auto: true,
   custom_theme: {

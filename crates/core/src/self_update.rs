@@ -25,7 +25,7 @@ use crate::secret::Token;
 use crate::{signature, Error, Result};
 
 /// The repository the launcher looks at unless the settings say otherwise.
-pub const DEFAULT_REPO: &str = "Bebranot/vabecide-musor";
+pub const DEFAULT_REPO: &str = "Bebranot/BebraLauncher";
 
 /// The public half of the key that signs the launcher's releases.
 const UPDATE_KEY_PEM: &str = include_str!("update_key.pem");
@@ -888,7 +888,7 @@ mod tests {
 
     #[test]
     fn repository_names_are_checked() {
-        assert!(valid_repo("Bebranot/vabecide-musor"));
+        assert!(valid_repo("Bebranot/BebraLauncher"));
         assert!(valid_repo(DEFAULT_REPO));
         for bad in [
             "", "a", "a/b/c", "a/", "/b", "a b/c", "a/b?x=1", "a/b#c", "../x", "a/..%2f",
