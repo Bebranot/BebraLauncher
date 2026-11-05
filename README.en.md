@@ -125,8 +125,6 @@ Report bugs and ideas in [Issues](../../issues), and read [CONTRIBUTING](.github
 
 The project's code is under the [MIT](LICENSE) license. `loader/` contains SS14.Launcher code ([MIT](loader/LICENSE-SS14.Launcher.txt)), and the licenses of the other installer components are listed in [THIRD-PARTY-NOTICES](loader/THIRD-PARTY-NOTICES.txt).
 
-Some theme palettes and settings come from MusyaLoader (AGPL). Their license status is being reviewed.
-
 Space Station 14 belongs to its authors. The name is used only to say which game the launcher works with.
 
 ## How it was made

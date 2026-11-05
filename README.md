@@ -125,8 +125,6 @@ dotnet build loader/SS14.Loader/SS14.Loader.csproj -c Release -warnaserror --no-
 
 Код проекта распространяется по лицензии [MIT](LICENSE). `loader/` содержит код SS14.Launcher ([MIT](loader/LICENSE-SS14.Launcher.txt)), лицензии остальных компонентов установщика перечислены в [THIRD-PARTY-NOTICES](loader/THIRD-PARTY-NOTICES.txt).
 
-Палитры части тем и некоторые настройки взяты из MusyaLoader (AGPL). Их лицензионный статус сейчас уточняется.
-
 Space Station 14 принадлежит её авторам. Название используется только для указания, с какой игрой работает лаунчер.
 
 ## Как это сделано
