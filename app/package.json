@@ -2,7 +2,7 @@
   "packageManager": "pnpm@10.0.0",
   "name": "bebra-launcher-ui",
   "private": true,
-  "version": "0.3.0",
+  "version": "1.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",

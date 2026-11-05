@@ -1,6 +1,22 @@
 {
   "items": [
     {
+      "id": "beta-1-0",
+      "date": "2026-11-05",
+      "title": {
+        "ru": "Вышла бета 1.0",
+        "en": "Beta 1.0 is out",
+        "uk": "Вийшла бета 1.0",
+        "de": "Beta 1.0 ist da"
+      },
+      "body": {
+        "ru": "BebraLauncher 1.0 теперь доступен всем как бета. Обновления приходят прямо в лаунчер, на вкладку «Обновления».\n\nЕсли что-то сломалось или не хватает какой-то возможности, расскажите об этом в Issues на GitHub.",
+        "en": "BebraLauncher 1.0 is now available to everyone as a beta. Updates arrive right in the launcher, on the Updates tab.\n\nIf something breaks or a feature is missing, tell us in Issues on GitHub.",
+        "uk": "BebraLauncher 1.0 тепер доступний усім як бета. Оновлення надходять прямо в лаунчер, на вкладку «Оновлення».\n\nЯкщо щось зламалося або бракує якоїсь можливості, розкажіть про це в Issues на GitHub.",
+        "de": "BebraLauncher 1.0 steht jetzt allen als Beta zur Verfügung. Updates kommen direkt in den Launcher, auf den Tab „Updates“.\n\nWenn etwas nicht funktioniert oder eine Funktion fehlt, schreib uns in den Issues auf GitHub."
+      }
+    },
+    {
       "id": "news-channel",
       "date": "2026-11-05",
       "title": {
