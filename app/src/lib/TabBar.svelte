@@ -45,7 +45,7 @@
       onkeydown={(e) => onkeydown(e, i)}
     >
       {t(label)}
-      {#if id === "updates" && app.updateAvailable}<i class="dot" aria-hidden="true"></i>{/if}
+      {#if (id === "updates" && app.updateAvailable) || (id === "news" && app.ownNewsUnseen > 0)}<i class="dot" aria-hidden="true"></i>{/if}
     </button>
   {/each}
 </div>

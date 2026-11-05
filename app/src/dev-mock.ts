@@ -419,6 +419,26 @@ export function installMock() {
             { title: "Патч 1.2: новые карты и исправления", link: "https://spacestation14.com/post/a/", date: "Fri, 03 Oct 2026 10:00:00 +0000" },
             { title: "Space Station 14 в Steam: итоги месяца", link: "https://spacestation14.com/post/b/", date: "Mon, 28 Sep 2026 09:00:00 +0000" },
           ];
+        case "own_news":
+          return [
+            {
+              id: "news-channel",
+              date: "2026-11-05",
+              title: { ru: "Новости BebraLauncher теперь здесь", en: "BebraLauncher news now live here" },
+              body: {
+                ru: "На этой вкладке будут появляться новости самого лаунчера: что вышло, что готовится и что важно знать.\n\nНовости Space Station 14 остались на соседней вкладке.",
+                en: "This tab will carry news about the launcher itself: what has shipped, what is coming and what is worth knowing.\n\nSpace Station 14 news stays on the tab next to it.",
+              },
+              link: null,
+            },
+            {
+              id: "themes",
+              date: "2026-10-20",
+              title: { ru: "Девять новых тем оформления" },
+              body: { ru: "Загляните в настройки: появились новые темы, а свою можно передать другу через JSON." },
+              link: "https://example.com/themes",
+            },
+          ];
         case "select_account":
           settings.last_account = a.account ? String(a.account) : "";
           return null;

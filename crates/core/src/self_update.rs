@@ -37,6 +37,8 @@ const MAX_SIGNATURE: usize = 1024;
 /// A download that sends nothing for this long is treated as dead.
 const IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 const API: &str = "https://api.github.com";
+/// Files of public repositories. Never gets the token.
+const RAW: &str = "https://raw.githubusercontent.com";
 
 /// Installers we make start with this, followed by the version.
 const PRODUCT_PREFIX: &str = "BebraLauncher_";
@@ -352,6 +354,45 @@ pub async fn latest(client: &Client, repo: &str, token: Option<&Token>) -> Resul
         .await?;
     let text = ok(resp, token_sent)?.text().await?;
     parse_release(&text)
+}
+
+/// Reads a small file from the `main` branch of `repo`; `None` if there is no such file, or the
+/// repository is closed and there is no token. The public address is asked first and without the
+/// token, so nothing changes for anyone when the repository becomes public.
+pub async fn read_repo_file(
+    client: &Client,
+    repo: &str,
+    path: &str,
+    token: Option<&Token>,
+    max: usize,
+) -> Result<Option<Vec<u8>>> {
+    if !valid_repo(repo) {
+        return Err(Error::Other(format!("not a repository name: {repo}")));
+    }
+    let timeout = std::time::Duration::from_secs(15);
+    let resp = client
+        .get(format!("{RAW}/{repo}/main/{path}"))
+        .timeout(timeout)
+        .send()
+        .await?;
+    if resp.status().is_success() {
+        return read_limited(resp, max, path).await.map(Some);
+    }
+    if resp.status() != StatusCode::NOT_FOUND {
+        return Err(explain(resp.status(), false));
+    }
+    let Some(token) = token else {
+        return Ok(None);
+    };
+    let url = format!("{API}/repos/{repo}/contents/{path}");
+    let (req, token_sent) = request(client, &url, "application/vnd.github.raw+json", Some(token));
+    let resp = req.timeout(timeout).send().await?;
+    if resp.status() == StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    read_limited(ok(resp, token_sent)?, max, path)
+        .await
+        .map(Some)
 }
 
 // ---------------------------------------------------------------- the signature

@@ -42,6 +42,16 @@ export interface PingRow {
   status: ServerRow | null;
 }
 
+/** One of the launcher's own news; the texts are by language code. */
+export interface OwnNewsItem {
+  id: string;
+  /** `YYYY-MM-DD`, or empty. */
+  date: string;
+  title: Record<string, string>;
+  body: Record<string, string>;
+  link: string | null;
+}
+
 export interface NewsItem {
   title: string;
   link: string;
@@ -295,6 +305,7 @@ export const api = {
   pingServers: (addresses: string[]) => invoke<PingRow[]>("ping_servers", { addresses }),
   serverInfo: (address: string) => invoke<ServerDetails>("server_info", { address }),
   news: () => invoke<NewsItem[]>("news"),
+  ownNews: () => invoke<OwnNewsItem[]>("own_news"),
   listAccounts: () => invoke<AccountRow[]>("list_accounts"),
   login: (args: { username?: string; userId?: string; password: string; tfaCode?: string }) =>
     invoke<LoginOutcome>("login", args),

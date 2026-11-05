@@ -56,6 +56,9 @@ pub struct AppState {
     pub news: Mutex<Option<(std::time::Instant, Vec<news::NewsItem>)>>,
     /// Makes the news feed single-flight: one request, the others wait for its result (P2-41).
     pub news_gate: tokio::sync::Mutex<()>,
+    /// The launcher's own news, kept the same way.
+    pub own_news: Mutex<Option<(std::time::Instant, Vec<news::OwnNewsItem>)>>,
+    pub own_news_gate: tokio::sync::Mutex<()>,
     /// Guards the server list cache file: write to a temporary name, then rename (P2-36).
     pub servers_cache: Mutex<()>,
     /// The launcher's own update: what was found, downloaded, started.
@@ -91,6 +94,8 @@ fn main() {
         sessions: sessions::SessionJournal::default(),
         news: Mutex::new(None),
         news_gate: tokio::sync::Mutex::new(()),
+        own_news: Mutex::new(None),
+        own_news_gate: tokio::sync::Mutex::new(()),
         servers_cache: Mutex::new(()),
         update: selfupdate::UpdateState::default(),
     };
@@ -177,6 +182,7 @@ fn main() {
             commands::delete_patch,
             commands::install_patch,
             commands::news,
+            commands::own_news,
             commands::ping_servers,
             commands::raise_favorite,
             commands::move_favorite,

@@ -21,7 +21,7 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::game::{self, PlayParams};
-use crate::news::{self, NewsItem};
+use crate::news::{self, NewsItem, OwnNewsItem};
 use crate::redial::{self, Action};
 use crate::selfupdate;
 use crate::settings::{self, Settings};
@@ -1704,6 +1704,59 @@ pub async fn news(state: State<'_, AppState>) -> CmdResult<Vec<NewsItem>> {
             }
             None => Err(e),
         },
+    }
+}
+
+/// The launcher's own news from its repository. An absent file, or a closed repository without a
+/// token, means no news yet: not an error for the player.
+async fn fetch_own_news(state: &AppState) -> CmdResult<Vec<OwnNewsItem>> {
+    let token = crate::selfupdate::token();
+    let body = bebra_core::self_update::read_repo_file(
+        &state.client,
+        bebra_core::self_update::DEFAULT_REPO,
+        news::OWN_PATH,
+        token.as_ref(),
+        news::OWN_MAX_BYTES,
+    )
+    .await
+    .map_err(err)?;
+    match body {
+        Some(body) => news::parse_own(&String::from_utf8_lossy(&body)),
+        None => Ok(Vec::new()),
+    }
+}
+
+#[tauri::command]
+pub async fn own_news(state: State<'_, AppState>) -> CmdResult<Vec<OwnNewsItem>> {
+    let fresh = |state: &AppState| match crate::lock_or_recover(&state.own_news).as_ref() {
+        Some((at, items)) if at.elapsed() < NEWS_TTL => Some(items.clone()),
+        _ => None,
+    };
+    if let Some(items) = fresh(&state) {
+        return Ok(items);
+    }
+    let _gate = state.own_news_gate.lock().await;
+    if let Some(items) = fresh(&state) {
+        return Ok(items);
+    }
+    match fetch_own_news(&state).await {
+        Ok(items) => {
+            *crate::lock_or_recover(&state.own_news) =
+                Some((std::time::Instant::now(), items.clone()));
+            Ok(items)
+        }
+        Err(e) => {
+            let old = crate::lock_or_recover(&state.own_news)
+                .as_ref()
+                .map(|(_, items)| items.clone());
+            match old {
+                Some(items) => {
+                    crate::applog::line(&format!("own news: showing the old list ({e})"));
+                    Ok(items)
+                }
+                None => Err(e),
+            }
+        }
     }
 }
 

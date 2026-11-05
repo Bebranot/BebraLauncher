@@ -8,6 +8,7 @@ import {
   type BackgroundRow,
   type HistoryEntry,
   type NewsItem,
+  type OwnNewsItem,
   type PendingAction,
   type PlayEvent,
   type RunningClient,
@@ -36,6 +37,7 @@ import {
   type SortKey,
 } from "./filters";
 import { applyDocumentLang, i18n } from "./i18n.svelte";
+import { unseen } from "./news";
 import { OPTIMIZATION_KEYS } from "./optimization";
 import { DEFAULT_CUSTOM, applyTheme } from "./themes";
 
@@ -71,6 +73,25 @@ export type NewsState =
   | { state: "loading" }
   | { state: "ready"; items: NewsItem[] }
   | { state: "failed"; error: string };
+
+export type OwnNewsState =
+  | { state: "idle" }
+  | { state: "loading" }
+  | { state: "ready"; items: OwnNewsItem[] }
+  | { state: "failed"; error: string };
+
+export type NewsSource = "official" | "own";
+
+const SEEN_NEWS_KEY = "bebra.news.seen";
+
+function readSeenNews(): string[] {
+  try {
+    const v: unknown = JSON.parse(localStorage.getItem(SEEN_NEWS_KEY) ?? "[]");
+    return Array.isArray(v) ? v.filter((id): id is string => typeof id === "string") : [];
+  } catch {
+    return [];
+  }
+}
 
 /** Most addresses one ping request carries, backend limit included (P1-37). */
 const PING_LIMIT = 200;
@@ -213,6 +234,9 @@ export class Store {
   preview = $state<string | null>(null);
 
   news = $state<NewsState>({ state: "idle" });
+  ownNews = $state<OwnNewsState>({ state: "idle" });
+  newsSource = $state<NewsSource>("official");
+  seenOwnNews = $state<string[]>(readSeenNews());
   /** The launcher's own update, as the backend last said. */
   update = $state<UpdateStatus | null>(null);
   /** When the user last asked for a check (ms), to show it. */
@@ -438,6 +462,7 @@ export class Store {
     void this.checkIntelWarning();
     void this.loadBackgrounds();
     void this.loadRunningClients();
+    void this.loadOwnNews();
 
     // Something to look at while the hub answers.
     const cached = await api.cachedServers().catch(() => []);
@@ -1160,6 +1185,33 @@ export class Store {
   }
 
   // ------------------------------------------------------------ news
+
+  /** Entries of the launcher's own news the player has not opened yet. */
+  get ownNewsUnseen(): number {
+    return this.ownNews.state === "ready" ? unseen(this.ownNews.items, this.seenOwnNews).length : 0;
+  }
+
+  async loadOwnNews(force = false) {
+    if (this.ownNews.state === "loading") return;
+    if (this.ownNews.state === "ready" && !force) return;
+    this.ownNews = { state: "loading" };
+    try {
+      this.ownNews = { state: "ready", items: await api.ownNews() };
+    } catch (e) {
+      this.ownNews = { state: "failed", error: errorText(e) };
+    }
+  }
+
+  /** Remembers that everything in the list has been seen, so it stops being marked as new. */
+  markOwnNewsSeen() {
+    if (this.ownNews.state !== "ready") return;
+    this.seenOwnNews = this.ownNews.items.map((item) => item.id);
+    try {
+      localStorage.setItem(SEEN_NEWS_KEY, JSON.stringify(this.seenOwnNews));
+    } catch {
+      // No storage: the entries are marked as new again after a restart, nothing worse.
+    }
+  }
 
   async loadNews(force = false) {
     if (this.news.state === "loading") return;

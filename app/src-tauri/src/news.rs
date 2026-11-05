@@ -1,12 +1,78 @@
-//! The news tab: titles and links from the Space Station 14 blog feed, like the official launcher.
+//! The news tab: titles and links from the Space Station 14 blog feed, like the official launcher,
+//! and the launcher's own news, a JSON file in its repository (`news/news.json`).
 
-use serde::Serialize;
+use std::collections::BTreeMap;
+
+use serde::{Deserialize, Serialize};
 
 /// Where the official launcher reads its news from.
 pub const FEED_URL: &str = "https://spacestation14.com/post/index.xml";
 
+/// Where the launcher's own news lives in the repository.
+pub const OWN_PATH: &str = "news/news.json";
+/// Far more than a list of [`MAX_ITEMS`] short notes.
+pub const OWN_MAX_BYTES: usize = 512 * 1024;
+
 /// Most entries shown.
 pub const MAX_ITEMS: usize = 30;
+
+/// One of the launcher's own news: the texts are per language, the interface picks one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OwnNewsItem {
+    pub id: String,
+    /// `YYYY-MM-DD`; empty if the file has something else.
+    #[serde(default)]
+    pub date: String,
+    pub title: BTreeMap<String, String>,
+    #[serde(default)]
+    pub body: BTreeMap<String, String>,
+    #[serde(default)]
+    pub link: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct OwnNewsFile {
+    items: Vec<serde_json::Value>,
+}
+
+fn is_iso_date(s: &str) -> bool {
+    let b = s.as_bytes();
+    b.len() == 10
+        && b.iter().enumerate().all(|(i, c)| match i {
+            4 | 7 => *c == b'-',
+            _ => c.is_ascii_digit(),
+        })
+}
+
+/// Reads the news file, newest first. A broken entry is left out and the rest are still shown;
+/// only a file that is not this format at all is an error. Links that cannot be opened safely are
+/// dropped: the file is plain text from the network, whoever wrote it.
+pub fn parse_own(text: &str) -> Result<Vec<OwnNewsItem>, String> {
+    let file: OwnNewsFile = serde_json::from_str(text.trim_start_matches('\u{feff}'))
+        .map_err(|e| format!("news.json: {e}"))?;
+    let mut items: Vec<OwnNewsItem> = file
+        .items
+        .into_iter()
+        .filter_map(|value| serde_json::from_value::<OwnNewsItem>(value).ok())
+        .filter_map(|mut item| {
+            item.title.retain(|_, v| !v.trim().is_empty());
+            item.body.retain(|_, v| !v.trim().is_empty());
+            if item.id.trim().is_empty() || item.title.is_empty() {
+                return None;
+            }
+            if !is_iso_date(&item.date) {
+                item.date.clear();
+            }
+            item.link = item
+                .link
+                .filter(|l| l.starts_with("https://") && crate::system::is_safe_web_url(l));
+            Some(item)
+        })
+        .collect();
+    items.sort_by(|a, b| b.date.cmp(&a.date));
+    items.truncate(MAX_ITEMS);
+    Ok(items)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NewsItem {
@@ -189,6 +255,51 @@ mod tests {
         assert_eq!(unescape("100&"), "100&");
         // Control characters are refused instead of being put into a title.
         assert_eq!(unescape("x&#1;y"), "x&#1;y");
+    }
+
+    #[test]
+    fn own_news_are_sorted_and_broken_entries_left_out() {
+        let items = parse_own(
+            r#"{"items": [
+                {"id": "old", "date": "2026-01-02", "title": {"ru": "Старая"}},
+                {"id": "new", "date": "2026-11-05", "title": {"ru": "Новая", "en": "New"},
+                 "body": {"ru": "Текст", "en": "  "}, "link": "https://example.com/a"},
+                {"id": "no-title", "date": "2026-02-02", "title": {"ru": "  "}},
+                {"date": "2026-02-03", "title": {"ru": "Нет id"}},
+                "not an object"
+            ]}"#,
+        )
+        .unwrap();
+        let ids: Vec<&str> = items.iter().map(|i| i.id.as_str()).collect();
+        assert_eq!(ids, ["new", "old"]);
+        assert_eq!(items[0].body.len(), 1, "the blank translation is dropped");
+        assert_eq!(items[0].link.as_deref(), Some("https://example.com/a"));
+    }
+
+    #[test]
+    fn own_news_drop_unsafe_links_and_odd_dates() {
+        let items = parse_own(
+            r#"{"items": [
+                {"id": "a", "date": "вчера", "title": {"ru": "А"}, "link": "javascript:alert(1)"},
+                {"id": "b", "title": {"ru": "Б"}, "link": "http://example.com/"}
+            ]}"#,
+        )
+        .unwrap();
+        assert!(items.iter().all(|i| i.link.is_none() && i.date.is_empty()));
+    }
+
+    #[test]
+    fn own_news_file_with_a_bom_is_read_and_garbage_is_an_error() {
+        assert!(parse_own("\u{feff}{\"items\": []}").unwrap().is_empty());
+        assert!(parse_own("<html>not found</html>").is_err());
+        assert!(parse_own("{}").is_err());
+    }
+
+    #[test]
+    fn own_news_list_is_capped() {
+        let one = r#"{"id": "x", "title": {"ru": "x"}}"#;
+        let text = format!(r#"{{"items": [{}]}}"#, vec![one; 100].join(","));
+        assert_eq!(parse_own(&text).unwrap().len(), MAX_ITEMS);
     }
 
     #[test]

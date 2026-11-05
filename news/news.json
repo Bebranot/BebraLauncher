@@ -1,0 +1,20 @@
+{
+  "items": [
+    {
+      "id": "news-channel",
+      "date": "2026-11-05",
+      "title": {
+        "ru": "Новости BebraLauncher теперь здесь",
+        "en": "BebraLauncher news now live here",
+        "uk": "Новини BebraLauncher тепер тут",
+        "de": "BebraLauncher-Neuigkeiten gibt es jetzt hier"
+      },
+      "body": {
+        "ru": "На этой вкладке будут появляться новости самого лаунчера: что вышло, что готовится и что важно знать.\n\nНовости Space Station 14 остались на соседней вкладке.",
+        "en": "This tab will carry news about the launcher itself: what has shipped, what is coming and what is worth knowing.\n\nSpace Station 14 news stays on the tab next to it.",
+        "uk": "На цій вкладці з'являтимуться новини самого лаунчера: що вийшло, що готується і що варто знати.\n\nНовини Space Station 14 залишилися на сусідній вкладці.",
+        "de": "Auf diesem Tab erscheinen Neuigkeiten zum Launcher selbst: was erschienen ist, was geplant ist und was wichtig ist.\n\nDie Neuigkeiten zu Space Station 14 bleiben auf dem Tab daneben."
+      }
+    }
+  ]
+}
