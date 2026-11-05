@@ -108,8 +108,6 @@
   }
 </script>
 
-<svelte:window onkeydown={(e) => promo.open && e.key === "Escape" && (promo.open = false)} />
-
 {#if promo.open}
   <div class="backdrop" role="alertdialog" aria-modal="true" aria-label="Проверка возраста">
     <div class="box">
