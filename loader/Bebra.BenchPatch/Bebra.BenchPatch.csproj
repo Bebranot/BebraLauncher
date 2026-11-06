@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- A developer measuring tool: a class library loaded into the game by PatchManager. It is
+         not published with the launcher (see scripts/bench/README.md). -->
+    <OutputType>Library</OutputType>
+    <AssemblyName>Bebra.BenchPatch</AssemblyName>
+    <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+    <RestorePackagesWithLockFile>false</RestorePackagesWithLockFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Lib.Harmony" />
+  </ItemGroup>
+
+</Project>

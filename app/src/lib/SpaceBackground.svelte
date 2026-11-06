@@ -20,7 +20,8 @@
   const STAR_COLORS = ["#ffffff", "#dbeafe", "#e0e7ff", "#fef3c7", "#cffafe"];
   let staticBgCanvas: HTMLCanvasElement | null = null;
   let lastRenderTime = 0;
-  const FRAME_INTERVAL = 1000 / 48; // ~48 FPS: visually smooth, avoids idle GPU drain
+  // The stars only twinkle, over seconds: 24 FPS looks the same as more and costs half as much.
+  const FRAME_INTERVAL = 1000 / 24;
 
   function updateStaticBg(width: number, height: number) {
     const off = document.createElement("canvas");
@@ -127,10 +128,23 @@
     return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   }
 
+  /** The starfield is the launcher's whole idle load, so it only moves while someone looks at it. */
+  function shouldAnimate(): boolean {
+    return (
+      !document.hidden &&
+      document.hasFocus() &&
+      app.play?.phase !== "running" &&
+      // The "optimized" preset is for weak PCs, and this GPU time is theirs to save.
+      app.settings?.opt_profile !== "optimized" &&
+      !prefersReducedMotion()
+    );
+  }
+
   function startLoop() {
     if (animId !== null) return;
     if (document.hidden || (app.settings?.bg_type ?? "space") !== "space") return;
-    if (prefersReducedMotion()) {
+    // At mount the settings may not be loaded yet, and without motion one frame is all there is.
+    if (!shouldAnimate()) {
       render(0);
       return;
     }
@@ -146,7 +160,7 @@
 
   function loop(time: number) {
     animId = null;
-    if (document.hidden || app.play?.phase === "running" || (app.settings?.bg_type ?? "space") !== "space" || prefersReducedMotion()) {
+    if ((app.settings?.bg_type ?? "space") !== "space" || !shouldAnimate()) {
       return;
     }
     if (time - lastRenderTime >= FRAME_INTERVAL) {
@@ -157,10 +171,10 @@
   }
 
   function handleVisibilityChange() {
-    if (document.hidden || app.play?.phase === "running") {
-      stopLoop();
-    } else if ((app.settings?.bg_type ?? "space") === "space") {
+    if (shouldAnimate() && (app.settings?.bg_type ?? "space") === "space") {
       startLoop();
+    } else {
+      stopLoop();
     }
   }
 
@@ -189,6 +203,8 @@
     handleResize();
     window.addEventListener("resize", handleResize);
     document.addEventListener("visibilitychange", handleVisibilityChange);
+    window.addEventListener("focus", handleVisibilityChange);
+    window.addEventListener("blur", handleVisibilityChange);
     if (window.matchMedia) {
       motionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
       motionQuery.addEventListener("change", handleMotionChange);
@@ -200,6 +216,8 @@
     stopLoop();
     window.removeEventListener("resize", handleResize);
     document.removeEventListener("visibilitychange", handleVisibilityChange);
+    window.removeEventListener("focus", handleVisibilityChange);
+    window.removeEventListener("blur", handleVisibilityChange);
     if (motionQuery) {
       motionQuery.removeEventListener("change", handleMotionChange);
       motionQuery = null;
@@ -222,7 +240,10 @@
   const blur = $derived(Number.isFinite(bgBlur) ? Math.min(30, Math.max(0, bgBlur)) : 0);
 
   $effect(() => {
-    if (bgType === "space" && !document.hidden && app.play?.phase !== "running") {
+    // Read here so that a change of either restarts this effect: `shouldAnimate` may stop early.
+    void app.play?.phase;
+    void app.settings?.opt_profile;
+    if (bgType === "space" && shouldAnimate()) {
       startLoop();
     } else {
       stopLoop();

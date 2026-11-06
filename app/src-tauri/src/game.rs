@@ -415,6 +415,9 @@ async fn prepare(
     if params.client_max_fps > 0 {
         extra_args.push("--cvar".to_string());
         extra_args.push(format!("display.max_fps={}", params.client_max_fps));
+        // The engine ignores the cap while VSync is on.
+        extra_args.push("--cvar".to_string());
+        extra_args.push("display.vsync=false".to_string());
     }
     // User-defined extra args take precedence over UI defaults.
     extra_args.extend(bebra_core::launch::split_args(&params.extra_args));

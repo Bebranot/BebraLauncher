@@ -145,6 +145,40 @@ pub struct OptimizationConfig {
 
 /// With fewer logical cores Server GC costs more memory than it saves in pauses.
 const SERVER_GC_MIN_CORES: usize = 6;
+/// Server GC holds about 550 MB more than the workstation collector (measured, see NOTES.md). With
+/// less RAM than this, paging would cost more than its shorter pauses give.
+const SERVER_GC_MIN_RAM_MB: u64 = 11 * 1024;
+
+/// The core count to resolve presets with: this machine's logical cores, or 1 where there is too
+/// little RAM for Server GC, the one thing presets decide by it.
+pub fn preset_cores() -> usize {
+    let cores = std::thread::available_parallelism().map_or(1, usize::from);
+    cores_for_presets(cores, total_ram_mb())
+}
+
+fn cores_for_presets(cores: usize, ram_mb: Option<u64>) -> usize {
+    match ram_mb {
+        Some(ram) if ram < SERVER_GC_MIN_RAM_MB => 1,
+        _ => cores,
+    }
+}
+
+#[cfg(windows)]
+fn total_ram_mb() -> Option<u64> {
+    use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+    // SAFETY: the struct is plain data, zero is valid for it, and its length field is set as the
+    // call requires.
+    unsafe {
+        let mut status: MEMORYSTATUSEX = std::mem::zeroed();
+        status.dwLength = std::mem::size_of::<MEMORYSTATUSEX>() as u32;
+        (GlobalMemoryStatusEx(&mut status) != 0).then_some(status.ullTotalPhys / (1024 * 1024))
+    }
+}
+
+#[cfg(not(windows))]
+fn total_ram_mb() -> Option<u64> {
+    None
+}
 
 impl OptimizationConfig {
     /// Resolves a preset name. `None` for "custom" and unknown names.
@@ -157,13 +191,15 @@ impl OptimizationConfig {
         }
     }
 
-    /// Nothing the eye notices: cheaper settings for things that look the same, a calmer GC and
-    /// the process tweaks.
+    /// Nothing the eye notices: cheaper settings for things that look the same, a calmer GC, the
+    /// process tweaks and no VSync. The engine's windowed VSync (a `DwmFlush` after every swap)
+    /// measured 23 FPS with 100 ms frames where the same scene holds 60 without it (NOTES.md).
     pub fn balanced(cores: usize) -> Self {
         Self {
             ao_lowres: true,
             parallax_low: true,
             particles_lite: true,
+            steady_fps: true,
             server_gc: cores >= SERVER_GC_MIN_CORES,
             low_latency_gc: true,
             high_priority: true,
@@ -174,7 +210,7 @@ impl OptimizationConfig {
     }
 
     /// Everything that buys frames without making the game blurry or hiding gameplay: harder
-    /// light edges, no cosmetic shaders, lighter audio and a steady 60 FPS.
+    /// light edges, no cosmetic shaders and lighter audio.
     pub fn optimized(cores: usize) -> Self {
         Self {
             fast_lighting: true,
@@ -183,7 +219,6 @@ impl OptimizationConfig {
             calm_effects: true,
             tile_edges_off: true,
             audio_lite: true,
-            steady_fps: true,
             prefer_dgpu: true,
             patch_status_icons: true,
             ..Self::balanced(cores)
@@ -1445,13 +1480,13 @@ mod tests {
             cvar_of(&cmd, "light.ambient_occlusion_resolution_scale").as_deref(),
             Some("0.25")
         );
-        // Lighting, frame rate and effects stay as the player has them.
+        assert_eq!(cvar_of(&cmd, "display.vsync").as_deref(), Some("false"));
+        assert_eq!(cvar_of(&cmd, "display.max_fps").as_deref(), Some("60"));
+        // Lighting and effects stay as the player has them.
         for name in [
             "light.soft_shadows",
             "light.resolution_scale",
             "light.ambient_occlusion",
-            "display.vsync",
-            "display.max_fps",
             "accessibility.disable_heat_distortion",
         ] {
             assert_eq!(cvar_of(&cmd, name), None, "{name}");
@@ -1463,6 +1498,13 @@ mod tests {
         assert!(!OptimizationConfig::balanced(4).server_gc);
         assert!(!OptimizationConfig::optimized(4).server_gc);
         assert!(OptimizationConfig::optimized(6).server_gc);
+    }
+
+    #[test]
+    fn server_gc_needs_enough_ram() {
+        assert_eq!(cores_for_presets(8, Some(8 * 1024)), 1);
+        assert_eq!(cores_for_presets(8, Some(16 * 1024)), 8);
+        assert_eq!(cores_for_presets(8, None), 8);
     }
 
     #[test]

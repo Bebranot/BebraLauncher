@@ -227,7 +227,7 @@ export const en: Dictionary = {
     "Nothing is changed: the client starts as it is.",
   "opt.profile.balanced": "Balanced (recommended)",
   "opt.profile.balancedDesc":
-    "Invisible tweaks: cheaper ambient occlusion and space background, lighter particles, calmer garbage collection, process priority and the outline patch. The picture stays the same.",
+    "Invisible tweaks: cheaper ambient occlusion and space background, lighter particles, calmer garbage collection, process priority and the outline patch, steady 60 FPS without VSync. The picture stays the same.",
   "opt.profile.optimized": "Optimized (low-end PC)",
   "opt.profile.optimizedDesc":
     "Harder light edges, lower light resolution, no ambient occlusion or cosmetic shaders, lighter audio, steady 60 FPS, the discrete GPU and the status-icon patch. Nothing is blurred and no gameplay effects are hidden.",
@@ -275,10 +275,10 @@ export const en: Dictionary = {
     "No VSync and no frame cap. Lowest latency, but the GPU runs flat out and heats up.",
   "opt.sw.steady_fps": "Steady 60 FPS",
   "opt.sw.steady_fpsHint":
-    "No VSync, frames capped at 60. Less heat and noise. Ignored while the FPS cap is removed.",
+    "No VSync, frames capped at 60: windowed VSync stuttered on weak GPUs. Less heat and noise. For a monitor above 60 Hz, pick your limit under Max FPS. Ignored while the FPS cap is removed.",
   "opt.sw.server_gc": "Server garbage collector (.NET)",
   "opt.sw.server_gcHint":
-    "Collection runs on all cores with shorter pauses, at the cost of more RAM. The presets enable it only on PCs with 6 or more logical cores.",
+    "Collection runs on all cores with shorter pauses, at the cost of more RAM. The presets enable it only on PCs with 6 or more logical cores and 12 GB of RAM.",
   "opt.sw.low_latency_gc": "Low-latency GC mode",
   "opt.sw.low_latency_gcHint":
     "The client avoids blocking full collections while you play, and the GC keeps memory instead of returning it to the OS. Fewer stutters, more RAM used.",

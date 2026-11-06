@@ -135,6 +135,23 @@ enum Command {
         /// Only print the command that would run (secrets hidden).
         #[arg(long)]
         dry_run: bool,
+        /// Optimization profile: a preset name, or `custom` together with `--switch`.
+        #[arg(long, default_value = "balanced")]
+        profile: String,
+        /// Turns one optimization switch on, by its name in `OptimizationConfig` (repeatable).
+        /// Added on top of the profile.
+        #[arg(long = "switch")]
+        switches: Vec<String>,
+        /// An extra CVar as `name=value` (repeatable). Wins over the profile.
+        #[arg(long = "cvar")]
+        cvars: Vec<String>,
+        /// A client patch to load, as a path to its .dll (repeatable). Files are not verified,
+        /// this is for development.
+        #[arg(long = "patch")]
+        patches: Vec<PathBuf>,
+        /// An extra environment variable for the client as `NAME=VALUE` (repeatable).
+        #[arg(long = "env")]
+        env: Vec<String>,
     },
 }
 
@@ -510,6 +527,11 @@ async fn run() -> Result<()> {
             compat,
             no_connect,
             dry_run,
+            profile,
+            switches,
+            cvars,
+            mut patches,
+            env,
         } => {
             let addr = ServerAddr::parse(&address)?;
             let client = http_client()?;
@@ -522,6 +544,19 @@ async fn run() -> Result<()> {
                 Some(p) => p,
                 None => launch::find_loader()?,
             };
+
+            let optimization = optimization_from_args(&profile, &switches)?;
+            if optimization.needs_perf_patch() {
+                let bundled = loader_exe.with_file_name("Bebra.PerfPatch.dll");
+                if bundled.is_file() {
+                    patches.push(bundled);
+                } else {
+                    eprintln!(
+                        "note: {} is missing, client patches stay off",
+                        bundled.display()
+                    );
+                }
+            }
 
             let auth_client = AuthClient::official(client.clone());
             let account = if no_connect || guest {
@@ -539,12 +574,13 @@ async fn run() -> Result<()> {
                 loader_exe,
                 launcher_path: None,
                 overlay_zip: None,
-                extra_args: Vec::new(),
-                patches: Vec::new(),
+                extra_args: cvars
+                    .into_iter()
+                    .flat_map(|cvar| ["--cvar".to_string(), cvar])
+                    .collect(),
+                patches,
                 hwid: None,
-                optimization: bebra_core::launch::OptimizationConfig::balanced(
-                    std::thread::available_parallelism().map_or(1, usize::from),
-                ),
+                optimization,
             };
             let printer = ProgressPrinter::new("files");
             if dry_run {
@@ -603,7 +639,14 @@ async fn run() -> Result<()> {
                     );
                 }
             }
-            let cmd = game.command;
+            let mut cmd = game.command;
+            for pair in &env {
+                let (name, value) = pair
+                    .split_once('=')
+                    .with_context(|| format!("--env expects NAME=VALUE, got {pair}"))?;
+                cmd.env_remove.retain(|n| n != name);
+                cmd.env.push((name.to_string(), value.to_string()));
+            }
             println!("{}", cmd.describe());
 
             // One file per launcher run: two clients started at once must not share (and truncate)
@@ -633,6 +676,30 @@ async fn run() -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// The optimization switches of a launch: a preset, or nothing for `custom`, plus `--switch` names.
+fn optimization_from_args(
+    profile: &str,
+    switches: &[String],
+) -> Result<launch::OptimizationConfig> {
+    let cores = launch::preset_cores();
+    let base = match profile {
+        "custom" => launch::OptimizationConfig::default(),
+        name => launch::OptimizationConfig::preset(name, cores)
+            .with_context(|| format!("unknown optimization profile {name}"))?,
+    };
+    let mut value = serde_json::to_value(base)?;
+    let fields = value
+        .as_object_mut()
+        .context("OptimizationConfig is a JSON object")?;
+    for name in switches {
+        let field = fields
+            .get_mut(name)
+            .with_context(|| format!("unknown optimization switch {name}"))?;
+        *field = serde_json::Value::Bool(true);
+    }
+    Ok(serde_json::from_value(value)?)
 }
 
 fn read_line(prompt: &str) -> Result<String> {

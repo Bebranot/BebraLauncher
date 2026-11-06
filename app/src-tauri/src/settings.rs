@@ -137,9 +137,9 @@ fn migrate(from: u32, mut value: serde_json::Value) -> serde_json::Value {
 /// One save at a time: the temporary file name is fixed.
 static SAVE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// Logical cores of this machine; the presets turn Server GC on only with enough of them.
+/// What the presets are resolved with on this machine: Server GC needs enough cores and RAM.
 pub fn cpu_cores() -> usize {
-    std::thread::available_parallelism().map_or(1, usize::from)
+    bebra_core::launch::preset_cores()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

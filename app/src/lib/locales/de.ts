@@ -227,7 +227,7 @@ export const de: Dictionary = {
     "Nichts wird geändert: Der Client startet unverändert.",
   "opt.profile.balanced": "Ausgewogen (empfohlen)",
   "opt.profile.balancedDesc":
-    "Unsichtbare Anpassungen: günstigere Ambient Occlusion und Weltraumhintergrund, leichtere Partikel, ruhigerer Garbage Collector, Prozesspriorität und Umriss-Patch. Das Bild bleibt gleich.",
+    "Unsichtbare Anpassungen: günstigere Ambient Occlusion und Weltraumhintergrund, leichtere Partikel, ruhigerer Garbage Collector, Prozesspriorität und Umriss-Patch, gleichmäßige 60 FPS ohne VSync. Das Bild bleibt gleich.",
   "opt.profile.optimized": "Optimiert (für schwache PCs)",
   "opt.profile.optimizedDesc":
     "Härtere Lichtkanten, niedrigere Lichtauflösung, keine Ambient Occlusion und keine kosmetischen Shader, leichteres Audio, gleichmäßige 60 FPS, dedizierte Grafikkarte und Statussymbol-Patch. Nichts ist unscharf, keine Spieleffekte werden ausgeblendet.",
@@ -275,10 +275,10 @@ export const de: Dictionary = {
     "Kein VSync und keine Bildbegrenzung. Geringste Latenz, aber die Grafikkarte läuft am Limit und wird heiß.",
   "opt.sw.steady_fps": "Gleichmäßige 60 FPS",
   "opt.sw.steady_fpsHint":
-    "Kein VSync, Bilder auf 60 begrenzt. Weniger Wärme und Lärm. Wirkungslos, solange die FPS-Begrenzung aufgehoben ist.",
+    "Kein VSync, Bilder auf 60 begrenzt: VSync im Fenster ruckelte auf schwachen Grafikkarten. Weniger Wärme und Lärm. Für Monitore über 60 Hz wähle dein Limit unter Max. FPS. Wirkungslos, solange die FPS-Begrenzung aufgehoben ist.",
   "opt.sw.server_gc": "Server-Garbage-Collector (.NET)",
   "opt.sw.server_gcHint":
-    "Die Speicherbereinigung läuft auf allen Kernen mit kürzeren Pausen, braucht aber mehr RAM. Die Profile aktivieren ihn nur auf PCs mit mindestens 6 logischen Kernen.",
+    "Die Speicherbereinigung läuft auf allen Kernen mit kürzeren Pausen, braucht aber mehr RAM. Die Profile aktivieren ihn nur auf PCs mit mindestens 6 logischen Kernen und 12 GB RAM.",
   "opt.sw.low_latency_gc": "GC-Modus mit niedriger Latenz",
   "opt.sw.low_latency_gcHint":
     "Der Client vermeidet blockierende Vollbereinigungen während des Spiels, und der GC gibt Speicher nicht ans System zurück. Weniger Ruckler, mehr RAM-Verbrauch.",

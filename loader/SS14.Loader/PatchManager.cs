@@ -418,13 +418,13 @@ internal static class PatchManager
                         {
                             _initializedEntryPoints.Add(type);
                             PatchLog.Write("[BebraLoader] Entry point {0} failed {1} times, giving up: {2}",
-                                type.FullName, count, ex.Message);
+                                type.FullName, count, Reason(ex));
                         }
                         else
                         {
                             // Retry when content loads, but not forever.
                             PatchLog.Write("[BebraLoader] Entry point {0} deferred/failed ({1}/{2}): {3}",
-                                type.FullName, count, MaxAttempts, ex.Message);
+                                type.FullName, count, MaxAttempts, Reason(ex));
                         }
                     }
                 }
@@ -457,12 +457,12 @@ internal static class PatchManager
                         {
                             _executedPostInit.Add(type);
                             PatchLog.Write("[BebraLoader] ContentInit {0}.{1} failed {2} times, giving up: {3}",
-                                type.FullName, postInitMethod.Name, count, ex.Message);
+                                type.FullName, postInitMethod.Name, count, Reason(ex));
                         }
                         else
                         {
                             PatchLog.Write("[BebraLoader] ContentInit note on {0} ({1}/{2}): {3}",
-                                type.FullName, count, MaxAttempts, ex.Message);
+                                type.FullName, count, MaxAttempts, Reason(ex));
                         }
                     }
                 }
@@ -470,15 +470,25 @@ internal static class PatchManager
         }
     }
 
+    /// <summary>Hands a value to a patch through a static field or property with this name.</summary>
     private static void SetStaticField(Type type, string fieldName, object? value)
     {
         if (value == null) return;
+        const BindingFlags flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static;
         try
         {
-            var field = type.GetField(fieldName, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+            var field = type.GetField(fieldName, flags);
             if (field != null && field.FieldType.IsAssignableFrom(value.GetType()))
             {
                 field.SetValue(null, value);
+                return;
+            }
+
+            // Our own patches declare `public static Harmony? Harmony { get; set; }`.
+            var property = type.GetProperty(fieldName, flags);
+            if (property is { CanWrite: true } && property.PropertyType.IsAssignableFrom(value.GetType()))
+            {
+                property.SetValue(null, value);
             }
         }
         catch
@@ -486,4 +496,7 @@ internal static class PatchManager
             // Ignore type assignment errors
         }
     }
+
+    /// <summary>What really went wrong: a reflected call wraps it in TargetInvocationException.</summary>
+    private static string Reason(Exception ex) => (ex as TargetInvocationException)?.InnerException?.Message ?? ex.Message;
 }
