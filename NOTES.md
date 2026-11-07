@@ -133,6 +133,7 @@
 - Capabilities (`app/src-tauri/capabilities/default.json`): только `core:event:allow-listen` и `allow-unlisten`. Свои команды доступны без capability. CSP — в `tauri.conf.json`: `default-src 'self'`, `connect-src` только ipc.
 - Loader: `NU1902`, `NU1903`, `NU1904` — ошибки сборки (`loader/Directory.Build.props`). `SQLitePCLRaw.bundle_e_sqlite3` не ниже 2.1.14: 2.1.10 уязвим (GHSA-2m69-gcr7-jv3q), см. `loader/Directory.Packages.props`.
 - Установщик: `scripts/build-release.ps1` (NSIS). Loader — self-contained.
+- `installer-hooks.nsh` хранится в UTF-8 с BOM, иначе makensis прочтёт русский текст в системной кодировке. Установщик работает без повышения прав (`currentUser`), а путь прошлой установки берёт из `HKCU\Software\BebraLauncher\BebraLauncher`: ручное удаление файлов этот ключ не стирает. Без прав на папку `Delete` в деинсталляторе молчит, поэтому хуки проверяют запись до любых изменений.
 - `.gitattributes`: `eol=lf`, `*.ps1`/`*.bat`/`*.nsh` — CRLF. `rustfmt.toml`: `max_width = 100`, `newline_style = "Unix"`.
 - `app/package.json`: `packageManager: pnpm@10.0.0`.
 - Иконка — заглушка «B» на градиенте (`app/src-tauri/icons/source.png`).

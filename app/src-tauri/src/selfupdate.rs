@@ -283,6 +283,13 @@ pub fn install_now(app: &AppHandle, restart: bool) -> Result<(), String> {
     if state.game.is_active() {
         return Err("идёт подготовка или работа игры: закройте её и повторите".into());
     }
+    // Checked before exiting: the silent installer has no way to tell the player why it failed.
+    if let Some(dir) = self_update::protected_install_dir() {
+        return Err(format!(
+            "нет прав на запись в папку {}: обновление не установится. Переустановите лаунчер в другую папку или установите новую версию вручную от имени администратора",
+            dir.display()
+        ));
+    }
     let path = {
         let mut i = crate::lock_or_recover(&state.update.inner);
         let (Some(Phase::Ready), Some(path)) = (i.phase, i.ready.clone()) else {
@@ -312,6 +319,13 @@ pub fn install_on_exit(app: &AppHandle) {
     let state = app.state::<AppState>();
     let auto = crate::lock_or_recover(&state.settings).update_auto;
     if !auto || state.game.is_active() {
+        return;
+    }
+    if let Some(dir) = self_update::protected_install_dir() {
+        applog::line(&format!(
+            "update: not installed on exit, {} is not writable",
+            dir.display()
+        ));
         return;
     }
     let path = {

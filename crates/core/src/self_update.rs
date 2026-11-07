@@ -647,6 +647,23 @@ pub fn clean_installed(dir: &Path) {
 
 // ---------------------------------------------------------------- installing
 
+/// The folder this launcher runs from, if an update cannot write there. The installer runs
+/// without elevation, so it cannot update a copy in a protected folder such as Program Files.
+pub fn protected_install_dir() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?;
+    (!dir_is_writable(dir)).then(|| dir.to_path_buf())
+}
+
+fn dir_is_writable(dir: &Path) -> bool {
+    let probe = dir.join(".bebra-write-test");
+    let created = std::fs::File::create(&probe).is_ok();
+    if created {
+        let _ = std::fs::remove_file(&probe);
+    }
+    created
+}
+
 /// Runs the installer silently over the current installation. With `restart` it starts the
 /// launcher again when done. The caller exits right after: the installer replaces the files.
 ///
@@ -698,6 +715,14 @@ mod tests {
     use super::*;
 
     const SETUP: &str = "BebraLauncher_0.2.5_x64-setup.exe";
+
+    #[test]
+    fn a_write_check_leaves_nothing_and_fails_without_a_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(dir_is_writable(dir.path()));
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+        assert!(!dir_is_writable(&dir.path().join("missing")));
+    }
 
     fn release_json(tag: &str, extra: &str, assets: &[&str]) -> String {
         let assets: Vec<String> = assets
