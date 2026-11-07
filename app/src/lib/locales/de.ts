@@ -205,6 +205,8 @@ export const de: Dictionary = {
   "opt.discordRpcOff": "Aus",
   "opt.minimize": "Launcher minimieren, solange das Spiel läuft",
   "opt.minimizeHint": "Das Fenster kommt zurück, wenn das Spiel beendet wird.",
+  "opt.unloadOnPlay": "Speicher freigeben, solange das Spiel läuft",
+  "opt.unloadOnPlayHint": "Das Fenster schließt sich, der Launcher bleibt als Tray-Symbol mit unter 20 MB. Das Fenster kommt zurück, wenn das Spiel beendet wird.",
   "opt.autostart": "Mit Windows starten",
   "opt.autostartHint": "Der Launcher startet minimiert.",
   "opt.links": "ss14://-Links hier öffnen",

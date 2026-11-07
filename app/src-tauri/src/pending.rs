@@ -60,6 +60,11 @@ impl PendingActions {
         std::mem::take(&mut inner.actions)
     }
 
+    /// The page was destroyed: keep events again until the next one asks for them.
+    pub fn page_gone(&self) {
+        crate::lock_or_recover(&self.inner).ui_ready = false;
+    }
+
     #[cfg(test)]
     fn is_ui_ready(&self) -> bool {
         crate::lock_or_recover(&self.inner).ui_ready
@@ -128,6 +133,24 @@ mod tests {
         assert_eq!(taken.len(), LIMIT);
         assert_eq!(taken[0].payload, serde_json::json!(5));
         assert_eq!(taken[LIMIT - 1].payload, serde_json::json!(LIMIT + 4));
+    }
+
+    /// The game can close while its window is unloaded: the next page must still hear about it.
+    #[test]
+    fn events_are_kept_again_once_the_page_is_gone() {
+        let pending = PendingActions::default();
+        assert!(pending.take().is_empty());
+        assert!(!pending.push(action("play", 1)), "the page is listening");
+
+        pending.page_gone();
+        assert!(!pending.is_ui_ready());
+        assert!(pending.push(action("play", 2)));
+
+        assert_eq!(pending.take(), [action("play", 2)]);
+        assert!(
+            !pending.push(action("play", 3)),
+            "the new page is listening"
+        );
     }
 
     #[test]

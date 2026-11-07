@@ -1285,6 +1285,7 @@ export class Store {
         bg_dim: s.bg_dim,
         bg_blur: s.bg_blur,
         minimize_on_play: s.minimize_on_play,
+        unload_on_play: s.unload_on_play,
         auto_clean_cache: s.auto_clean_cache,
       },
       favorites: [...s.favorites],
@@ -1366,6 +1367,7 @@ export class Store {
         take("bg_dim", "number");
         take("bg_blur", "number");
         take("minimize_on_play", "boolean");
+        take("unload_on_play", "boolean");
         take("auto_clean_cache", "boolean");
       }
       this.updateSettings(partial);
@@ -1510,6 +1512,8 @@ export class Store {
         ];
         this.play = { phase: "idle" };
         this.redial = null;
+        // The page may be unloaded in a moment: the last edit must reach the file first.
+        this.flushSettingsNow();
         // The backend recorded the server and the account for this game.
         void this.loadSettings();
         break;

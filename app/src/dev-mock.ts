@@ -101,6 +101,7 @@ const DEFAULT_SETTINGS: Settings = {
   compat_mode: false,
   discord_rpc_mode: "vanilla",
   minimize_on_play: true,
+  unload_on_play: true,
   theme: "dark",
   theme_gradient: false,
   theme_decor: false,

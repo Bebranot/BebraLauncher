@@ -796,9 +796,17 @@
         onchange={(v) => app.updateSettings({ close_on_play: v })}
       />
       <Option
+        label={t("opt.unloadOnPlay")}
+        hint={t("opt.unloadOnPlayHint")}
+        checked={s.unload_on_play}
+        disabled={s.close_on_play}
+        onchange={(v) => app.updateSettings({ unload_on_play: v })}
+      />
+      <Option
         label={t("opt.minimize")}
         hint={t("opt.minimizeHint")}
         checked={s.minimize_on_play}
+        disabled={s.close_on_play || s.unload_on_play}
         onchange={(v) => app.updateSettings({ minimize_on_play: v })}
       />
       <Option

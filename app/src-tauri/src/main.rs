@@ -14,6 +14,7 @@ mod selfupdate;
 mod sessions;
 mod settings;
 mod system;
+mod uihost;
 
 use std::sync::{Arc, Mutex};
 
@@ -63,6 +64,8 @@ pub struct AppState {
     pub servers_cache: Mutex<()>,
     /// The launcher's own update: what was found, downloaded, started.
     pub update: selfupdate::UpdateState,
+    /// Whether the window and its webview are loaded right now.
+    pub ui: uihost::UiHost,
 }
 
 fn main() {
@@ -98,6 +101,7 @@ fn main() {
         own_news_gate: tokio::sync::Mutex::new(()),
         servers_cache: Mutex::new(()),
         update: selfupdate::UpdateState::default(),
+        ui: uihost::UiHost::default(),
     };
     // Installers of versions that are already installed are of no use.
     bebra_core::self_update::clean_installed(&state.dirs.root().join("updates"));
@@ -132,6 +136,7 @@ fn main() {
             commands::handle_launcher_args(app, argv.get(1..).unwrap_or_default());
         }))
         .plugin(tauri_plugin_window_state::Builder::default().build())
+        .on_window_event(uihost::on_window_event)
         .setup(|app| {
             let mut args: Vec<String> = std::env::args().skip(1).collect();
             // Started by Windows at login: stay out of the way.
@@ -218,11 +223,14 @@ fn main() {
         ])
         .build(tauri::generate_context!())
         .expect("error while building the app")
-        .run(|app, event| {
+        .run(|app, event| match event {
+            // The last window went because the interface was unloaded, not because of the player.
+            tauri::RunEvent::ExitRequested {
+                code: None, api, ..
+            } if uihost::should_prevent_exit(app) => api.prevent_exit(),
             // A downloaded update is installed as the launcher closes.
-            if let tauri::RunEvent::Exit = event {
-                selfupdate::install_on_exit(app);
-            }
+            tauri::RunEvent::Exit => selfupdate::install_on_exit(app),
+            _ => {}
         });
 }
 

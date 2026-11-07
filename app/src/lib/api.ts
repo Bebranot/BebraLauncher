@@ -121,6 +121,7 @@ export interface Settings {
   compat_mode: boolean;
   discord_rpc_mode: string;
   minimize_on_play: boolean;
+  unload_on_play: boolean;
   theme: string;
   theme_gradient: boolean;
   theme_decor: boolean;

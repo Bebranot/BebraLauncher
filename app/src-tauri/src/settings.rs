@@ -156,6 +156,9 @@ pub struct Settings {
     pub discord_rpc_mode: String,
     /// Minimize the launcher while the game runs, and bring it back when the game closes.
     pub minimize_on_play: bool,
+    /// Close the window and its webview while the game runs, and bring them back when it closes.
+    /// Saves far more memory than minimizing, so it wins over `minimize_on_play`.
+    pub unload_on_play: bool,
     /// Id of the colour theme; the UI knows the list and falls back to the default.
     pub theme: String,
     /// Gradient background (instead of a flat colour).
@@ -394,6 +397,7 @@ impl Default for Settings {
             compat_mode: false,
             discord_rpc_mode: "vanilla".to_string(),
             minimize_on_play: false,
+            unload_on_play: true,
             theme: "dark".to_string(),
             theme_gradient: false,
             theme_decor: false,
@@ -1043,6 +1047,7 @@ mod tests {
         let dir = tempdir();
         assert_eq!(Settings::load(&dir).guest_name, FALLBACK_USERNAME);
         assert!(!Settings::load(&dir).minimize_on_play);
+        assert!(Settings::load(&dir).unload_on_play);
         assert!(Settings::load(&dir).auto_clean_cache);
 
         let s = Settings {

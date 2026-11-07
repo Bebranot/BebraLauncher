@@ -190,6 +190,7 @@ pub struct PlayParams {
     pub discord_rpc_mode: String,
     /// The interface language's code, for the launcher's own presence.
     pub language: String,
+    pub unload_on_play: bool,
     pub minimize_on_play: bool,
     pub close_on_play: bool,
     pub client_window_mode: String,
@@ -525,9 +526,11 @@ async fn resolve_account(
     }
 }
 
-/// Brings the launcher window back if it was minimized.
+/// Brings the launcher window back if it was minimized or unloaded.
 pub fn restore_window(app: &AppHandle) {
-    set_minimized(app, false);
+    if !crate::uihost::reopen(app) {
+        set_minimized(app, false);
+    }
 }
 
 /// Minimizes or restores the launcher window. Failures don't matter: it is only a convenience.
@@ -650,7 +653,9 @@ fn run_game(
         app.exit(0);
         return;
     }
-    if params.minimize_on_play {
+    if params.unload_on_play {
+        crate::uihost::unload_after_game_start(app);
+    } else if params.minimize_on_play {
         set_minimized(app, true);
     }
     let presence = keeps_presence
@@ -690,8 +695,8 @@ fn run_game(
         // Only the end of the file is needed: read it backwards, not the whole log (P2-40).
         crate::applog::tail(&out_log, 15)
     };
-    if params.minimize_on_play && remaining == 0 {
-        set_minimized(app, false);
+    if remaining == 0 && (params.unload_on_play || params.minimize_on_play) {
+        restore_window(app);
     }
     emit(PlayEvent::Exited {
         pid,

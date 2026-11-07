@@ -796,6 +796,7 @@ pub fn start_play(
             compat_mode: settings.compat_mode,
             discord_rpc_mode: settings.discord_rpc_mode,
             language: crate::presence::resolve_language(&settings.language),
+            unload_on_play: settings.unload_on_play,
             minimize_on_play: settings.minimize_on_play,
             close_on_play: settings.close_on_play,
             client_window_mode: settings.client_window_mode,

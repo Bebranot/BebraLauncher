@@ -205,6 +205,8 @@ export const en: Dictionary = {
   "opt.discordRpcOff": "Off",
   "opt.minimize": "Minimize the launcher while the game runs",
   "opt.minimizeHint": "The window comes back when the game closes.",
+  "opt.unloadOnPlay": "Free up memory while the game runs",
+  "opt.unloadOnPlayHint": "The window closes and the launcher stays as a tray icon using under 20 MB. The window comes back when the game closes.",
   "opt.autostart": "Start with Windows",
   "opt.autostartHint": "The launcher starts minimized.",
   "opt.links": "Open ss14:// links here",
