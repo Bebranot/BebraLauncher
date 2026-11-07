@@ -398,6 +398,8 @@ export function installMock() {
         case "take_pending_actions":
           return [];
         case "list_servers":
+          // `?hub=down` shows what a player whose provider blocks the hub sees.
+          if (query.get("hub") === "down") throw "failed to get the server list: the response body timed out";
           return servers;
         case "cached_servers":
           return servers.slice(0, 3);

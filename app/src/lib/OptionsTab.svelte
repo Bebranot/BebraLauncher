@@ -1215,6 +1215,19 @@
       {#if hubError}
         <div class="error small">{hubError}</div>
       {/if}
+
+      <label class="field">
+        <span>{t("dbg.proxy")}</span>
+        <input
+          type="text"
+          placeholder="socks5://127.0.0.1:1080"
+          value={proxyShown}
+          spellcheck="false"
+          oninput={(e) => editProxy(e.currentTarget.value)}
+        />
+        <small class="sub">{t("dbg.proxyHint")}</small>
+        {#if proxyBad}<small class="error">{t("dbg.proxyInvalid")}</small>{/if}
+      </label>
     </section>
 
     <!-- ------------------------------------------------------------ text packs & mods -->
@@ -1370,19 +1383,6 @@
         <h2>{t("dbg.title")}</h2>
 
         <Option label={t("dbg.verbose")} hint={t("dbg.verboseHint")} checked={s.verbose_log} onchange={(v) => app.updateSettings({ verbose_log: v })} />
-
-        <label class="field">
-          <span>{t("dbg.proxy")}</span>
-          <input
-            type="text"
-            placeholder="socks5://127.0.0.1:1080"
-            value={proxyShown}
-            spellcheck="false"
-            oninput={(e) => editProxy(e.currentTarget.value)}
-          />
-          <small class="sub">{t("dbg.proxyHint")}</small>
-          {#if proxyBad}<small class="error">{t("dbg.proxyInvalid")}</small>{/if}
-        </label>
 
         <div class="field">
           <span>{t("dbg.preview")}</span>

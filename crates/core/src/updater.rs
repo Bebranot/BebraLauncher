@@ -16,6 +16,34 @@ use crate::paths::DataDirs;
 use crate::server::BuildInfo;
 use crate::{Error, Result};
 
+/// How many times a download that broke off on a network error is started again. Verified blobs
+/// and finished engine files are kept, so each retry fetches only what is still missing.
+pub const NETWORK_RETRIES: u32 = 3;
+
+/// Pause before retry `n` (1-based): 2, 4, 8 s.
+fn retry_pause(n: u32) -> std::time::Duration {
+    std::time::Duration::from_secs(1 << n.min(4))
+}
+
+/// Runs `op` again after a transient network error ([`Error::is_transient_network`]), up to
+/// [`NETWORK_RETRIES`] times. Any other error, or the last one, is returned as is.
+pub async fn retry_network<T, F, Fut>(mut op: F) -> Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T>>,
+{
+    let mut retries = 0;
+    loop {
+        match op().await {
+            Err(e) if retries < NETWORK_RETRIES && e.is_transient_network() => {
+                retries += 1;
+                tokio::time::sleep(retry_pause(retries)).await;
+            }
+            done => return done,
+        }
+    }
+}
+
 /// How a build is delivered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DownloadMode {
@@ -344,6 +372,50 @@ async fn install_manifest(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn network_drops_are_retried_and_other_errors_are_not() {
+        let calls = std::cell::Cell::new(0);
+        let got = retry_network(|| {
+            calls.set(calls.get() + 1);
+            let n = calls.get();
+            async move {
+                if n < 3 {
+                    Err(Error::Io(std::io::Error::new(
+                        std::io::ErrorKind::ConnectionReset,
+                        "reset",
+                    )))
+                } else {
+                    Ok(n)
+                }
+            }
+        })
+        .await;
+        assert_eq!(got.unwrap(), 3);
+
+        calls.set(0);
+        let got: Result<()> = retry_network(|| {
+            calls.set(calls.get() + 1);
+            async { Err(Error::Other("bad zstd data".into())) }
+        })
+        .await;
+        assert!(got.is_err());
+        assert_eq!(calls.get(), 1, "a non-network error is not retried");
+
+        calls.set(0);
+        let got: Result<()> = retry_network(|| {
+            calls.set(calls.get() + 1);
+            async {
+                Err(Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "stalled",
+                )))
+            }
+        })
+        .await;
+        assert!(got.is_err());
+        assert_eq!(calls.get(), 1 + NETWORK_RETRIES as usize);
+    }
 
     fn build(manifest: bool, zip: bool, hash: bool) -> BuildInfo {
         BuildInfo {

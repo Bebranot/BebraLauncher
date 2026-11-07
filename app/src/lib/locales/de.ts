@@ -41,6 +41,8 @@ export const de: Dictionary = {
   "servers.none": "Es gibt keine öffentlichen Server.",
   "servers.noneFiltered": "Keine Server entsprechen Ihrer Suche oder Ihrem Filter.",
   "servers.error": "Die Serverliste konnte nicht aktualisiert werden: {error}",
+  "servers.errorHint":
+    "Wenn dein Anbieter den Hub blockiert, trage unter Einstellungen → Server-Hubs einen Proxy ein. Ohne Hub öffnet sich ein Server über seine Adresse: Direktverbindung, ein ss14://-Link oder die Favoriten.",
   "servers.cached": "Gespeicherte Liste: der Hub hat noch nicht geantwortet.",
   "servers.fromLink": "Server aus dem Link",
   "col.name": "Servername",

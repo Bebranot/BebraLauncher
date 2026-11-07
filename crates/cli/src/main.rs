@@ -321,13 +321,11 @@ async fn run() -> Result<()> {
 
             let db = ContentDb::open(&dirs.content_db())?;
             let printer = ProgressPrinter::new("files");
-            let content = updater::install_content(
-                &client,
-                &db,
-                &build,
-                &dirs.scratch(),
-                Some(&|p| printer.show(p)),
-            )
+            let scratch = dirs.scratch();
+            let show = |p| printer.show(p);
+            let content = updater::retry_network(|| {
+                updater::install_content(&client, &db, &build, &scratch, Some(&show))
+            })
             .await
             .context("failed to install game files")?;
             printer.finish();
@@ -345,14 +343,17 @@ async fn run() -> Result<()> {
             );
 
             let printer = ProgressPrinter::new("engine");
-            let prepared = updater::prepare_launch(
-                &client,
-                &db,
-                &dirs,
-                &sources,
-                content.version_id,
-                Some(&|p| printer.show(p)),
-            )
+            let show = |p| printer.show(p);
+            let prepared = updater::retry_network(|| {
+                updater::prepare_launch(
+                    &client,
+                    &db,
+                    &dirs,
+                    &sources,
+                    content.version_id,
+                    Some(&show),
+                )
+            })
             .await
             .context("failed to install the engine")?;
             printer.finish();

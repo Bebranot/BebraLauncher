@@ -276,9 +276,12 @@ pub async fn prepare(
     let db = ContentDb::open(&dirs.content_db())?;
     let files = |p: Progress| on_stage(Stage::Files, Some(p));
     on_stage(Stage::Files, None);
-    let content = updater::install_content(client, &db, &build, &dirs.scratch(), Some(&files))
-        .await
-        .map_err(PlayError::Files)?;
+    let scratch = dirs.scratch();
+    let content = updater::retry_network(|| {
+        updater::install_content(client, &db, &build, &scratch, Some(&files))
+    })
+    .await
+    .map_err(PlayError::Files)?;
     let cleanup = updater::cleanup(&db)?;
 
     if let Some(task) = prefetch_guard.0.take() {
@@ -288,14 +291,16 @@ pub async fn prepare(
     let engine = |p: Progress| on_stage(Stage::Engine, Some(p));
     on_stage(Stage::Engine, None);
     let engine_progress: ProgressFn<'_> = &engine;
-    let prepared = updater::prepare_launch(
-        client,
-        &db,
-        dirs,
-        &sources,
-        content.version_id,
-        Some(engine_progress),
-    )
+    let prepared = updater::retry_network(|| {
+        updater::prepare_launch(
+            client,
+            &db,
+            dirs,
+            &sources,
+            content.version_id,
+            Some(engine_progress),
+        )
+    })
     .await
     .map_err(PlayError::Engine)?;
 

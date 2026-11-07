@@ -34,6 +34,7 @@
 <div class="tab">
   {#if app.serversError}
     <div class="note error">{t("servers.error", { error: app.serversError })}</div>
+    <div class="note sub">{t("servers.errorHint")}</div>
   {:else if app.serversFromCache}
     <div class="note sub">{t("servers.cached")}</div>
   {/if}
