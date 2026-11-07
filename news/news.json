@@ -1,6 +1,23 @@
 {
   "items": [
     {
+      "id": "update-protected-folder",
+      "date": "2026-11-07",
+      "title": {
+        "ru": "Обновление не меняет версию? Переустановите лаунчер",
+        "en": "Update doesn't change the version? Reinstall the launcher",
+        "uk": "Оновлення не змінює версію? Перевстановіть лаунчер",
+        "de": "Update ändert die Version nicht? Launcher neu installieren"
+      },
+      "body": {
+        "ru": "Если после нажатия на кнопку обновления лаунчер перезапускается, версия остаётся прежней, а кнопка загорается снова, скорее всего, он установлен в Program Files. Туда обновление записать не может. Версия 1.0.300 сообщает об этом сама, но перейти на неё в таком случае можно только вручную.\n\n1. Закройте лаунчер и скачайте установщик по ссылке ниже.\n\n2. Если установщик спросит о старой версии, выберите «Не удалять».\n\n3. На шаге выбора папки укажите C:\\Users\\ИМЯ_ПОЛЬЗОВАТЕЛЯ\\AppData\\Local\\BebraLauncher и завершите установку.\n\n4. Удалите старую папку C:\\Program Files\\BebraLauncher. Если включали автозапуск или открытие ссылок ss14://, выключите и включите их снова.\n\nЕсли лаунчер обновляется нормально, ничего делать не нужно.",
+        "en": "If the update button restarts the launcher, the version stays the same and the button lights up again, the launcher is most likely installed in Program Files, where updates cannot write. Version 1.0.300 tells you about this itself, but in this case you can only move to it by hand.\n\n1. Close the launcher and download the installer from the link below.\n\n2. If the installer asks about the old version, choose \"Do not uninstall\".\n\n3. On the folder step, enter C:\\Users\\YOUR_USER_NAME\\AppData\\Local\\BebraLauncher and finish the installation.\n\n4. Delete the old folder C:\\Program Files\\BebraLauncher. If you turned on autostart or opening ss14:// links, turn them off and on again.\n\nIf the launcher updates normally, you don't need to do anything.",
+        "uk": "Якщо після натискання кнопки оновлення лаунчер перезапускається, версія лишається тією самою, а кнопка знову світиться, найімовірніше, його встановлено в Program Files. Туди оновлення записати не може. Версія 1.0.300 повідомляє про це сама, але перейти на неї в такому разі можна лише вручну.\n\n1. Закрийте лаунчер і завантажте інсталятор за посиланням нижче.\n\n2. Якщо інсталятор запитає про стару версію, виберіть «Do not uninstall» («Не видаляти»).\n\n3. На кроці вибору папки вкажіть C:\\Users\\ІМ'Я_КОРИСТУВАЧА\\AppData\\Local\\BebraLauncher і завершіть встановлення.\n\n4. Видаліть стару папку C:\\Program Files\\BebraLauncher. Якщо вмикали автозапуск або відкриття посилань ss14://, вимкніть і ввімкніть їх знову.\n\nЯкщо лаунчер оновлюється нормально, нічого робити не потрібно.",
+        "de": "Wenn der Update-Button den Launcher neu startet, die Version gleich bleibt und der Button wieder aufleuchtet, ist der Launcher höchstwahrscheinlich in Program Files installiert. Dort können Updates nicht schreiben. Version 1.0.300 weist selbst darauf hin, aber in diesem Fall kommst du nur von Hand zu ihr.\n\n1. Schließe den Launcher und lade das Installationsprogramm über den Link unten herunter.\n\n2. Falls das Installationsprogramm nach der alten Version fragt, wähle „Do not uninstall“ („Nicht deinstallieren“).\n\n3. Gib beim Schritt zur Ordnerauswahl C:\\Users\\DEIN_BENUTZERNAME\\AppData\\Local\\BebraLauncher an und schließe die Installation ab.\n\n4. Lösche den alten Ordner C:\\Program Files\\BebraLauncher. Falls du den Autostart oder das Öffnen von ss14://-Links aktiviert hattest, schalte sie aus und wieder ein.\n\nWenn sich der Launcher normal aktualisiert, musst du nichts tun."
+      },
+      "link": "https://github.com/Bebranot/BebraLauncher/releases/latest"
+    },
+    {
       "id": "beta-1-0",
       "date": "2026-11-05",
       "title": {
