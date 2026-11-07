@@ -26,21 +26,25 @@ BebraLauncher lists Space Station 14 servers, remembers your accounts and starts
 
 ## Features
 
-**Servers.** A list from the Wizards' Den hub (hubs are configurable), with sorting, search and filters for language, region, roleplay level and player count. The saved list opens when you are offline.
+**Servers.** A list from the Wizards' Den hub (hubs are configurable), with sorting, search and filters for language, region, roleplay level, age category (18+) and player count. The saved list opens when you are offline.
 
 **Favorites and history.** Favorite servers, including ones outside the hub, recent servers, play time per server, notes, direct connect and `ss14://` links.
 
 **Accounts.** Sign-in through the official Wizards' Den service with two-factor codes, and guest play where a server allows it. Each server remembers its account.
 
-**Launching.** Downloads and verifies the build, engine and modules, with progress and cancel. The game can reconnect when a server asks it to (redial), and the launcher window minimizes while you play.
+**Launching.** Downloads and verifies the build, engine and modules, with progress and cancel. The game can reconnect when a server asks it to (redial). While the game runs, the launcher window closes and frees its memory: a tray icon stays, and the window comes back when the game ends. This can be turned off, and then the window can simply be minimized.
 
-**Client optimization.** The `standard`, `balanced` and `optimized` profiles, or individual switches.
+**Discord.** Rich Presence is kept by the game, or by the launcher (server, character, round time), or turned off.
+
+**News.** Space Station 14 news and a separate feed of BebraLauncher's own news.
+
+**Client optimization.** The Standard, Balanced and Optimized profiles, or your own set of switches. Changing a switch moves the profile to Custom.
 
 **Appearance.** 17 ready-made themes plus your own, shareable as JSON. You can set your own picture as the background and adjust its dimming and blur. Font and interface scale are configurable too.
 
 **Localization and mods.** Text packs with translations (`.zip`) and client patches (`.dll`) on a separate tab.
 
-**Updates.** New versions come from GitHub releases, are checked against an Ed25519 signature, and install on exit or at the press of a button.
+**Updates.** New versions come from GitHub releases, are checked against an Ed25519 signature, and install on exit or at the press of a button. A GitHub token is not needed: the repository is public, and a token is set only for a private one.
 
 <table>
   <tr>
@@ -72,7 +76,7 @@ Requires Windows 10 or 11 (x64) and WebView2, which these systems usually alread
 > [!WARNING]
 > **Mods.** `.dll` patches run inside the game with your permissions, and neither their author nor a signature is checked. Install only builds you trust. A server may treat patches as cheating. All patches can be turned off in one action, and a file changed after installation is not loaded.
 
-**Your data.** Your password is not stored or logged. The token lives in Windows Credential Manager and renews itself. Game files are verified with SHA-256 and Ed25519. Text packs may contain translation files only, and no code from them runs.
+**Your data.** Your password is not stored or logged. The token lives in Windows Credential Manager and renews itself. The engine and modules are verified with SHA-256 and an Ed25519 signature, content files with BLAKE2b. Text packs may contain translation files only, and no code from them runs. Portable mode: if a `portable.txt` file (or `.portable`) is next to the exe, the data is kept in a `data` folder next to the program.
 
 ## Building from source
 
@@ -112,6 +116,7 @@ dotnet build loader/SS14.Loader/SS14.Loader.csproj -c Release -warnaserror --no-
 | `app/` | The Svelte interface and the Tauri shell (`app/src-tauri`) |
 | `loader/` | `SS14.Loader` from the official launcher, and client patches |
 | `mods/` | Sample Harmony client patches |
+| `news/` | The launcher's own news (`news.json`) |
 | `scripts/` | Build, release, and the README images (`readme-media`) |
 
 More, in Russian: [internals notes](NOTES.md), [hub and server protocol](docs/protocol.md), [changelog](CHANGELOG.md), [versioning rules](docs/CHANGELOG_RULES.md).

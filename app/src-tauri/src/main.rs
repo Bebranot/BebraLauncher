@@ -157,6 +157,10 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             commands::app_info,
             commands::optimization_presets,
+            commands::hardware_info,
+            commands::official_probe,
+            commands::import_official,
+            commands::finish_setup,
             commands::list_servers,
             commands::list_accounts,
             commands::select_account,

@@ -156,6 +156,27 @@ pub fn preset_cores() -> usize {
     cores_for_presets(cores, total_ram_mb())
 }
 
+/// Logical cores of this machine.
+pub fn logical_cores() -> usize {
+    std::thread::available_parallelism().map_or(1, usize::from)
+}
+
+/// Below this much RAM (or this many cores) the lighter profile is what to suggest: the game
+/// alone takes about 4 GB, and "optimized" is the one that saves GPU and CPU work per frame.
+const WEAK_RAM_MB: u64 = 8 * 1024;
+const WEAK_CORES: usize = 4;
+
+/// The profile to suggest on a machine with these resources. Never `standard`: it changes
+/// nothing, and measured slower than both others on every machine (docs/performance-report.md).
+pub fn suggested_profile(cores: usize, ram_mb: Option<u64>) -> &'static str {
+    let weak = cores < WEAK_CORES || ram_mb.is_some_and(|ram| ram < WEAK_RAM_MB);
+    if weak {
+        "optimized"
+    } else {
+        "balanced"
+    }
+}
+
 fn cores_for_presets(cores: usize, ram_mb: Option<u64>) -> usize {
     match ram_mb {
         Some(ram) if ram < SERVER_GC_MIN_RAM_MB => 1,
@@ -163,8 +184,9 @@ fn cores_for_presets(cores: usize, ram_mb: Option<u64>) -> usize {
     }
 }
 
+/// Installed RAM in megabytes, or `None` where it cannot be read.
 #[cfg(windows)]
-fn total_ram_mb() -> Option<u64> {
+pub fn total_ram_mb() -> Option<u64> {
     use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
     // SAFETY: the struct is plain data, zero is valid for it, and its length field is set as the
     // call requires.
@@ -176,7 +198,7 @@ fn total_ram_mb() -> Option<u64> {
 }
 
 #[cfg(not(windows))]
-fn total_ram_mb() -> Option<u64> {
+pub fn total_ram_mb() -> Option<u64> {
     None
 }
 
@@ -1505,6 +1527,19 @@ mod tests {
         assert_eq!(cores_for_presets(8, Some(8 * 1024)), 1);
         assert_eq!(cores_for_presets(8, Some(16 * 1024)), 8);
         assert_eq!(cores_for_presets(8, None), 8);
+    }
+
+    #[test]
+    fn a_weak_machine_gets_the_lighter_profile_suggested() {
+        assert_eq!(suggested_profile(8, Some(16 * 1024)), "balanced");
+        assert_eq!(
+            suggested_profile(8, None),
+            "balanced",
+            "unknown RAM is not weak RAM"
+        );
+        assert_eq!(suggested_profile(2, Some(16 * 1024)), "optimized");
+        assert_eq!(suggested_profile(8, Some(6 * 1024)), "optimized");
+        assert_eq!(suggested_profile(4, Some(8 * 1024)), "balanced");
     }
 
     #[test]

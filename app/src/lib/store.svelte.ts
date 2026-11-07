@@ -38,6 +38,7 @@ import {
 } from "./filters";
 import { applyDocumentLang, i18n } from "./i18n.svelte";
 import { unseen } from "./news";
+import { SETUP_VERSION } from "./setup/steps";
 import { OPTIMIZATION_KEYS } from "./optimization";
 import { DEFAULT_CUSTOM, applyTheme } from "./themes";
 
@@ -194,6 +195,15 @@ export class Store {
 
   tab = $state<Tab>("servers");
   dialog = $state<Dialog | null>(null);
+
+  /** The player asked to go through the setup wizard again (Options); closes without a trace. */
+  setupRerun = $state(false);
+
+  /** The wizard covers the window until the player has been through it once (or again, on request). */
+  get setupOpen(): boolean {
+    if (this.setupRerun) return true;
+    return !!this.settings && (this.settings.setup_version ?? 0) < SETUP_VERSION;
+  }
 
   servers = $state<ServerRow[]>([]);
   serversLoading = $state(false);
@@ -806,6 +816,49 @@ export class Store {
     clearTimeout(this.saveTimer);
     this.foldVisual();
     void this.flushSettings();
+  }
+
+  /**
+   * Writes every pending edit and waits for the file to have it. The wizard needs the backend
+   * to be current before it imports from another launcher or marks itself as done.
+   */
+  async settleSettings(): Promise<void> {
+    clearTimeout(this.saveTimer);
+    this.foldVisual();
+    for (let i = 0; i < 3 && (this.settingsDirty || this.saveInFlight); i++) {
+      await this.flushSettings();
+    }
+  }
+
+  /** The wizard is finished: the backend remembers it, so it is not shown again. */
+  async finishSetup(): Promise<void> {
+    if (this.setupRerun) {
+      this.setupRerun = false;
+      return;
+    }
+    await this.settleSettings();
+    const saved = await api.finishSetup();
+    if (this.settings) {
+      this.settings = { ...this.settings, setup_version: saved.setup_version };
+    }
+  }
+
+  /** Takes what an import from the official launcher changed. */
+  async importOfficial() {
+    await this.settleSettings();
+    const result = await api.importOfficial();
+    if (this.settings) {
+      const got = result.settings;
+      this.settings = {
+        ...this.settings,
+        favorites: got.favorites,
+        favorite_names: got.favorite_names,
+        hubs: got.hubs,
+        compat_mode: got.compat_mode,
+      };
+    }
+    if (result.summary.hubs > 0) void this.refreshServers();
+    return result.summary;
   }
 
   private markSettingsDirty() {

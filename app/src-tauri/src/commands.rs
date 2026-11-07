@@ -65,6 +65,97 @@ pub fn optimization_presets(
         .collect()
 }
 
+/// What the setup wizard needs to suggest an optimization profile.
+#[derive(Serialize)]
+pub struct HardwareInfo {
+    cores: usize,
+    /// `None` when Windows would not say.
+    ram_mb: Option<u64>,
+    suggested_profile: &'static str,
+}
+
+#[tauri::command]
+pub fn hardware_info() -> HardwareInfo {
+    let cores = launch::logical_cores();
+    let ram_mb = launch::total_ram_mb();
+    HardwareInfo {
+        cores,
+        ram_mb,
+        suggested_profile: launch::suggested_profile(cores, ram_mb),
+    }
+}
+
+/// What the official launcher left on this PC, for the wizard to offer.
+#[derive(Serialize)]
+pub struct OfficialProbe {
+    /// False when there is no official launcher data (or it could not be read).
+    found: bool,
+    favorites: usize,
+    hubs: usize,
+    compat_mode: Option<bool>,
+}
+
+#[tauri::command]
+pub fn official_probe() -> OfficialProbe {
+    let data =
+        bebra_core::official::default_path().and_then(|path| {
+            match bebra_core::official::read(&path) {
+                Ok(data) => data,
+                Err(e) => {
+                    crate::applog::line(&format!("official launcher data not readable: {e}"));
+                    None
+                }
+            }
+        });
+    match data {
+        Some(d) => OfficialProbe {
+            found: true,
+            favorites: d.favorites.len(),
+            hubs: d.hubs.len(),
+            compat_mode: d.compat_mode,
+        },
+        None => OfficialProbe {
+            found: false,
+            favorites: 0,
+            hubs: 0,
+            compat_mode: None,
+        },
+    }
+}
+
+#[derive(Serialize)]
+pub struct OfficialImportResult {
+    summary: settings::OfficialImport,
+    settings: Settings,
+}
+
+/// Takes over the official launcher's favourites, hubs and compatibility mode. Logins are not
+/// touched: a token is not moved from one program to another behind the player's back.
+#[tauri::command]
+pub fn import_official(state: State<'_, AppState>) -> CmdResult<OfficialImportResult> {
+    let path = bebra_core::official::default_path()
+        .ok_or_else(|| "Не удалось найти папку данных официального лаунчера".to_string())?;
+    let data = bebra_core::official::read(&path)
+        .map_err(err)?
+        .ok_or_else(|| "Данных официального лаунчера на этом компьютере нет".to_string())?;
+    let mut s = settings_lock(&state);
+    let summary = s.apply_official(&data);
+    s.save(state.dirs.root()).map_err(err)?;
+    Ok(OfficialImportResult {
+        summary,
+        settings: s.clone(),
+    })
+}
+
+/// The player went through the wizard to the end: it is not shown again until a newer one.
+#[tauri::command]
+pub fn finish_setup(state: State<'_, AppState>) -> CmdResult<Settings> {
+    let mut s = settings_lock(&state);
+    s.setup_version = settings::CURRENT_SETUP_VERSION;
+    s.save(state.dirs.root()).map_err(err)?;
+    Ok(s.clone())
+}
+
 #[tauri::command]
 pub fn app_info(state: State<'_, AppState>) -> AppInfo {
     AppInfo {

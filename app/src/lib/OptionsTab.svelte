@@ -1358,6 +1358,10 @@
       </div>
       <div class="sub small path">{t("opt.data", { path: app.info?.data_dir ?? "" })}</div>
       <div class="sub small">{t("opt.credits")}</div>
+      <div class="row">
+        <button class="btn" onclick={() => (app.setupRerun = true)}>{t("opt.setupAgain")}</button>
+        <span class="sub small">{t("opt.setupAgainHint")}</span>
+      </div>
     </section>
 
     <!-- ------------------------------------------------------------ debug (hidden) -->

@@ -117,6 +117,8 @@ export type OptimizationPresets = Record<"standard" | "balanced" | "optimized", 
 export interface Settings {
   /** Settings file format; written back unchanged so an older UI cannot undo a migration. */
   schema_version: number;
+  /** The setup wizard the player has finished; only `finishSetup` raises it. */
+  setup_version?: number;
   guest_name: string;
   compat_mode: boolean;
   discord_rpc_mode: string;
@@ -160,6 +162,34 @@ export interface Settings {
   launcher_ui_scale?: number;
   auto_clean_cache?: boolean;
   dismissed_intel_warning?: boolean;
+}
+
+/** This computer, as the setup wizard needs it to suggest a profile. */
+export interface HardwareInfo {
+  cores: number;
+  /** `null` when the system does not tell. */
+  ram_mb: number | null;
+  suggested_profile: "balanced" | "optimized" | string;
+}
+
+/** What the official launcher left on this computer (never its login tokens). */
+export interface OfficialProbe {
+  found: boolean;
+  favorites: number;
+  hubs: number;
+  compat_mode: boolean | null;
+}
+
+export interface OfficialImport {
+  favorites: number;
+  hubs: number;
+  compat_mode: boolean;
+  skipped: number;
+}
+
+export interface OfficialImportResult {
+  summary: OfficialImport;
+  settings: Settings;
 }
 
 /** The HWID controls from the options tab. */
@@ -315,6 +345,10 @@ export const api = {
   getSettings: () => invoke<Settings>("get_settings"),
   setSettings: (settings: Settings) => invoke<Settings>("set_settings", { settings }),
   optimizationPresets: () => invoke<OptimizationPresets>("optimization_presets"),
+  hardwareInfo: () => invoke<HardwareInfo>("hardware_info"),
+  officialProbe: () => invoke<OfficialProbe>("official_probe"),
+  importOfficial: () => invoke<OfficialImportResult>("import_official"),
+  finishSetup: () => invoke<Settings>("finish_setup"),
   getHwid: () => invoke<HwidState>("get_hwid"),
   setHwidAuto: (enabled: boolean) => invoke<HwidState>("set_hwid_auto", { enabled }),
   regenerateHwid: () => invoke<HwidState>("regenerate_hwid"),

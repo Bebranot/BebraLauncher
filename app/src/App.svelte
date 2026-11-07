@@ -12,6 +12,7 @@
   import SpaceBackground from "./lib/SpaceBackground.svelte";
   import UpdatesTab from "./lib/UpdatesTab.svelte";
   import ModsTab from "./lib/ModsTab.svelte";
+  import SetupWizard from "./lib/setup/SetupWizard.svelte";
   import Toast from "./lib/Toast.svelte";
   import { t } from "./lib/i18n.svelte";
   import { app } from "./lib/store.svelte";
@@ -163,6 +164,9 @@
 
 <ConnectingOverlay />
 <DialogHost />
+{#if app.setupOpen}
+  <SetupWizard />
+{/if}
 <Toast />
 
 <style>

@@ -12,6 +12,10 @@ use serde::{Deserialize, Serialize};
 /// number before they are read (P2-39).
 pub const CURRENT_SCHEMA_VERSION: u32 = 2;
 
+/// The newest first-run wizard. A player whose `setup_version` is lower sees the wizard again,
+/// so raise this when it gains a step that the player should see (docs/CHANGELOG_RULES.md).
+pub const CURRENT_SETUP_VERSION: u32 = 1;
+
 /// How many favourite servers are kept. The ping call and the list do not need more.
 pub const FAVORITES_LIMIT: usize = 200;
 /// How many server notes are kept.
@@ -261,6 +265,11 @@ pub struct Settings {
     /// The value `hwid_current` had before the last change, so it can be restored.
     #[serde(default)]
     pub hwid_previous: Option<String>,
+    /// The version of the setup wizard the player has gone through; 0 = never. The wizard opens
+    /// whenever this is below [`CURRENT_SETUP_VERSION`], also for people who used the launcher
+    /// before it existed.
+    #[serde(default)]
+    pub setup_version: u32,
 }
 
 fn default_auto_clean_cache() -> bool {
@@ -290,6 +299,19 @@ impl Default for HubSetting {
             enabled: true,
         }
     }
+}
+
+/// What `Settings::apply_official` took over, for the wizard to tell the player.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct OfficialImport {
+    /// Favourite servers that were not here yet.
+    pub favorites: usize,
+    /// Hubs that were not here yet.
+    pub hubs: usize,
+    /// Whether the compatibility mode was switched on.
+    pub compat_mode: bool,
+    /// Entries left out: an address or a hub URL this launcher cannot use, or a full list.
+    pub skipped: usize,
 }
 
 pub fn default_hubs() -> Vec<HubSetting> {
@@ -445,6 +467,7 @@ impl Default for Settings {
             hwid_auto: default_hwid_auto(),
             hwid_current: None,
             hwid_previous: None,
+            setup_version: 0,
         }
     }
 }
@@ -694,6 +717,52 @@ impl Settings {
             }
         }
         self.favorite_names.remove(&address);
+    }
+
+    /// Takes over what the official launcher kept: favourite servers (with their names), hubs and
+    /// the compatibility switch. What is already here stays; only what is new is added. Logins
+    /// are not part of `OfficialData` at all.
+    pub fn apply_official(&mut self, data: &bebra_core::official::OfficialData) -> OfficialImport {
+        let mut done = OfficialImport::default();
+        // The official list has the one raised last first; ours puts new ones at the end, so go
+        // from the oldest to keep the order a player is used to.
+        for fav in data.favorites.iter().rev() {
+            let Some(address) = canonical_address(&fav.address) else {
+                done.skipped += 1;
+                continue;
+            };
+            if self.favorites.contains(&address) {
+                continue;
+            }
+            if !self.add_favorite(&address) {
+                done.skipped += 1;
+                continue;
+            }
+            done.favorites += 1;
+            if let Some(name) = &fav.name {
+                if !self.favorite_names.contains_key(&address) {
+                    self.set_favorite_name(&address, Some(name.clone()));
+                }
+            }
+        }
+        for hub in &data.hubs {
+            let Some(url) = bebra_core::hub::normalize_hub_url(hub) else {
+                done.skipped += 1;
+                continue;
+            };
+            if self.hubs.iter().any(|h| h.url == url) {
+                continue;
+            }
+            self.hubs.push(HubSetting { url, enabled: true });
+            done.hubs += 1;
+        }
+        if let Some(compat) = data.compat_mode {
+            if compat && !self.compat_mode {
+                self.compat_mode = true;
+                done.compat_mode = true;
+            }
+        }
+        done
     }
 
     /// Sets or removes a personal note for a server address.
@@ -1007,6 +1076,8 @@ impl Settings {
 
         Settings {
             schema_version: CURRENT_SCHEMA_VERSION,
+            // Only `finish_setup` raises it, so a stale snapshot cannot bring the wizard back.
+            setup_version: self.setup_version,
             last_account: self.last_account.clone(),
             favorites: self.favorites.clone(),
             favorite_names: self.favorite_names.clone(),
@@ -1853,6 +1924,105 @@ mod tests {
         assert!(merged.server_notes.contains_key("ss14://a:1212"));
         assert_eq!(merged.history.len(), 1);
         assert_eq!(merged.last_account.as_deref(), Some("user-1"));
+    }
+
+    #[test]
+    fn an_old_file_has_not_seen_the_wizard_and_the_ui_cannot_say_otherwise() {
+        let dir = tempdir();
+        std::fs::write(Settings::path(&dir), br#"{"guest_name": "Old"}"#).unwrap();
+        let mut current = Settings::load(&dir);
+        assert_eq!(current.setup_version, 0, "an update shows the wizard once");
+
+        current.setup_version = CURRENT_SETUP_VERSION;
+        let seen = Settings::default();
+        // A stale snapshot from the UI must not bring the wizard back…
+        let merged = current.merged_from_ui(&seen, Settings::default());
+        assert_eq!(merged.setup_version, CURRENT_SETUP_VERSION);
+        // …and the UI cannot mark it as seen either.
+        let fresh = Settings::default();
+        let merged = fresh.merged_from_ui(
+            &seen,
+            Settings {
+                setup_version: CURRENT_SETUP_VERSION,
+                ..Settings::default()
+            },
+        );
+        assert_eq!(merged.setup_version, 0);
+    }
+
+    #[test]
+    fn the_official_import_adds_only_what_is_new() {
+        use bebra_core::official::{OfficialData, OfficialFavorite};
+        let mut s = Settings::default();
+        s.add_favorite("ss14s://mine.test");
+        s.set_favorite_name("ss14s://mine.test", Some("My own".into()));
+        let data = OfficialData {
+            favorites: vec![
+                OfficialFavorite {
+                    address: "ss14s://new.test".into(),
+                    name: Some("Newcomer".into()),
+                },
+                OfficialFavorite {
+                    address: "ss14s://mine.test".into(),
+                    name: Some("Their name".into()),
+                },
+                OfficialFavorite {
+                    address: "not an address".into(),
+                    name: None,
+                },
+            ],
+            hubs: vec![
+                bebra_core::hub::OFFICIAL_HUB_URL.to_string(),
+                "https://hub.example.test".into(),
+                "ftp://nope.test/".into(),
+                "https://user:pw@secret.test/".into(),
+            ],
+            compat_mode: Some(true),
+        };
+        let done = s.apply_official(&data);
+        assert_eq!(
+            done,
+            OfficialImport {
+                favorites: 1,
+                hubs: 1,
+                compat_mode: true,
+                skipped: 3,
+            }
+        );
+        assert_eq!(s.favorites, ["ss14s://mine.test", "ss14s://new.test"]);
+        assert_eq!(s.favorite_names["ss14s://mine.test"], "My own");
+        assert_eq!(s.favorite_names["ss14s://new.test"], "Newcomer");
+        assert_eq!(s.hubs.len(), 2);
+        assert_eq!(s.hubs[1].url, "https://hub.example.test/");
+        assert!(s.compat_mode);
+
+        // A second run finds nothing new.
+        let again = s.apply_official(&data);
+        assert_eq!(again.favorites + again.hubs, 0);
+        assert!(!again.compat_mode);
+    }
+
+    #[test]
+    fn the_official_import_keeps_the_order_of_the_official_list() {
+        use bebra_core::official::{OfficialData, OfficialFavorite};
+        let mut s = Settings::default();
+        let fav = |a: &str| OfficialFavorite {
+            address: a.into(),
+            name: None,
+        };
+        // Newest first in the official list.
+        s.apply_official(&OfficialData {
+            favorites: vec![
+                fav("ss14s://c.test"),
+                fav("ss14s://b.test"),
+                fav("ss14s://a.test"),
+            ],
+            ..OfficialData::default()
+        });
+        assert_eq!(
+            s.favorites,
+            ["ss14s://a.test", "ss14s://b.test", "ss14s://c.test"]
+        );
     }
 }
 

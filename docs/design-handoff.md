@@ -1,6 +1,6 @@
 # Дизайн: с чего начать (передача работы)
 
-Точка входа для работы над внешним видом. Файл в репозитории (`docs/**/*.md` не игнорируется).
+Точка входа для работы над внешним видом. Файл в репозитории (`docs/**/*.md` не игнорируется). Сверено с кодом 2026-11-07.
 
 ## Как смотреть интерфейс
 
@@ -24,16 +24,17 @@ pnpm dev          # http://127.0.0.1:1420, вместо бэкенда — src/d
   - `TabBar` внизу окна (рисуется в `App.svelte` после `main`);
   - в вкладке серверов поиск, фильтры и обновление внизу; панель фильтров (`FiltersPanel`) над ними.
 - Настройки: карточки-секции и переключатели вместо флажков (`Option.svelte` — чекбокс показан как switch).
-- Точка на вкладке «Обновления» в `TabBar` — когда `app.updateAvailable`.
+- Точка на вкладке «Обновления» в `TabBar` — когда `app.updateAvailable`; на вкладке «Новости» — когда `app.ownNewsUnseen > 0`.
 
 ## Темы и токены
 
 - `lib/themes.ts`:
+  - всего 18 id в `THEME_IDS`: 17 встроенных тем + `custom`;
   - `PALETTES` — 8 палитр (`dark`, `classic`, `light`, `dark_red`, `dark_purple`, `midnight_blue`, `emerald_dusk`, `copper_night`);
   - `DERIVED` — 9 тем, заданы четырьмя цветами (`nord`, `dracula`, `rose`, `amber`, `lagoon`, `forest`, `mono`, `sand`, `sky`); остальное считает `deriveCustom`;
   - `custom` — своя тема (`DEFAULT_CUSTOM`);
   - `backgroundFill` (градиент), `stripePattern` (узор), `applyTheme` ставит CSS-переменные из `VARIABLES`.
-- Переменные темы (меняются): `--bg --popup --fg --muted --accent --sub --ctrl-mid --ctrl-high --btn-hover --tab-hover --border-mid --border-high --scroll-sep --stripe-edge --on-accent --bg-fill --decor --overlay --font`, плюс устаревшие `--tab-selected --sep --sep-fade --alt-row` (в `var()` не читаются нигде, только объявлены).
+- Переменные темы (меняются): `--bg --popup --fg --muted --accent --sub --ctrl-mid --ctrl-high --btn-hover --border-mid --border-high --scroll-sep --stripe-edge --on-accent --bg-fill --decor --overlay --font`, плюс устаревшие `--tab-selected --tab-hover --sep --sep-fade --alt-row` (в `var()` не читаются нигде, только объявлены; проверено 2026-11-07).
 - Производные в `app.css` (считаются от цвета текста): `--tint`, `--tint-hover`, `--line` (= `--scroll-sep`), `--accent-soft`, `--radius` (8px), `--radius-sm` (6px), `--shadow`. `--page-surface` — полупрозрачный фон `.shell` (страница).
 - Постоянные цвета: `--good #57c969`, `--warn #e8c547`, `--bad #e46363` (пинг, ошибки).
 - Не вшивать цвета в компоненты: брать переменные, тогда работают все темы.
@@ -71,13 +72,14 @@ pnpm dev          # http://127.0.0.1:1420, вместо бэкенда — src/d
 | `lib/RoundTimer.svelte` | колонка «Раунд»: `setInterval` 1 с на каждую строку |
 | `lib/ConnectingOverlay.svelte`, `Toast.svelte`, `Modal.svelte`, `DialogHost.svelte` | окно подключения, уведомления, модалки |
 | `lib/*Dialog.svelte` | `ConfirmConnectDialog`, `LoginDialog`, `DirectConnectDialog`, `AddFavoriteDialog`, `EditFavoriteDialog` |
+| `lib/setup/*` | мастер первой настройки на всё окно (`SetupWizard.svelte`, шаги `Step*.svelte`, `steps.ts` со списком шагов и `SETUP_VERSION`, `setup.css`, `context.svelte.ts`); Escape и Tab его не закрывают, перепрохождение — «Настройки» → «О программе» |
 | `lib/Icon.svelte`, `Option.svelte` | иконки (пути SVG), строка-настройка |
 | `lib/api.ts` | вызовы Tauri-команд |
 | `dev-mock.ts` | тестовый бэкенд для браузера |
 | `lib/changelog.ts`, `lib/UpdatesTab.svelte` | журнал версий и вкладка «Обновления» (событие `update` от бэкенда) |
 | не разобрано | `SpaceBackground.svelte` — в этом документе не описан |
 
-Референсы вида: официальный лаунчер (`..\Forks\space-wizard SS14 launcher\SS14.Launcher\Theme\*.xaml`, `Views\*`) и MusyaLoader (`..\Forks\MusyaLoader\...\AppThemeManager.cs`, `OptionsTabView.xaml`). Лаунчер личный; копировать из форков можно, MusyaLoader под AGPL — для публикации нужен пересмотр.
+Референсы вида: официальный лаунчер (`..\Forks\space-wizard SS14 launcher\SS14.Launcher\Theme\*.xaml`, `Views\*`) и MusyaLoader (`..\Forks\MusyaLoader\...\AppThemeManager.cs`, `OptionsTabView.xaml`). Репозиторий `Bebranot/BebraLauncher` публичный (с 2026-11-07); MusyaLoader под AGPL, при заимствовании кода проверять лицензию.
 
 ## Что в дизайне ещё не доделано
 
@@ -98,12 +100,12 @@ pnpm dev          # http://127.0.0.1:1420, вместо бэкенда — src/d
 
 ## Вкладка «Новости»
 
-- Два источника: блог SS14 (`news`) и свои новости (`own_news`, файл `news/news.json`, как писать: `news/README.md`). Прочитанные хранятся в `localStorage`, логика в `lib/news.ts`.
+- Два источника: блог SS14 (`news`) и свои новости (`own_news`: файл `news/news.json` в репозитории, бэкенд читает его в `news.rs`; как писать: `news/README.md`). Прочитанные id хранятся в `localStorage` (ключ `bebra.news.seen`, `store.svelte.ts`); `lib/news.ts` выбирает текст языка (`localized`) и непрочитанные (`unseen`).
 
 ## Ловушки
 
-- `$effect`, который читает и пишет одни и те же данные, зацикливает страницу и вешает вкладку (был баг с пингом). Внутри — `untrack` (так сделано в `store.svelte.ts`, `ConnectingOverlay.svelte`, `LoginDialog.svelte`).
+- `$effect`, который читает и пишет одни и те же данные, зацикливает страницу и вешает вкладку (был баг с пингом). Внутри — `untrack` (так сделано в `store.svelte.ts`, `ConnectingOverlay.svelte`, `LoginDialog.svelte`, `NewsTab.svelte`).
 - Svelte-компонент без логики держит пустой `<script lang="ts"></script>` (см. `Logo.svelte`) — иначе нет типов для TS.
 - `export type` в компоненте — только в `<script module>` (правило Svelte; в репозитории такого нет).
 - Scoped CSS: одинаковые имена классов у разных элементов одного компонента конфликтуют (был баг с `.empty`).
-- CSP (`tauri.conf.json`): `default-src 'self'`, `font-src 'self' data:`, `connect-src` только ipc; внешние ресурсы не грузятся.
+- CSP (`tauri.conf.json`): `default-src 'self'`, `connect-src ipc: http://ipc.localhost`, `img-src 'self' data:`, `font-src 'self' data:`, `style-src 'self' 'unsafe-inline'`; внешние ресурсы не грузятся.

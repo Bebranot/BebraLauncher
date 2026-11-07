@@ -97,6 +97,8 @@ let accounts: AccountRow[] = [
 
 const DEFAULT_SETTINGS: Settings = {
   schema_version: 1,
+  // 0 shows the setup wizard; open the page with `?setup=done` to skip it.
+  setup_version: new URLSearchParams(location.search).get("setup") === "done" ? 999 : 0,
   guest_name: "JoeGenero",
   compat_mode: false,
   discord_rpc_mode: "vanilla",
@@ -449,6 +451,23 @@ export function installMock() {
           return settings;
         case "optimization_presets":
           return MOCK_OPT_PRESETS;
+        case "hardware_info":
+          return { cores: 8, ram_mb: 16 * 1024, suggested_profile: "balanced" };
+        case "official_probe":
+          return { found: true, favorites: 3, hubs: 1, compat_mode: false };
+        case "import_official": {
+          const added = ["ss14s://official-one.test", "ss14s://official-two.test"].filter(
+            (x) => !settings.favorites.includes(x),
+          );
+          settings = { ...settings, favorites: [...settings.favorites, ...added] };
+          return {
+            summary: { favorites: added.length, hubs: 0, compat_mode: false, skipped: 1 },
+            settings,
+          };
+        }
+        case "finish_setup":
+          settings = { ...settings, setup_version: 1 };
+          return settings;
         case "get_hwid":
           return mockHwid;
         case "set_hwid_auto":
@@ -467,6 +486,7 @@ export function installMock() {
           settings = {
             ...incoming,
             schema_version: settings.schema_version,
+            setup_version: settings.setup_version,
             favorites: settings.favorites,
             favorite_names: settings.favorite_names,
             server_notes: settings.server_notes,

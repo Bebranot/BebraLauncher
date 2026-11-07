@@ -18,7 +18,7 @@
   - Регистрация схем: `HKCU\Software\Classes` (`app/src-tauri/src/system.rs`), переключатель в настройках (`get/set_links_registered`).
 - Текстовые пакеты: принимаются только `Locale/<culture>/*.ftl`. Любой другой файл — отклоняется весь пакет (`crates/core/src/packs.rs`, любая проблема делает пакет невалидным).
 - Моды (`.dll`) — сторонний неподписанный код в процессе игры. Защита — SHA-256 файлов из `patches/manifest.json`, проверка перед каждым запуском (`patches.rs`). Автор и подпись не проверяются. Сервер может счесть моды читерством (см. UI и README).
-- Палитры тем скопированы из MusyaLoader (AGPL): для публичного релиза нужна проверка лицензии.
+- Палитры тем скопированы из MusyaLoader (AGPL): репозиторий публичный, нужна проверка лицензии.
 
 ## Протокол и сеть
 
@@ -48,9 +48,10 @@
 - Самообновление (`self_update.rs`):
   - Ed25519 над строкой `bebra-update:<версия>:<sha256 установщика>`; публичный ключ вшит (`update_key.pem`).
   - Закрытый ключ только у владельца: `%USERPROFILE%\.bebra\update-signing.key` (или `$env:BEBRA_UPDATE_KEY`), создаётся `bebra update-keygen`. В git не попадает (`*.key` в `.gitignore`). При потере — вручную поставить версию со сменой ключа.
-  - Токен GitHub (Contents: read) — Credential Manager, цель `BebraLauncher/github-token` (`selfupdate.rs`). Без него `releases/latest` приватного репозитория даёт 404.
-- Выпуск: `scripts/release.ps1` (нужен `GITHUB_TOKEN` с правом записи; `-DryRun` собирает и подписывает без публикации). На 2026-10-04 релиз не публиковался; живой цикл «скачать и поставить» не проверен.
-- Самообновление проверяет релизы через 8 с после старта и далее каждые 4 ч (`selfupdate.rs`). Установка — при закрытии (`RunEvent::Exit`, `main.rs`). В debug-сборке установка отключена (`cfg!(debug_assertions)`).
+  - Токен GitHub необязателен: репозиторий публичный, `releases/latest`, установщик и подпись скачиваются без него. Токен (Contents: read) — Credential Manager, цель `BebraLauncher/github-token` (`selfupdate.rs`). Уходит только на `api.github.com` и `github.com` (`TOKEN_HOSTS`, `self_update.rs`), на адреса из ответа GitHub не уходит. Нужен для приватного репозитория; при 404 без токена ошибка подсказывает добавить токен (`explain`).
+  - Новости лаунчера (`read_repo_file`): сначала `raw.githubusercontent.com` без токена, токен — только при 404.
+- Выпуск: `scripts/release.ps1` (нужен `GITHUB_TOKEN` с правом записи; `-DryRun` собирает и подписывает без публикации). Релизы публикуются, последний — 1.0.300 (2026-11-07). Живой цикл «скачать и поставить» — см. «Не проверено вживую».
+- Самообновление проверяет релизы через 8 с после старта и далее каждые 4 ч (`selfupdate.rs`). Установка при закрытии — только если включено автообновление и не идёт игра (`install_on_exit`, `RunEvent::Exit` в `main.rs`). В debug-сборке установка отключена (`cfg!(debug_assertions)`).
 
 ## Аккаунты
 
@@ -84,6 +85,13 @@
 - `last_account`: `None` — не выбирал; `""` — гость явно; иначе user id.
 - `logs/launcher.log` ротируется при 1 МБ (`applog.rs`).
 - После живых тестов откатить историю и `last_account` в `settings.json`: там могут остаться записи.
+
+## Мастер первой настройки и импорт
+
+- Мастер (`app/src/lib/setup/`) открывается, пока `settings.setup_version` меньше `SETUP_VERSION` (`steps.ts`) и `CURRENT_SETUP_VERSION` (`settings.rs`). Значения в обоих местах держать равными. Чтобы показать мастер всем после обновления, поднять оба на 1 и дописать шаги.
+- Первый запуск закрыть нельзя: ни Escape, ни крестика. Перепрохождение (`app.setupRerun`) закрывается. Настройки применяются сразу, `finishSetup` лишь записывает версию.
+- Импорт из официального лаунчера (`crates/core/src/official.rs`) только читает его базу: избранное, хабы, режим совместимости. Токены входа не переносятся. Шаг показывается, только если база найдена (`stepsFor(officialFound)`).
+- В браузере с `dev-mock.ts` мастер пропускается параметром `?setup=done`.
 
 ## HWID
 
@@ -125,12 +133,12 @@
 
 ## Сборка и инструменты
 
-- Проверки: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`; в `app/`: `pnpm check`, `pnpm test`. CI (`.github/workflows/ci.yml`) делает то же, плюс сборку Loader и HWID-патча и отдельный job с NuGet audit.
+- Проверки: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`; в `app/`: `pnpm check`, `pnpm test`. CI (`.github/workflows/ci.yml`) делает то же, плюс сборку Loader и трёх патчей (HWID, Perf, Presence) и NuGet audit в job `loader`.
 - HTTP-клиент на `native-tls` (SChannel), не `rustls` (`crates/core/Cargo.toml`). В reqwest 0.13 фича `rustls-tls` переименована в `rustls` и тянет aws-lc-rs, которому на Windows нужны NASM/cmake.
 - `tauri::generate_context!` требует `app/dist`: для `cargo check` сначала `pnpm build`.
 - `cargo build -p bebra-app` без Tauri CLI не вшивает фронтенд: окно грузит `127.0.0.1:1420`. Вшивает `pnpm tauri build`.
 - `tauri.conf.json`: `bundle.active=false`; релизные настройки — в `tauri.release.json`.
-- Capabilities (`app/src-tauri/capabilities/default.json`): только `core:event:allow-listen` и `allow-unlisten`. Свои команды доступны без capability. CSP — в `tauri.conf.json`: `default-src 'self'`, `connect-src` только ipc.
+- Capabilities (`app/src-tauri/capabilities/default.json`): только `core:event:allow-listen` и `allow-unlisten`. Свои команды доступны без capability. CSP — в `tauri.conf.json`: `default-src 'self'`, `connect-src` только `ipc:` и `http://ipc.localhost`.
 - Loader: `NU1902`, `NU1903`, `NU1904` — ошибки сборки (`loader/Directory.Build.props`). `SQLitePCLRaw.bundle_e_sqlite3` не ниже 2.1.14: 2.1.10 уязвим (GHSA-2m69-gcr7-jv3q), см. `loader/Directory.Packages.props`.
 - Установщик: `scripts/build-release.ps1` (NSIS). Loader — self-contained.
 - `installer-hooks.nsh` хранится в UTF-8 с BOM, иначе makensis прочтёт русский текст в системной кодировке. Установщик работает без повышения прав (`currentUser`), а путь прошлой установки берёт из `HKCU\Software\BebraLauncher\BebraLauncher`: ручное удаление файлов этот ключ не стирает. Без прав на папку `Delete` в деинсталляторе молчит, поэтому хуки проверяют запись до любых изменений.
@@ -140,6 +148,8 @@
 
 ## Не проверено вживую
 
+Последний раз отмечено как непроверенное 2026-11-03. 2026-11-07 владелец сообщил, что большую часть живых проверок выполнил; по этому сообщению список ниже не менялся и ничего не записано как новое подтверждение.
+
 - Zip-режим загрузки, ACZ и модули (WebView): покрыты юнит-тестами, на сервере не проверены.
 - Redial из игры (`--commands`).
 - Установка и перезапуск при самообновлении: на настоящем релизе не проверялись.
@@ -148,4 +158,7 @@
 
 ## Не сделано
 
-- Трей, подпись установщика (Authenticode, нет сертификата), E2E-тесты, автообновление без GitHub-токена. Полный список и приоритеты — `docs/IMPROVEMENTS.md`.
+- Трей вне игры: закрытие в трей и настройка `close_behavior` не сделаны. Значок в трее есть только пока идёт игра (`uihost.rs`).
+- Подпись установщика Authenticode не делается: сертификат платный, владелец от него отказался.
+- E2E-тесты.
+- Полный список и приоритеты — `docs/IMPROVEMENTS.md`.
