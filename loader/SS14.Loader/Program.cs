@@ -83,7 +83,10 @@ internal class Program : IDisposable
             if (!string.IsNullOrEmpty(contentDb) && !string.IsNullOrEmpty(contentVersion))
             {
                 contentApi = new ContentDbFileApi(contentDb, long.Parse(contentVersion));
-                extraMounts = new[] { new ApiMount(contentApi, "/") };
+                // The Cecil backend rewrites Content.Client in memory on its way to the engine;
+                // the Harmony backend (the default) leaves the content alone.
+                IFileApi contentMount = UsesCecilOutline() ? new CecilFileApi(contentApi, _fileApi) : contentApi;
+                extraMounts = new[] { new ApiMount(contentMount, "/") };
             }
 
             if (!string.IsNullOrEmpty(overlayZip))
@@ -132,6 +135,16 @@ internal class Program : IDisposable
             contentApi?.Dispose();
             overlayApi?.Dispose();
         }
+    }
+
+    /// <summary>
+    /// <c>BEBRA_PATCH_BACKEND=cecil</c> together with <c>BEBRA_PERF_OUTLINE=1</c>: the outline
+    /// throttle goes into the IL instead of being a Harmony prefix.
+    /// </summary>
+    private static bool UsesCecilOutline()
+    {
+        return string.Equals(Environment.GetEnvironmentVariable("BEBRA_PATCH_BACKEND"), "cecil", StringComparison.OrdinalIgnoreCase)
+            && Environment.GetEnvironmentVariable("BEBRA_PERF_OUTLINE") == "1";
     }
 
     public void Dispose()

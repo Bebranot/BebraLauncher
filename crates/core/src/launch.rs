@@ -36,6 +36,7 @@ const CLEARED_ENV: &[&str] = &[
     "BEBRA_HWID_LEGACY",
     "BEBRA_PERF_OUTLINE",
     "BEBRA_PERF_STATUS_ICONS",
+    "BEBRA_PATCH_BACKEND",
     PRESENCE_FILE_ENV,
     "DOTNET_gcServer",
     "DOTNET_GCNoAffinitize",
@@ -141,6 +142,10 @@ pub struct OptimizationConfig {
     /// Client patch: the status icon list of an entity is kept for 100 ms instead of being
     /// rebuilt every frame.
     pub patch_status_icons: bool,
+    /// How the outline patch gets into the client: `false` = a Harmony detour (default), `true` =
+    /// the Loader rewrites `Content.Client` with Mono.Cecil, in memory only (`BEBRA_PATCH_BACKEND`).
+    /// Only `patch_outline` has a Cecil version so far; `patch_status_icons` always uses Harmony.
+    pub patch_cecil: bool,
 }
 
 /// With fewer logical cores Server GC costs more memory than it saves in pauses.
@@ -248,8 +253,11 @@ impl OptimizationConfig {
     }
 
     /// Whether the `Bebra.PerfPatch` client patch has anything to do.
+    ///
+    /// The Cecil backend does the outline throttle inside the Loader, so with it only the status
+    /// icon cache still needs the patch assembly.
     pub fn needs_perf_patch(&self) -> bool {
-        self.patch_outline || self.patch_status_icons
+        self.patch_status_icons || (self.patch_outline && !self.patch_cecil)
     }
 
     /// The `name=value` CVar assignments these switches stand for, in a fixed order.
@@ -676,6 +684,10 @@ pub fn build_command(spec: &LaunchSpec) -> LaunchCommand {
     // Read by the `Bebra.PerfPatch` client patch.
     if opt.patch_outline {
         env.push(("BEBRA_PERF_OUTLINE".into(), "1".into()));
+        // Read by the Loader: rewrite Content.Client with Cecil instead of a Harmony detour.
+        if opt.patch_cecil {
+            env.push(("BEBRA_PATCH_BACKEND".into(), "cecil".into()));
+        }
     }
     if opt.patch_status_icons {
         env.push(("BEBRA_PERF_STATUS_ICONS".into(), "1".into()));
@@ -1472,6 +1484,7 @@ mod tests {
             "BEBRA_OPTIMIZE",
             "BEBRA_PERF_OUTLINE",
             "BEBRA_PERF_STATUS_ICONS",
+            "BEBRA_PATCH_BACKEND",
         ] {
             assert_eq!(env_of(&cmd, name), None, "{name}");
             assert!(
@@ -1479,6 +1492,42 @@ mod tests {
                 "{name} must not leak"
             );
         }
+    }
+
+    #[test]
+    fn cecil_backend_is_off_unless_chosen() {
+        let mut s = spec();
+        s.optimization = OptimizationConfig::balanced(8);
+        let cmd = build_command(&s);
+        assert_eq!(env_of(&cmd, "BEBRA_PATCH_BACKEND"), None);
+        assert!(s.optimization.needs_perf_patch());
+    }
+
+    #[test]
+    fn cecil_backend_moves_the_outline_into_the_loader() {
+        let mut s = spec();
+        s.optimization = OptimizationConfig {
+            patch_outline: true,
+            patch_cecil: true,
+            ..OptimizationConfig::default()
+        };
+        let cmd = build_command(&s);
+        assert_eq!(env_of(&cmd, "BEBRA_PERF_OUTLINE").as_deref(), Some("1"));
+        assert_eq!(env_of(&cmd, "BEBRA_PATCH_BACKEND").as_deref(), Some("cecil"));
+        // Nothing left for the Harmony patch assembly: it is not loaded at all.
+        assert!(!s.optimization.needs_perf_patch());
+
+        // The status icon cache has no Cecil version yet, so it still needs the assembly.
+        s.optimization.patch_status_icons = true;
+        assert!(s.optimization.needs_perf_patch());
+
+        // The backend choice means nothing without a patch to apply.
+        s.optimization = OptimizationConfig {
+            patch_cecil: true,
+            ..OptimizationConfig::default()
+        };
+        let cmd = build_command(&s);
+        assert_eq!(env_of(&cmd, "BEBRA_PATCH_BACKEND"), None);
     }
 
     #[test]

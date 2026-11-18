@@ -58,5 +58,9 @@ Lib.Harmony 2.4.3 (0Harmony.dll)
     Source: https://github.com/pardeike/Harmony
     Licence: MIT
 
+Mono.Cecil 0.11.6 (Mono.Cecil.dll and its Mdb/Pdb/Rocks companions, if shipped)
+    Source: https://github.com/jbevain/cecil
+    Licence: MIT
+
 The LGPL libraries (FluidSynth, OpenAL) are shipped unmodified as separate DLL files and
 are loaded dynamically by the game, so they can be replaced by the user.

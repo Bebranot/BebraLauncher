@@ -20,6 +20,7 @@ export const OPTIMIZATION_KEYS = [
   "prefer_dgpu",
   "patch_outline",
   "patch_status_icons",
+  "patch_cecil",
 ] as const;
 
 export type OptimizationKey = (typeof OPTIMIZATION_KEYS)[number];
@@ -31,5 +32,5 @@ export const OPTIMIZATION_GROUPS: { id: string; keys: OptimizationKey[] }[] = [
   { id: "fps", keys: ["unlock_fps", "steady_fps"] },
   { id: "memory", keys: ["server_gc", "low_latency_gc"] },
   { id: "windows", keys: ["high_priority", "no_throttling", "prefer_dgpu"] },
-  { id: "patches", keys: ["patch_outline", "patch_status_icons"] },
+  { id: "patches", keys: ["patch_outline", "patch_status_icons", "patch_cecil"] },
 ];

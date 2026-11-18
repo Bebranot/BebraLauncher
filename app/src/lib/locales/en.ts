@@ -298,6 +298,9 @@ export const en: Dictionary = {
   "opt.sw.patch_outline": "Patch: update the outline less often",
   "opt.sw.patch_outlineHint":
     "The hover outline is recalculated about 33 times a second instead of every frame. The patch is injected into the client; if something looks wrong, turn it off.",
+  "opt.sw.patch_cecil": "Outline patch through Mono.Cecil instead of Harmony",
+  "opt.sw.patch_cecilHint":
+    "The Loader rewrites Content.Client in memory (the original on disk and in the cache stays untouched) instead of detouring methods with Harmony. Only the outline patch can do this so far; the icon cache stays on Harmony. If the rewrite fails, the outline is left unpatched and the game runs without it.",
   "opt.sw.patch_status_icons": "Patch: cache status icons",
   "opt.sw.patch_status_iconsHint":
     "An entity's status icon list is reused for 100 ms instead of being rebuilt every frame. The patch is injected into the client; if something looks wrong, turn it off.",

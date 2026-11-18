@@ -27,6 +27,8 @@ public static class PerfPatch
 {
     private const string OutlineEnv = "BEBRA_PERF_OUTLINE";
     private const string StatusIconsEnv = "BEBRA_PERF_STATUS_ICONS";
+    /// <summary>Set by the loader (<c>CecilPatcher</c>) when the outline throttle is already in the IL.</summary>
+    private const string OutlineIlEnv = "BEBRA_PERF_OUTLINE_IL";
 
     /// <summary>Shortest time between two outline updates.</summary>
     private static readonly long OutlineInterval = Stopwatch.Frequency * 30 / 1000;
@@ -51,6 +53,12 @@ public static class PerfPatch
     public static void ContentInit()
     {
         var harmony = Harmony ?? throw new InvalidOperationException("Harmony was not passed in");
+
+        // With the Cecil backend the loader has already put the same throttle into the IL of
+        // Content.Client; patching it again would run it twice. If that failed, the marker is
+        // missing and the Harmony prefix below does the job.
+        if (Environment.GetEnvironmentVariable(OutlineIlEnv) == "1")
+            _outlineDone = true;
 
         if (!_outlineDone && Enabled(OutlineEnv))
         {

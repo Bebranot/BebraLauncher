@@ -298,6 +298,9 @@ export const de: Dictionary = {
   "opt.sw.patch_outline": "Patch: Umriss seltener aktualisieren",
   "opt.sw.patch_outlineHint":
     "Der Hover-Umriss wird etwa 33-mal pro Sekunde statt in jedem Frame neu berechnet. Der Patch wird in den Client injiziert; wirkt etwas falsch, lässt er sich ausschalten.",
+  "opt.sw.patch_cecil": "Umriss-Patch über Mono.Cecil statt Harmony",
+  "opt.sw.patch_cecilHint":
+    "Der Loader schreibt den Code von Content.Client im Speicher um (das Original auf der Platte und im Cache bleibt unberührt), statt Methoden per Harmony umzuleiten. Bisher kann das nur der Umriss-Patch; der Symbol-Cache bleibt bei Harmony. Schlägt das Umschreiben fehl, bleibt der Umriss ungepatcht und das Spiel läuft ohne ihn.",
   "opt.sw.patch_status_icons": "Patch: Statussymbole zwischenspeichern",
   "opt.sw.patch_status_iconsHint":
     "Die Liste der Statussymbole einer Entität wird 100 ms wiederverwendet statt in jedem Frame neu aufgebaut. Der Patch wird in den Client injiziert; wirkt etwas falsch, lässt er sich ausschalten.",

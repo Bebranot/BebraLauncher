@@ -7,6 +7,8 @@
     <!-- 2.4.3 is the first version with a net10.0 build; older ones throw
          PlatformNotSupportedException for CoreCLR 10 in PatchFunctions. -->
     <PackageVersion Include="Lib.Harmony" Version="2.4.3" />
+    <!-- Ours, not in the official launcher: the Cecil patch backend (CecilPatcher.cs). -->
+    <PackageVersion Include="Mono.Cecil" Version="0.11.6" />
     <PackageVersion Include="Microsoft.Data.Sqlite.Core" Version="8.0.12" />
     <!-- 2.1.10 was flagged by NuGet audit (NU1903, GHSA-2m69-gcr7-jv3q, HIGH); fixed in 2.1.12. -->
     <PackageVersion Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.14" />

@@ -20,6 +20,7 @@
 
   <ItemGroup>
     <PackageReference Include="Lib.Harmony" />
+    <PackageReference Include="Mono.Cecil" />
     <PackageReference Include="Microsoft.Data.Sqlite.Core" />
     <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" />
     <PackageReference Include="NSec.Cryptography" />

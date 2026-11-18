@@ -23,6 +23,12 @@
           "SQLitePCLRaw.core": "2.1.6"
         }
       },
+      "Mono.Cecil": {
+        "type": "Direct",
+        "requested": "[0.11.6, )",
+        "resolved": "0.11.6",
+        "contentHash": "f33RkDtZO8VlGXCtmQIviOtxgnUdym9xx/b1p9h91CRGOsJFxCFOFK1FDbVt1OCf1aWwYejUFa2MOQyFWTFjbA=="
+      },
       "NSec.Cryptography": {
         "type": "Direct",
         "requested": "[25.4.0, )",
