@@ -589,6 +589,7 @@ export const de: Dictionary = {
   "confirm.prompt": "Möchten Sie sich wirklich mit diesem Server verbinden?",
   "server.moveUp": "Nach oben",
   "server.moveDown": "Nach unten",
+  "server.drag": "Ziehen, um die Reihenfolge zu ändern",
   "server.editFav": "Bearbeiten",
   "server.favName": "Eigener Name",
   "server.fetchName": "Namen abrufen",

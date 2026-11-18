@@ -18,7 +18,10 @@
     raise = false,
     columns: chosenColumns = undefined,
     template: chosenTemplate = undefined,
+    grip = undefined,
   }: {
+    /** Pressing this handle starts dragging the row to a new place (the favorites tab). */
+    grip?: (e: PointerEvent) => void;
     server: ServerRow;
     /** Show the "raise to top" button (the favorites tab). */
     raise?: boolean;
@@ -122,6 +125,21 @@
     onkeydown={onHeadKeydown}
   >
     <div class="cell name">
+      {#if grip}
+        <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
+        <span
+          class="grip"
+          title={t("server.drag")}
+          onpointerdown={grip}
+          onclick={(e) => e.stopPropagation()}
+        >
+          <svg width="12" height="18" viewBox="0 0 12 18" fill="currentColor" aria-hidden="true">
+            <circle cx="3.5" cy="4" r="1.4" /><circle cx="8.5" cy="4" r="1.4" />
+            <circle cx="3.5" cy="9" r="1.4" /><circle cx="8.5" cy="9" r="1.4" />
+            <circle cx="3.5" cy="14" r="1.4" /><circle cx="8.5" cy="14" r="1.4" />
+          </svg>
+        </span>
+      {/if}
       <span class="chev" class:open={expanded}><Icon name="chevron" size={18} /></span>
       {#if isFavorite}<span class="fav" title={t("server.favoriteMark")}><Icon name="star" size={14} /></span>{/if}
       {#if note}<span class="note-badge" title={note}><Icon name="note" size={13} /></span>{/if}
@@ -357,6 +375,29 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     font-weight: 500;
+  }
+  .grip {
+    flex: none;
+    display: grid;
+    place-items: center;
+    align-self: stretch;
+    width: 22px;
+    margin-left: -8px;
+    color: var(--muted);
+    opacity: 0.55;
+    cursor: grab;
+    touch-action: none;
+    transition: opacity 0.12s, color 0.12s;
+  }
+  .head:hover .grip,
+  .grip:hover {
+    opacity: 1;
+  }
+  .grip:hover {
+    color: var(--accent);
+  }
+  .grip:active {
+    cursor: grabbing;
   }
   .chev {
     flex: none;

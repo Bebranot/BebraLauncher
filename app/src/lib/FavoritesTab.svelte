@@ -29,7 +29,7 @@
     </div>
   </div>
   {#if app.favoriteRows.length > 0}
-    <ServerTable rows={app.favoriteRows} sortable={false} raise>
+    <ServerTable rows={app.favoriteRows} sortable={false} raise onreorder={(a, to) => app.reorderFavorite(a, to)}>
       <div class="more">
         <button class="btn" onclick={() => (app.tab = "servers")}>{t("fav.goServers")}</button>
       </div>

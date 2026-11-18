@@ -589,6 +589,7 @@ export const en: Dictionary = {
   "confirm.prompt": "Are you sure you want to connect to this server?",
   "server.moveUp": "Move up",
   "server.moveDown": "Move down",
+  "server.drag": "Drag to reorder",
   "server.editFav": "Edit",
   "server.favName": "Custom name",
   "server.fetchName": "Fetch name",

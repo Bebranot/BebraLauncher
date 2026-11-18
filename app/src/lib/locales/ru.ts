@@ -589,6 +589,7 @@ export const ru = {
   "confirm.prompt": "Вы уверены, что хотите подключиться к этому серверу?",
   "server.moveUp": "Вверх",
   "server.moveDown": "Вниз",
+  "server.drag": "Потяните, чтобы изменить порядок",
   "server.editFav": "Изменить",
   "server.favName": "Своё название",
   "server.fetchName": "Получить имя",

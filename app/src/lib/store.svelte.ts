@@ -1121,6 +1121,20 @@ export class Store {
     if (favorites && this.settings) this.settings = { ...this.settings, favorites };
   }
 
+  /** Puts a favourite at a new place in the list; the list changes at once, the save follows. */
+  async reorderFavorite(address: string, toIndex: number) {
+    if (!this.settings) return;
+    const before = this.settings.favorites;
+    const from = before.indexOf(address);
+    if (from < 0 || toIndex === from) return;
+    const next = [...before];
+    next.splice(from, 1);
+    next.splice(toIndex, 0, address);
+    this.settings = { ...this.settings, favorites: next };
+    const saved = await api.moveFavorite(address, toIndex - from).catch(() => null);
+    if (this.settings) this.settings = { ...this.settings, favorites: saved ?? before };
+  }
+
   async editFavorite(oldAddress: string, newAddress: string, name?: string | null) {
     try {
       const favorites = await api.editFavorite(oldAddress, newAddress, name);

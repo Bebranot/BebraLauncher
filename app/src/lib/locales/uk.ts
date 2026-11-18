@@ -589,6 +589,7 @@ export const uk: Dictionary = {
   "confirm.prompt": "Ви впевнені, що хочете підключитися до цього сервера?",
   "server.moveUp": "Вгору",
   "server.moveDown": "Вниз",
+  "server.drag": "Потягніть, щоб змінити порядок",
   "server.editFav": "Змінити",
   "server.favName": "Власна назва",
   "server.fetchName": "Отримати назву",
