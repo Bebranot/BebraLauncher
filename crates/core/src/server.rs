@@ -294,7 +294,7 @@ async fn get_json<T: serde::de::DeserializeOwned>(
     if !resp.status().is_success() {
         return Err(Error::HttpStatus {
             status: resp.status().as_u16(),
-            url: url.to_string(),
+            url: crate::http::sanitize_url(url),
         });
     }
     read_json_limited(resp, MAX_JSON_BYTES, timeout).await

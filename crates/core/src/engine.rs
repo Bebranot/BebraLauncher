@@ -89,7 +89,7 @@ async fn fetch_manifest(
     if !resp.status().is_success() {
         return Err(Error::HttpStatus {
             status: resp.status().as_u16(),
-            url: resp.url().to_string(),
+            url: crate::http::sanitize_url(resp.url().as_str()),
         });
     }
     read_json_limited(resp, MAX_INDEX_BYTES, INDEX_IDLE_TIMEOUT)
@@ -273,11 +273,8 @@ pub async fn install_engine(
         std::process::id(),
         nanos
     ));
-    let result = download_and_check(client, &resolved, &want_sha, key, &part, progress).await;
-    if let Err(e) = result {
-        let _ = std::fs::remove_file(&part);
-        return Err(e);
-    }
+    let mut part_guard = PartGuard::new(part.clone());
+    download_and_check(client, &resolved, &want_sha, key, &part, progress).await?;
 
     // Replace whatever is in place: a broken zip must never win over a freshly verified download.
     // The old file is moved aside first, so a failed rename can put it back.
@@ -294,9 +291,9 @@ pub async fn install_engine(
         if old_zip.is_file() {
             let _ = std::fs::rename(&old_zip, &zip);
         }
-        let _ = std::fs::remove_file(&part);
         return Err(e.into());
     }
+    part_guard.disarm();
     let _ = std::fs::remove_file(&old_zip);
 
     // The signature goes last and is also written atomically: it marks the install as complete.
@@ -335,8 +332,38 @@ async fn download_and_check(
         });
     }
 
-    let data = tokio::fs::read(part).await?;
-    signature::verify(key, &data, &build.sig)
+    // The signature covers the whole zip, so it is read at once, but off the async threads.
+    let key = *key;
+    let part = part.to_path_buf();
+    let sig = build.sig.clone();
+    tokio::task::spawn_blocking(move || {
+        let data = std::fs::read(&part)?;
+        signature::verify(&key, &data, &sig)
+    })
+    .await
+    .map_err(|e| Error::Other(format!("signature task failed: {e}")))?
+}
+
+/// Removes the `.part` file when dropped, so a cancelled install leaves nothing behind.
+/// `disarm` is called once the file has been renamed into place.
+struct PartGuard(Option<PathBuf>);
+
+impl PartGuard {
+    fn new(path: PathBuf) -> Self {
+        Self(Some(path))
+    }
+
+    fn disarm(&mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for PartGuard {
+    fn drop(&mut self) {
+        if let Some(path) = self.0.take() {
+            let _ = std::fs::remove_file(path);
+        }
+    }
 }
 
 fn sha256_of_file(path: &Path) -> Result<[u8; 32]> {

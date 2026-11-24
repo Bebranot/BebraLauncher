@@ -13,6 +13,9 @@
       : t("acct.guest", { name: app.settings?.guest_name || "Guest" }),
   );
 
+  // "renew" needs no sign: the token is refreshed on its own.
+  const expired = $derived(current?.state === "expired");
+
   function choose(userId: string | null) {
     app.selectAccount(userId);
     open = false;
@@ -44,8 +47,17 @@
 <svelte:window onclick={onWindowClick} onkeydown={(e) => e.key === "Escape" && (open = false)} />
 
 <div class="drop" bind:this={root}>
-  <button class="btn who" onclick={() => (open = !open)} aria-expanded={open}>
+  <button
+    class="btn who"
+    onclick={() => (open = !open)}
+    aria-expanded={open}
+    title={expired ? t("acct.expiredShort") : undefined}
+  >
     <span class="name">{label}</span>
+    {#if expired}
+      <i class="dot" aria-hidden="true"></i>
+      <span class="sr">{t("acct.expiredShort")}</span>
+    {/if}
     <Icon name="chevron" size={18} />
   </button>
 
@@ -92,6 +104,22 @@
     min-width: 110px;
     max-width: 220px;
     padding: 0 8px 0 12px;
+  }
+  .dot {
+    flex: none;
+    width: 6px;
+    height: 6px;
+    margin-left: auto;
+    border-radius: 50%;
+    background: var(--accent);
+  }
+  .sr {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
   }
   .name {
     overflow: hidden;

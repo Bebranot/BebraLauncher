@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { untrack } from "svelte";
+  import { tick, untrack } from "svelte";
   import { api } from "./api";
   import { formatBytes, formatNumber, formatSpeed, stageText } from "./format";
   import { hasKey, t, type Key } from "./i18n.svelte";
@@ -52,6 +52,52 @@
     return () => clearInterval(timer);
   });
 
+  let box = $state<HTMLElement>();
+  const terminal = $derived(play.phase === "failed" || play.phase === "exited");
+
+  // A finished attempt (failed, crashed) takes the keyboard: focus lands on its main button.
+  $effect(() => {
+    if (!terminal || !box) return;
+    const el = box;
+    void tick().then(() => {
+      const btn =
+        el.querySelector<HTMLElement>("button.primary") ?? el.querySelector<HTMLElement>("button");
+      btn?.focus();
+    });
+  });
+
+  /** Escape closes a finished attempt only; while preparing it must never cut the launch short. */
+  function onkeydown(e: KeyboardEvent) {
+    if (!visible || !box) return;
+    if (e.key === "Escape") {
+      if (terminal) {
+        e.preventDefault();
+        app.dismissPlay();
+      }
+      return;
+    }
+    if (e.key !== "Tab") return;
+    // The overlay is modal: Tab must not wander to the page underneath.
+    const items = Array.from(box.querySelectorAll<HTMLElement>("button:not([disabled])"));
+    if (items.length === 0) {
+      e.preventDefault();
+      return;
+    }
+    const first = items[0];
+    const last = items[items.length - 1];
+    const active = document.activeElement;
+    if (!box.contains(active)) {
+      e.preventDefault();
+      (e.shiftKey ? last : first).focus();
+    } else if (e.shiftKey && active === first) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && active === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  }
+
   const FLAVOR_COUNT = 74;
   let flavorIndex = $state(0);
   $effect(() => {
@@ -78,9 +124,11 @@
   });
 </script>
 
+<svelte:window {onkeydown} />
+
 {#if visible}
   <div class="backdrop" role="alertdialog" aria-modal="true" aria-label={t("conn.title")}>
-    <div class="box">
+    <div class="box" bind:this={box}>
       {#if preparing}
         <h2><span class="spinner"></span>{t("conn.title")}</h2>
 

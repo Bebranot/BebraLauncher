@@ -1135,7 +1135,12 @@ export class Store {
     if (this.settings) this.settings = { ...this.settings, favorites: saved ?? before };
   }
 
-  async editFavorite(oldAddress: string, newAddress: string, name?: string | null) {
+  /** Resolves to null on success, or the backend's reason; the dialog shows it, so no toast. */
+  async editFavorite(
+    oldAddress: string,
+    newAddress: string,
+    name?: string | null,
+  ): Promise<string | null> {
     try {
       const favorites = await api.editFavorite(oldAddress, newAddress, name);
       if (this.settings) {
@@ -1151,8 +1156,9 @@ export class Store {
         this.settings = { ...this.settings, favorites, favorite_names: names };
       }
       void this.refreshPings();
+      return null;
     } catch (e) {
-      this.say(errorText(e));
+      return errorText(e);
     }
   }
 

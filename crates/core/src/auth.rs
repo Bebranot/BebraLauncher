@@ -285,7 +285,7 @@ impl AuthClient {
 fn unexpected_status(resp: &Response) -> Error {
     Error::HttpStatus {
         status: resp.status().as_u16(),
-        url: resp.url().to_string(),
+        url: crate::http::sanitize_url(resp.url().as_str()),
     }
 }
 

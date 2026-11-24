@@ -4,6 +4,7 @@
   import { formatBytes } from "./format";
   import { t } from "./i18n.svelte";
   import Icon from "./Icon.svelte";
+  import Modal from "./Modal.svelte";
   import { app } from "./store.svelte";
 
   const s = $derived(app.settings);
@@ -56,10 +57,11 @@
     app.updateSettings({ enabled_patches: on ? [...rest, patch.id] : rest });
   }
 
-  async function deletePatch(patch: PatchRow) {
-    const ok = window.confirm(t("mods.deleteConfirm", { name: patch.name }));
-    if (!ok) return;
+  /** The mod waiting for a yes or a no in the confirmation dialog. */
+  let pendingDelete = $state<PatchRow | null>(null);
 
+  async function deletePatch(patch: PatchRow) {
+    pendingDelete = null;
     try {
       await api.deletePatch(patch.id);
       await loadPatches();
@@ -103,6 +105,19 @@
     }
   }
 </script>
+
+{#if pendingDelete}
+  {@const patch = pendingDelete}
+  <Modal title={t("mods.delete")} onclose={() => (pendingDelete = null)}>
+    <div class="confirm-delete">
+      <p>{t("mods.deleteConfirm", { name: patch.name })}</p>
+      <div class="confirm-actions">
+        <button class="btn primary" onclick={() => deletePatch(patch)}>{t("mods.delete")}</button>
+        <button class="btn" onclick={() => (pendingDelete = null)}>{t("conn.cancel")}</button>
+      </div>
+    </div>
+  </Modal>
+{/if}
 
 <input
   bind:this={fileInput}
@@ -272,7 +287,7 @@
             <div class="mod-actions">
               <button
                 class="icon-btn delete-btn"
-                onclick={() => deletePatch(patch)}
+                onclick={() => (pendingDelete = patch)}
                 title={t("mods.delete")}
                 aria-label={t("mods.delete")}
               >
@@ -302,6 +317,18 @@
 </div>
 
 <style>
+  .confirm-delete {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .confirm-delete p {
+    margin: 0;
+  }
+  .confirm-actions {
+    display: flex;
+    gap: 8px;
+  }
   .mods-tab {
     /* The parent is a plain block with height: 100%, not a flex container: `flex: 1` had no
        effect, the height equalled the content and nothing could scroll. */

@@ -126,7 +126,7 @@ impl ModuleIndex {
         if !resp.status().is_success() {
             return Err(Error::HttpStatus {
                 status: resp.status().as_u16(),
-                url: resp.url().to_string(),
+                url: crate::http::sanitize_url(resp.url().as_str()),
             });
         }
         read_json_limited(resp, MAX_INDEX_BYTES, INDEX_IDLE_TIMEOUT)

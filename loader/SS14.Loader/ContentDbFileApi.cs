@@ -279,7 +279,16 @@ internal sealed class ContentDbFileApi : IFileApi, IDisposable
 
                     using var blobStream = new SqliteBlobStream(blob, canWrite: false, ownsBlob: false);
                     using var deflater = new DeflateStream(blobStream, CompressionMode.Decompress);
-                    deflater.CopyTo(stream);
+                    try
+                    {
+                        deflater.CopyTo(stream);
+                    }
+                    catch (NotSupportedException)
+                    {
+                        // The fixed-size MemoryStream refuses to grow past the declared size.
+                        throw new InvalidOperationException(
+                            $"Deflate blob '{path}' decompresses to more than the declared {length} bytes");
+                    }
 
                     // The buffer is uninitialized and its length is the declared file size.
                     // A short blob would leave the tail of the heap visible to the client.

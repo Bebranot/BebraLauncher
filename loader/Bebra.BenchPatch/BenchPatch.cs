@@ -328,8 +328,11 @@ public static class BenchPatch
 
     private static double Elapsed(long now) => (now - _phaseStart) * (double)MsPerTick / 1000.0;
 
-    private static double SinceStart() =>
-        (DateTime.Now - Process.GetCurrentProcess().StartTime).TotalSeconds;
+    private static double SinceStart()
+    {
+        using var process = Process.GetCurrentProcess();
+        return (DateTime.Now - process.StartTime).TotalSeconds;
+    }
 
     private static void Tour(long now)
     {

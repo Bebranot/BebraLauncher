@@ -24,7 +24,7 @@ use uuid::Uuid;
 pub const EVENT: &str = "play";
 
 /// Returned by [`start`] while another game is being prepared or run.
-pub const BUSY: &str = "РРіСЂР° СѓР¶Рµ Р·Р°РїСѓСЃРєР°РµС‚СЃСЏ РёР»Рё Р·Р°РїСѓС‰РµРЅР°";
+pub const BUSY: &str = "Игра уже запускается или запущена";
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]

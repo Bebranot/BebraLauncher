@@ -25,10 +25,23 @@ internal static class PatchManager
     // single-runner flag keep that safe.
     private static readonly List<Assembly> _patchQueue = new();
     private static bool _processingPatches;
+    private static bool _requeueCurrent;
     private static Assembly? _currentPatch;
 
-    /// <summary>How many times a deferred entry point / Harmony patch is retried.</summary>
-    private const int MaxAttempts = 3;
+    /// <summary>
+    /// How many times a deferred entry point / Harmony patch is retried **after the game content is
+    /// loaded**. Before that point a failure is almost always "the target type's assembly has not
+    /// loaded yet", so it is deferred without counting (see <see cref="ContentReady"/>): a valid
+    /// mod whose target loads late is never dropped.
+    /// </summary>
+    private const int MaxAttempts = 5;
+
+    /// <summary>
+    /// True once <c>Content.Client</c> is loaded — the last core game assembly, after which every
+    /// type a client patch could target is present. Until then a missing target is expected, not a
+    /// failure, so retries are not counted against <see cref="MaxAttempts"/> and nothing is given up.
+    /// </summary>
+    private static bool ContentReady => _contentClient != null;
 
     private static Assembly? _robustClient;
     private static Assembly? _robustShared;
@@ -179,6 +192,13 @@ internal static class PatchManager
                 {
                     _processingPatches = false;
                     _currentPatch = null;
+
+                    if (_requeueCurrent)
+                    {
+                        _requeueCurrent = false;
+                        if (!_patchQueue.Contains(patch))
+                            _patchQueue.Add(patch);
+                    }
                 }
             }
         }
@@ -224,8 +244,13 @@ internal static class PatchManager
             }
         }
 
-        // 3. Scan patch directories for dependencies
-        foreach (var dir in _patchDirectories)
+        // 3. Scan patch directories for dependencies. Snapshot under the lock: Init adds
+        // directories while other threads may already be resolving assemblies.
+        string[] patchDirectories;
+        lock (_lock)
+            patchDirectories = _patchDirectories.ToArray();
+
+        foreach (var dir in patchDirectories)
         {
             var candidate = Path.Combine(dir, name + ".dll");
             if (File.Exists(candidate))
@@ -261,10 +286,17 @@ internal static class PatchManager
             {
                 foreach (var patch in _loadedPatches)
                 {
-                    // Never re-queue the patch whose own code triggered this load: that would
-                    // make it (and anything it loads) run again forever.
+                    // Never re-queue the patch whose own code triggered this load right away: that
+                    // would make it (and anything it loads) run again forever. But if it just pulled
+                    // in one of the core game assemblies itself, it still has to see them (content
+                    // injection, ContentInit), so it gets exactly one more pass once it is done.
+                    // Only three assemblies qualify and each loads once, so this cannot loop.
                     if (patch == _currentPatch)
+                    {
+                        if (name is "Content.Client" or "Content.Shared" or "Robust.Shared")
+                            _requeueCurrent = true;
                         continue;
+                    }
 
                     if (!_patchQueue.Contains(patch))
                         _patchQueue.Add(patch);
@@ -327,23 +359,39 @@ internal static class PatchManager
             {
                 var patched = HarmonyBridge.ApplyPatches(type);
 
-                // Patch() returning nothing means Harmony considered the class handled (usually
-                // no matching target). Retrying it on every AssemblyLoad only burned time.
-                _appliedPatchTypes.Add(type);
-
                 if (patched > 0)
                 {
+                    // Done: stop rescanning it on every AssemblyLoad.
+                    _appliedPatchTypes.Add(type);
                     PatchLog.Write("[BebraLoader] Applied Harmony patch {0} ({1} method(s) patched)", type.Name, patched);
+                }
+                else if (ContentReady)
+                {
+                    // Patch() found nothing to do and every core game assembly is already loaded, so
+                    // the target really is absent (a different build or fork). Mark it processed.
+                    _appliedPatchTypes.Add(type);
+                    PatchLog.Write("[BebraLoader] Harmony patch {0} has no methods to patch, marked as processed", type.Name);
                 }
                 else
                 {
-                    PatchLog.Write("[BebraLoader] Harmony patch {0} has no methods to patch, marked as processed", type.Name);
+                    // No target yet, but content is still loading (e.g. a [HarmonyPatch] whose
+                    // TargetMethod() resolves a type that is not in memory yet). Leave it unmarked so
+                    // it gets another pass once more game assemblies load, instead of dropping it now.
+                    PatchLog.Write("[BebraLoader] Harmony patch {0} has no target yet, waiting for game content", type.Name);
                 }
             }
             catch (Exception ex)
             {
-                // Class targets types in an assembly not loaded yet; retry on the next assembly
-                // load, but only a few times: a permanently broken patch must not cost every load.
+                // A throw usually means the target type's assembly is not loaded yet. While the game
+                // content is still loading that is expected, so defer without counting — only once
+                // everything is loaded does a repeated failure burn the retry budget and give up.
+                if (!ContentReady)
+                {
+                    PatchLog.Write("[BebraLoader] Harmony patch deferred for {0} (waiting for game content): {1}",
+                        type.Name, ex.Message);
+                    continue;
+                }
+
                 var count = _patchAttempts.TryGetValue(type, out var current) ? current + 1 : 1;
                 _patchAttempts[type] = count;
 
@@ -373,8 +421,16 @@ internal static class PatchManager
             SetStaticField(type, "ContentShared", _contentShared);
             SetStaticField(type, "Harmony", HarmonyBridge.Instance);
 
+            // A type that declares a static `Harmony` hook (the field/property the loader injects
+            // into) is clearly meant to integrate with the loader, whatever its name — treat it as a
+            // candidate so a mod with an unconventional class name still gets its entry point run.
+            const BindingFlags staticFlags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static;
+            var hasHarmonyHook = type.GetField("Harmony", staticFlags) != null
+                || type.GetProperty("Harmony", staticFlags) != null;
+
             // Entry point discovery: supports MarseyEntry, PatchEntry, ModEntry, TranslatorEntry, Entry, Plugin, etc.
-            var isCandidateEntry = type.Name.EndsWith("Entry")
+            var isCandidateEntry = hasHarmonyHook
+                || type.Name.EndsWith("Entry")
                 || type.Name.EndsWith("Plugin")
                 || type.Name.EndsWith("Mod")
                 || type.Name.EndsWith("Patch")
@@ -411,20 +467,30 @@ internal static class PatchManager
                     }
                     catch (Exception ex)
                     {
-                        var count = _entryPointAttempts.TryGetValue(type, out var current) ? current + 1 : 1;
-                        _entryPointAttempts[type] = count;
-
-                        if (count >= MaxAttempts)
+                        // Before the content is loaded a throw is almost always "my target isn't here
+                        // yet", so defer without spending the retry budget; only count failures — and
+                        // eventually give up — once every core game assembly is in memory.
+                        if (!ContentReady)
                         {
-                            _initializedEntryPoints.Add(type);
-                            PatchLog.Write("[BebraLoader] Entry point {0} failed {1} times, giving up: {2}",
-                                type.FullName, count, Reason(ex));
+                            PatchLog.Write("[BebraLoader] Entry point {0} deferred (waiting for game content): {1}",
+                                type.FullName, Reason(ex));
                         }
                         else
                         {
-                            // Retry when content loads, but not forever.
-                            PatchLog.Write("[BebraLoader] Entry point {0} deferred/failed ({1}/{2}): {3}",
-                                type.FullName, count, MaxAttempts, Reason(ex));
+                            var count = _entryPointAttempts.TryGetValue(type, out var current) ? current + 1 : 1;
+                            _entryPointAttempts[type] = count;
+
+                            if (count >= MaxAttempts)
+                            {
+                                _initializedEntryPoints.Add(type);
+                                PatchLog.Write("[BebraLoader] Entry point {0} failed {1} times, giving up: {2}",
+                                    type.FullName, count, Reason(ex));
+                            }
+                            else
+                            {
+                                PatchLog.Write("[BebraLoader] Entry point {0} deferred/failed ({1}/{2}): {3}",
+                                    type.FullName, count, MaxAttempts, Reason(ex));
+                            }
                         }
                     }
                 }

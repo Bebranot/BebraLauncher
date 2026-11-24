@@ -166,7 +166,11 @@ impl UrlFallbackSet {
     /// Appends `suffix` to every mirror.
     pub fn join(&self, suffix: &str) -> Self {
         Self {
-            urls: self.urls.iter().map(|u| format!("{u}{suffix}")).collect(),
+            urls: self
+                .urls
+                .iter()
+                .map(|u| format!("{u}{}", suffix.trim_start_matches('/')))
+                .collect(),
             attempt_delay: self.attempt_delay,
             wins: self.wins.clone(),
         }
@@ -205,6 +209,7 @@ impl UrlFallbackSet {
             JoinSet::new();
         let mut next = 0;
         let mut last_err: Option<Error> = None;
+        let mut held: Option<Response> = None;
 
         loop {
             if tasks.is_empty() {
@@ -222,7 +227,21 @@ impl UrlFallbackSet {
             tokio::select! {
                 joined = tasks.join_next() => match joined {
                     Some(Ok((index, Ok(resp)))) => {
-                        if resp.status().is_success() {
+                        let status = resp.status();
+                        if status.is_server_error()
+                            || status == StatusCode::REQUEST_TIMEOUT
+                            || status == StatusCode::TOO_MANY_REQUESTS
+                        {
+                            // A sick mirror must not end the race; try the next one and
+                            // return this answer only if nobody does better.
+                            last_err = Some(Error::HttpStatus {
+                                status: status.as_u16(),
+                                url: sanitize_url(resp.url().as_str()),
+                            });
+                            held = Some(resp);
+                            continue;
+                        }
+                        if status.is_success() {
                             self.wins[index].fetch_add(1, Ordering::Relaxed);
                         }
                         return Ok(resp);
@@ -238,6 +257,9 @@ impl UrlFallbackSet {
             }
         }
 
+        if let Some(resp) = held {
+            return Ok(resp);
+        }
         Err(last_err.unwrap_or_else(|| Error::Other("no mirrors to try".into())))
     }
 
@@ -529,6 +551,32 @@ mod tests {
             good,
             "a mirror answering 5xx must not win"
         );
+    }
+
+    #[test]
+    fn join_does_not_double_the_slash() {
+        let set = UrlFallbackSet::new(["https://a.example"]);
+        assert_eq!(set.join("/api").urls(), ["https://a.example/api"]);
+    }
+
+    #[tokio::test]
+    async fn racing_requests_skip_5xx_mirrors() {
+        let bad = spawn_server(Behavior::Status(502)).await;
+        let good = spawn_server(Behavior::Reply("ok")).await;
+        let set =
+            UrlFallbackSet::new([bad, good.clone()]).with_attempt_delay(Duration::from_secs(5));
+        let resp = set.get(&build_client().unwrap()).await.unwrap();
+        assert_eq!(resp.status(), 200);
+        assert_eq!(set.most_successful(), good);
+    }
+
+    #[tokio::test]
+    async fn racing_requests_return_the_last_5xx_when_all_mirrors_fail() {
+        let a = spawn_server(Behavior::Status(502)).await;
+        let b = spawn_server(Behavior::Status(503)).await;
+        let set = UrlFallbackSet::new([a, b]).with_attempt_delay(Duration::from_secs(5));
+        let resp = set.get(&build_client().unwrap()).await.unwrap();
+        assert_eq!(resp.status(), 503);
     }
 
     #[tokio::test]

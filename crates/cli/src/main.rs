@@ -183,7 +183,7 @@ fn exit_code(err: &anyhow::Error) -> u8 {
         matches!(
             e,
             bebra_core::Error::Http(_) | bebra_core::Error::HttpStatus { .. }
-        )
+        ) || e.is_transient_network()
     }) {
         return 2;
     }
@@ -968,6 +968,20 @@ mod tests {
         let other = anyhow::Error::new(bebra_core::Error::Other("bad file".into()));
         assert_eq!(exit_code(&other), 1);
         assert_eq!(exit_code(&anyhow::anyhow!("boom")), 1);
+    }
+
+    #[test]
+    fn network_timeouts_arriving_as_io_errors_exit_with_2() {
+        let timed_out = anyhow::Error::new(bebra_core::Error::Io(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "stalled",
+        )));
+        assert_eq!(exit_code(&timed_out), 2);
+        let denied = anyhow::Error::new(bebra_core::Error::Io(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "denied",
+        )));
+        assert_eq!(exit_code(&denied), 1);
     }
 
     #[test]

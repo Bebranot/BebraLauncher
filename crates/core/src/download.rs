@@ -79,14 +79,15 @@ fn check_status(resp: &Response) -> Result<()> {
     } else {
         Err(Error::HttpStatus {
             status: resp.status().as_u16(),
-            url: resp.url().to_string(),
+            url: crate::http::sanitize_url(resp.url().as_str()),
         })
     }
 }
 
 fn too_large(url: &str, limit: u64) -> Error {
     Error::Other(format!(
-        "{url}: download is larger than the {} MiB limit",
+        "{}: download is larger than the {} MiB limit",
+        crate::http::sanitize_url(url),
         limit / (1024 * 1024)
     ))
 }
@@ -94,7 +95,11 @@ fn too_large(url: &str, limit: u64) -> Error {
 fn stalled(url: &str, idle: Duration) -> Error {
     Error::Io(io::Error::new(
         io::ErrorKind::TimedOut,
-        format!("{url}: no data received for {}s", idle.as_secs()),
+        format!(
+            "{}: no data received for {}s",
+            crate::http::sanitize_url(url),
+            idle.as_secs()
+        ),
     ))
 }
 

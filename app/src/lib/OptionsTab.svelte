@@ -175,6 +175,15 @@
     }
   }
 
+  /** On leaving the field: a short #RGB (or one without #) is expanded and taken, anything else is put back. */
+  function commitColor(key: keyof CustomColors, el: HTMLInputElement) {
+    let v = el.value.trim();
+    if (!v.startsWith("#")) v = `#${v}`;
+    if (/^#[0-9a-fA-F]{3}$/.test(v)) v = `#${v[1]}${v[1]}${v[2]}${v[2]}${v[3]}${v[3]}`;
+    if (/^#[0-9a-fA-F]{6}$/.test(v)) setColor(key, v);
+    el.value = /^#[0-9a-fA-F]{6}$/.test(v) ? v.toUpperCase() : custom[key];
+  }
+
   let themeNote = $state<string | null>(null);
   let importText = $state("");
 
@@ -950,7 +959,7 @@
               <div class="color">
                 <span>{t(label)}</span>
                 <input type="color" value={custom[key]} oninput={(e) => setColor(key, e.currentTarget.value)} />
-                <input type="text" class="hex" value={custom[key]} maxlength="7" spellcheck="false" oninput={(e) => setColor(key, e.currentTarget.value)} />
+                <input type="text" class="hex" value={custom[key]} maxlength="7" spellcheck="false" oninput={(e) => setColor(key, e.currentTarget.value)} onblur={(e) => commitColor(key, e.currentTarget)} />
               </div>
             {/each}
           </div>

@@ -52,11 +52,11 @@
     e.preventDefault();
     const trimmedAddr = newAddress.trim();
     if (!trimmedAddr) return;
-    try {
-      await app.editFavorite(address, trimmedAddr, name.trim() || null);
-      onclose();
-    } catch {
+    const problem = await app.editFavorite(address, trimmedAddr, name.trim() || null);
+    if (problem) {
       invalid = true;
+    } else {
+      onclose();
     }
   }
 </script>

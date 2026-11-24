@@ -561,6 +561,11 @@ fn safe_extra_args(extra: &[String]) -> Vec<String> {
                 out.push("--cvar".into());
                 out.push(rest.to_string());
             }
+        } else if let Some(rest) = token.strip_prefix("--cvar=") {
+            if is_cvar_assignment(rest) {
+                out.push("--cvar".into());
+                out.push(rest.to_string());
+            }
         }
     }
     out
@@ -1390,6 +1395,22 @@ mod tests {
     }
 
     #[test]
+    fn extra_args_accept_the_equals_form_of_cvar_with_the_same_checks() {
+        let extra = [
+            "--cvar=display.vsync=false",
+            "--cvar=bad name=1",
+            "--cvar=novalue",
+            "--connect-address=evil:1212",
+            "--username=someone",
+        ]
+        .map(String::from);
+        assert_eq!(
+            safe_extra_args(&extra),
+            vec!["--cvar", "display.vsync=false"]
+        );
+    }
+
+    #[test]
     fn extra_args_cannot_override_the_target_or_the_username() {
         let mut s = spec();
         s.extra_args = vec![
@@ -1513,7 +1534,10 @@ mod tests {
         };
         let cmd = build_command(&s);
         assert_eq!(env_of(&cmd, "BEBRA_PERF_OUTLINE").as_deref(), Some("1"));
-        assert_eq!(env_of(&cmd, "BEBRA_PATCH_BACKEND").as_deref(), Some("cecil"));
+        assert_eq!(
+            env_of(&cmd, "BEBRA_PATCH_BACKEND").as_deref(),
+            Some("cecil")
+        );
         // Nothing left for the Harmony patch assembly: it is not loaded at all.
         assert!(!s.optimization.needs_perf_patch());
 
